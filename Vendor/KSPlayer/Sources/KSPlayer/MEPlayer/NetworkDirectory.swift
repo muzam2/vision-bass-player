@@ -50,7 +50,19 @@ public enum NetworkDirectory {
             guard ret >= 0 else { throw ListError.read(ret) }
             guard let e = entry else { break }           // NULL entry = end of listing
             let name = e.pointee.name.map { String(cString: $0) } ?? ""
-            let isDir = e.pointee.type == Int32(AVIO_ENTRY_DIRECTORY.rawValue)
+            // Browsable containers: folders, plus what libsmbclient returns for a bare host or
+            // workgroup (shares, servers, workgroups). Treating shares as files made a
+            // host-only address list nothing.
+            let browsable: Set<Int32> = [
+                Int32(AVIO_ENTRY_DIRECTORY.rawValue), Int32(AVIO_ENTRY_SHARE.rawValue),
+                Int32(AVIO_ENTRY_SERVER.rawValue), Int32(AVIO_ENTRY_WORKGROUP.rawValue),
+            ]
+            let isDir = browsable.contains(e.pointee.type)
+            // Hidden admin shares (IPC$, ADMIN$, C$) aren't useful to browse.
+            if e.pointee.type == Int32(AVIO_ENTRY_SHARE.rawValue), name.hasSuffix("$") {
+                avio_free_directory_entry(&entry)
+                continue
+            }
             let size = e.pointee.size
             let mod = e.pointee.modification_timestamp
             let date: Date? = mod > 0 ? Date(timeIntervalSince1970: TimeInterval(mod) / 1_000_000) : nil
