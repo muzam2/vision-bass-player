@@ -280,7 +280,9 @@ class MetalView: UIView {
         metalLayer.drawableSize = size
         metalLayer.pixelFormat = KSOptions.colorPixelFormat(bitDepth: dovi != nil ? 10 : pixelBuffer.bitDepth)
         // The Dolby Vision shader outputs PQ-encoded BT.2020, whatever the buffer claims.
-        let colorspace = dovi != nil ? CGColorSpace(name: CGColorSpace.itur_2100_PQ) : pixelBuffer.colorspace
+        let colorspace = dovi != nil
+            ? KSOptions.colorSpace(ycbcrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_2020, transferFunction: kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
+            : pixelBuffer.colorspace
         if colorspace != nil, metalLayer.colorspace != colorspace {
             metalLayer.colorspace = colorspace
             KSLog("[video] CAMetalLayer colorspace \(String(describing: colorspace))")
