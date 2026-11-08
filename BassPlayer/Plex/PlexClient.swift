@@ -211,7 +211,12 @@ final class PlexClient: ObservableObject, MediaServerClient {
 
     // MARK: - Library
 
-    func loadLibrary(rediscoverOnNetworkError: Bool = true) async {
+    /// MediaServerClient entry point (protocol requirements can't carry default arguments).
+    func loadLibrary() async {
+        await loadLibrary(rediscoverOnNetworkError: true)
+    }
+
+    func loadLibrary(rediscoverOnNetworkError: Bool) async {
         guard isSignedIn, let base = URL(string: serverURL) else { return }
         isBusy = true; defer { isBusy = false }
         errorMessage = nil
