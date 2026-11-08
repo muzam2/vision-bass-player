@@ -67,6 +67,9 @@ final class FFmpegSession: ObservableObject {
     @Published private(set) var tapInstalled = false
     @Published private(set) var backendName = "—"
     @Published private(set) var audioFormat = "—"
+    /// Peak of the extracted sub-bass over the last poll interval, in dBFS (-120 = silence).
+    @Published private(set) var bassLevelDb: Float = -120
+    private var lastBassLog: Date = .distantPast
 
     private weak var coordinator: KSVideoPlayer.Coordinator?
     private var pollTimer: Timer?
@@ -254,9 +257,18 @@ final class FFmpegSession: ObservableObject {
         if let engine = (me.audioOutput as? AudioEnginePlayer)?.engine {
             let f = engine.mainMixerNode.outputFormat(forBus: 0)
             if f.sampleRate > 0 {
-                audioFormat = "\(Int(f.sampleRate)) Hz · \(f.channelCount) ch"
-                if !tapInstalled { tapInstalled = true }
+                audioFormat = "\(Int(f.sampleRate) / 1000) kHz · \(f.channelCount) ch"
             }
+        }
+        // "Installed" means the mixer tap really exists; the level proves samples flow through it.
+        let s = extractor.stats()
+        tapInstalled = tap.tapInstalled
+        bassLevelDb = s.bassPeakDb
+        if Date().timeIntervalSince(lastBassLog) > 10 {
+            lastBassLog = Date()
+            DiagLog.log(String(format: "tap %@: %d buffers, %d frames, %d packets · input peak %.0f dB · bass peak %.0f dB · BLE %@ sent %d dropped %d",
+                               tap.tapInstalled ? "on" : "off", s.buffers, s.frames, s.packets, s.inputPeakDb, s.bassPeakDb,
+                               bassLink.state.rawValue, bassLink.packetsSent, bassLink.packetsDropped), "bass")
         }
     }
 }
@@ -340,7 +352,7 @@ struct FFmpegPlayerView: View {
     private func statusChip(_ session: FFmpegSession) -> some View {
         HStack(spacing: 8) {
             Image(systemName: session.tapInstalled ? "waveform" : "waveform.slash")
-            Text(session.tapInstalled ? "Bass tap · \(session.audioFormat)" : "Bass tap off")
+            Text(session.tapInstalled ? "Bass tap · \(session.audioFormat) · \(session.bassLevelDb <= -119 ? "silent" : String(format: "%.0f dB", session.bassLevelDb))" : "Bass tap off")
             Text("·")
             Text(session.backendName)
             if let dv = session.doviStatus { Text("·"); Text(dv) }

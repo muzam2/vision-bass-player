@@ -39,6 +39,7 @@ final class BassLink: NSObject, ObservableObject {
     // Queue-confined mirrors of the published state, so the 50 Hz send path never touches
     // main-actor properties and SwiftUI is updated at most ~4 times a second.
     private var linkUp = false
+    private var lastLoggedState: State = .off
     private var sentCount = 0
     private var droppedCount = 0
     private var flushScheduled = false
@@ -112,6 +113,10 @@ final class BassLink: NSObject, ObservableObject {
     }
 
     private func setState(_ s: State) {
+        if s != lastLoggedState {
+            lastLoggedState = s
+            DiagLog.log("BLE \(s.rawValue)\(s == .connected ? " to \(peripheral?.name ?? "?")" : "")", "bass")
+        }
         linkUp = s == .connected
         if s != .connected { sentCount = 0; droppedCount = 0; scheduleCounterFlush() }
         DispatchQueue.main.async { self.state = s }
@@ -135,6 +140,7 @@ final class BassLink: NSObject, ObservableObject {
 
 extension BassLink: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        DiagLog.log("Bluetooth state \(central.state.rawValue) (5 = powered on)", "bass")
         if central.state == .poweredOn {
             scanIfPossible()
         } else {
@@ -145,6 +151,7 @@ extension BassLink: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         guard self.peripheral == nil else { return }
+        DiagLog.log("found receiver \(peripheral.name ?? "?") RSSI \(RSSI)", "bass")
         self.peripheral = peripheral
         peripheral.delegate = self
         central.stopScan()
@@ -158,11 +165,13 @@ extension BassLink: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        DiagLog.log("connect failed: \(error?.localizedDescription ?? "?")", "bass")
         cleanup()
         scanIfPossible()
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        DiagLog.log("disconnected: \(error?.localizedDescription ?? "by us")", "bass")
         cleanup()
         if shouldRun { scanIfPossible() } else { setState(.off) }
     }

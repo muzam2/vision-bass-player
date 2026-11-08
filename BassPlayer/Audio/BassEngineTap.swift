@@ -14,7 +14,8 @@ import KSPlayer
 final class BassEngineTap {
     let extractor: BassExtractor
     private weak var engine: AVAudioEngine?
-    private var tapInstalled = false
+    private(set) var tapInstalled = false
+    private var reportedWrongOutput = false
     private let delayUnit = AVAudioUnitDelay()
     private var delayInserted = false
 
@@ -32,7 +33,13 @@ final class BassEngineTap {
 
     /// Call once the player reports ready/playing. Safe to call repeatedly.
     func attach(to output: AudioOutput) {
-        guard let enginePlayer = output as? AudioEnginePlayer else { return }
+        guard let enginePlayer = output as? AudioEnginePlayer else {
+            if !reportedWrongOutput {
+                reportedWrongOutput = true
+                DiagLog.log("audio output is \(type(of: output)), not AudioEnginePlayer — no bass tap possible", "bass")
+            }
+            return
+        }
         let engine = enginePlayer.engine
         self.engine = engine
         installTapIfNeeded()
@@ -42,6 +49,8 @@ final class BassEngineTap {
     func detach() {
         if let engine, tapInstalled {
             engine.mainMixerNode.removeTap(onBus: 0)
+            let s = extractor.stats()
+            DiagLog.log("tap removed after \(s.buffers) buffers / \(s.packets) packets", "bass")
         }
         tapInstalled = false
         delayInserted = false
@@ -58,6 +67,7 @@ final class BassEngineTap {
             extractor.process(bufferList: buffer.mutableAudioBufferList, frames: Int(buffer.frameLength))
         }
         tapInstalled = true
+        DiagLog.log("tap installed on the mixer: \(Int(format.sampleRate)) Hz, \(format.channelCount) ch, \(format.isInterleaved ? "interleaved" : "planar"), engine running: \(engine.isRunning)", "bass")
     }
 
     /// Rewire mixer → delay → output when a lead is requested; restore the direct link when not.

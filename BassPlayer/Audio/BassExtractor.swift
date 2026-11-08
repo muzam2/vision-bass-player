@@ -29,6 +29,27 @@ final class BassExtractor {
     private var decimPhase: Double = 0
     private var decimStep: Double = 1000.0 / 48_000.0
 
+    // Diagnostics, written on the audio thread, read (inexactly, that is fine) from the UI.
+    private(set) var buffersProcessed = 0
+    private(set) var framesProcessed = 0
+    private(set) var packetsEmitted = 0
+    private var inputPeak: Float = 0
+    private var bassPeak: Float = 0
+
+    struct Stats {
+        var buffers = 0, frames = 0, packets = 0
+        var inputPeakDb: Float = -120, bassPeakDb: Float = -120
+    }
+
+    /// Counters so far plus the peak levels since the previous call (which are then reset).
+    func stats() -> Stats {
+        func db(_ v: Float) -> Float { v > 1e-6 ? 20 * log10(v) : -120 }
+        let s = Stats(buffers: buffersProcessed, frames: framesProcessed, packets: packetsEmitted,
+                      inputPeakDb: db(inputPeak), bassPeakDb: db(bassPeak))
+        inputPeak = 0; bassPeak = 0
+        return s
+    }
+
     // Packetiser state.
     private var pending = [Int16](repeating: 0, count: 20)
     private var pendingCount = 0
@@ -58,6 +79,8 @@ final class BassExtractor {
     func process(bufferList: UnsafeMutablePointer<AudioBufferList>, frames: Int) {
         let abl = UnsafeMutableAudioBufferListPointer(bufferList)
         guard abl.count > 0, frames > 0 else { return }
+        buffersProcessed &+= 1
+        framesProcessed &+= frames
 
         // Resolve channel pointers once per callback.
         if interleaved {
@@ -95,7 +118,11 @@ final class BassExtractor {
 
     @inline(__always)
     private func push(_ sample: Float) {
+        let a = abs(sample)
+        if a > inputPeak { inputPeak = a }
         let y = lpf2.process(lpf1.process(sample))
+        let b = abs(y)
+        if b > bassPeak { bassPeak = b }
         decimPhase += decimStep
         if decimPhase >= 1 {
             decimPhase -= 1
@@ -124,6 +151,7 @@ final class BassExtractor {
         }
         sequence &+= 1
         samplesEmitted += UInt64(samplesPerPacket)
+        packetsEmitted &+= 1
         pendingCount = 0
         onPacket?(packetBuffer)   // Data is copy-on-write; receiver gets a snapshot.
     }

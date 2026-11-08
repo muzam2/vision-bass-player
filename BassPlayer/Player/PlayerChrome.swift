@@ -171,7 +171,7 @@ struct BassStatusChip: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: session.tapInstalled ? "waveform" : "waveform.slash")
-            Text(session.tapInstalled ? "Bass tap · \(session.audioFormat)" : "Bass tap off")
+            Text(session.tapInstalled ? "Bass tap · \(session.audioFormat) · \(session.bassLevelDb <= -119 ? "silent" : String(format: "%.0f dB", session.bassLevelDb))" : "Bass tap off")
             Text("·")
             Text(session.backendName)
             if let dv = session.doviStatus { Text("·"); Text(dv) }
