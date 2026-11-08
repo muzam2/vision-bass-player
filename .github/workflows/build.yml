@@ -54,7 +54,9 @@ jobs:
       - name: Cache FFmpegKit binaries
         uses: actions/cache@v4
         with:
-          path: Vendor/FFmpegKit/Sources/*.xcframework
+          path: |
+            Vendor/FFmpegKit/Sources/*.xcframework
+            Vendor/FFmpegKit/Sources/FFmpegKit
           key: ffmpegkit-${{ hashFiles('Vendor/FFmpegKit/checksums.json', 'Vendor/FFmpegKit/RELEASE_TAG') }}
 
       - name: Fetch FFmpegKit binaries (release zips, checksum-verified)

@@ -1,0 +1,84 @@
+# Repackages a stock kingslay/FFmpegKit tag (9.x commits its xcframeworks into git and has no
+# release assets) as SwiftPM binary-target zips holding only the visionOS + tvOS slices, and
+# publishes them once as release RELEASE_TAG of this repo (skipped if the tag exists, so the
+# committed checksums never go stale; bump RELEASE_TAG to republish). Artifact
+# "ffmpegkit-package" carries the generated Vendor/FFmpegKit/Package.swift + checksums.json to
+# commit. See docs/HANDOFF.md §3 "FFmpegKit 9.0.2".
+name: FFmpegKit repack
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/ffmpegkit-repack.yml
+      - Vendor/FFmpegKit/tools/repack_release.py
+
+jobs:
+  repack:
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      FFMPEGKIT_TAG: "9.0.2"
+      RELEASE_TAG: "ffmpegkit-9.0.2-vt1"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Sparse-clone FFmpegKit ${{ env.FFMPEGKIT_TAG }} (visionOS + tvOS slices only)
+        run: |
+          git clone -q --depth 1 --branch "$FFMPEGKIT_TAG" --filter=blob:none --sparse \
+            https://github.com/kingslay/FFmpegKit.git fk
+          cd fk
+          git sparse-checkout set --no-cone \
+            '/Package.swift' '/LICENSE' '/README.md' \
+            '/Sources/FFmpegKit/**' \
+            '/Sources/*.xcframework/Info.plist' \
+            '/Sources/*.xcframework/xros-*/**' \
+            '/Sources/*.xcframework/tvos-*/**'
+          ls Sources | head -40
+          du -sh Sources
+          grep -n "LIBAVUTIL_VERSION_M" Sources/Libavutil.xcframework/xros-arm64/Libavutil.framework/Headers/version.h || true
+          grep -n "LIBAVFORMAT_VERSION_MAJOR" Sources/Libavformat.xcframework/xros-arm64/Libavformat.framework/Headers/version_major.h || true
+
+      - name: Strip, zip, checksum, generate Package.swift
+        run: |
+          python3 Vendor/FFmpegKit/tools/repack_release.py fk pkg pkg/Package.swift "$FFMPEGKIT_TAG"
+          du -sh pkg/*.zip | sort -h | tail -5
+          du -ch pkg/*.zip | tail -1
+          cp fk/LICENSE pkg/LICENSE
+
+      - name: Publish release (once per tag)
+        run: |
+          if gh release view "$RELEASE_TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG exists; not touching its assets. Bump RELEASE_TAG to republish."
+            exit 0
+          fi
+          {
+            echo "Stock FFmpegKit $FFMPEGKIT_TAG binary targets for Bass Player, stripped to the"
+            echo "visionOS + tvOS slices (device + simulator), plus the Sources/FFmpegKit shim files."
+            echo "Built by run ${{ github.run_id }} from https://github.com/kingslay/FFmpegKit/tree/$FFMPEGKIT_TAG."
+            echo "FFmpegKit is GPLv3; FFmpeg is GPL/LGPL."
+            echo
+            echo '```'
+            cat pkg/MANIFEST.txt
+            echo '```'
+          } > notes.md
+          gh release create "$RELEASE_TAG" -R "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "FFmpegKit $FFMPEGKIT_TAG (visionOS + tvOS slices)" --notes-file notes.md \
+            --prerelease --latest=false pkg/*.zip pkg/checksums.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpegkit-package
+          path: |
+            pkg/Package.swift
+            pkg/checksums.json
+            pkg/MANIFEST.txt
+            pkg/LICENSE
