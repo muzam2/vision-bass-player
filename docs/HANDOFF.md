@@ -166,12 +166,24 @@ Ordered by likelihood of needing a fix.
    showed the black dome with a magenta box (RealityKit's failed-material colour) and the
    settings popover did nothing. Now: native `AVSampleBufferVideoRenderer` + `VideoMaterial`
    path (§2 data flow 6), the player window becomes a remote (controls + screen settings
-   inline, picture hidden) while the screen is open, Stop button closes everything. Check the
-   log (Settings → Diagnostics → Send log) for `immersive |` lines: "video material created",
-   "first frame enqueued", "format …", "status: pushed N". If frames are pushed but the screen
-   stays black, suspect `VideoMaterial(videoRenderer:)` on a custom mesh → try
-   `VideoPlayerComponent(videoRenderer:)` on the entity instead (flat screen only). Picture
-   controls (brightness/contrast/saturation) were dropped with the CoreImage path.
+   inline, picture hidden) while the screen is open, Stop button closes everything. Third
+   device pass (2026-11-08 evening): **the native cinema path works** — the user's screenshots
+   show the film on the big screen with subtitles and the audio menu; the earlier grey band was
+   a one-off. Remaining complaints that pass: subtitles too large (now a shared "Subtitle size"
+   setting, `SubtitleSize.key`, Aa menu in the transport bar + picker in the screen sheet;
+   cues are drawn as plain strings because the parsed cue's own font attributes overrode the
+   SwiftUI font), audio labels too long for visionOS menu rows (`TrackLabel.cleanTitle` strips
+   the language and abbreviates codecs), closing the player window with its close button left
+   audio running (SwiftUI `onDisappear` is not delivered for a window closed that way — the
+   controller now watches `UIScene.didDisconnectNotification` for the player window's scene,
+   found via `WindowSceneProbe`, and pauses on `didEnterBackground`), the cinema's Stop/Exit
+   now open the library/player window *before* dismissing the space instead of relying on the
+   space's onDisappear (`stopAfterCinema` is gone). Log uploads arrived as 1 byte because the
+   Diagnostics row held three plain Buttons in one HStack inside a Form: in a List row they all
+   fire on one tap, so "Send" also ran "Clear" first. Each control is now its own row, and a
+   "Stream log live to computer" toggle posts new lines every 2 s (`DiagLog.setLive`,
+   receiver appends to `logs/live-<device>.log`). Picture controls
+   (brightness/contrast/saturation) were dropped with the CoreImage path.
 2b. **Subtitles / audio tracks (2026-11-08).** KSPlayer's stock view hid its subtitle menu in a
    scene ornament that collided with the app's; visionOS now uses the app's own chrome
    (`Player/PlayerChrome.swift`: transport, scrubber, audio/subtitle/speed menus, 3D +
@@ -283,7 +295,10 @@ Ordered by likelihood of needing a fix.
 - **Logs from the headset:** Settings → Diagnostics → "Send log to computer" posts the in-app
   log (`DiagLog`, app + KSPlayer messages) to `tools/diag_receiver.py` running on the LAN box
   (`python3 tools/diag_receiver.py --bind <ip> --port 8799 --dir <ipa dir>`; logs land in
-  `<dir>/logs/`). The same server serves the `.ipa` for installing through SideStore in Safari.
+  `<dir>/logs/`). "Stream log live to computer" (remembered across launches) appends new lines
+  every 2 s to `<dir>/logs/live-<device>.log` — `tail -f` it while the user tests. "Show log"
+  is a live tail inside Settings. The same server serves the `.ipa` for installing through
+  SideStore in Safari.
 - **Installing on the Vision Pro from the Linux box:** launch the ported iloader
   (`~/src/iloader-vp/src-tauri/target/release/iloader`, DISPLAY=:10), headset awake, Import IPA
   with the artifact's `.ipa`. The same step renews the 7-day signature.

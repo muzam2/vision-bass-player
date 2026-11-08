@@ -55,3 +55,7 @@ struct RootView: View {
 enum PlayerWindow {
     static let id = "player"
 }
+
+enum MainWindow {
+    static let id = "library"
+}

@@ -131,7 +131,7 @@ struct ImmersiveScreenView: View {
                 ImmersiveControlPanel(debugLine: debugLine, onInteract: { scheduleHide() })
             }
             Attachment(id: Self.subtitlesID) {
-                SubtitleOverlay(model: library.playback.coordinator.subtitleModel, fontSize: 44)
+                SubtitleOverlay(model: library.playback.coordinator.subtitleModel, base: 30)
                     .frame(width: 1800, height: 360, alignment: .bottom)
             }
         }
@@ -382,6 +382,7 @@ struct ImmersiveControlPanel: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var model: ImmersiveScreenModel
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 14) {
@@ -391,9 +392,11 @@ struct ImmersiveControlPanel: View {
                     Spacer()
                     BassStatusChip(session: session)
                     StopButton {
-                        // Close the cinema first; the player window comes back and finishes the stop.
+                        // End playback here (the audio must stop now, whatever happens to the
+                        // scenes next), bring the library back, then take the cinema down.
                         DiagLog.log("stop pressed (cinema)", "player")
-                        library.playback.stopAfterCinema = true
+                        library.playback.end()
+                        openWindow(id: MainWindow.id)
                         Task { await dismissImmersiveSpace() }
                     }
                 }
@@ -402,7 +405,7 @@ struct ImmersiveControlPanel: View {
                 HStack {
                     Text("Nothing playing").font(.title3).foregroundStyle(.secondary)
                     Spacer()
-                    Button { Task { await dismissImmersiveSpace() } } label: { Label("Exit cinema", systemImage: "rectangle.on.rectangle") }
+                    Button { exitCinema() } label: { Label("Exit cinema", systemImage: "rectangle.on.rectangle") }
                         .buttonStyle(.borderedProminent)
                 }
             }
@@ -416,9 +419,7 @@ struct ImmersiveControlPanel: View {
                 Button("Recentre") { model.recentreRequest += 1 }
                 Button("Reset") { model.reset() }
                 Spacer()
-                Button {
-                    Task { await dismissImmersiveSpace() }
-                } label: {
+                Button { exitCinema() } label: {
                     Label("Exit cinema", systemImage: "rectangle.on.rectangle")
                 }
                 .buttonStyle(.borderedProminent)
@@ -436,19 +437,34 @@ struct ImmersiveControlPanel: View {
         .onChange(of: model.distance) { _, _ in onInteract() }
         .onChange(of: model.curvature) { _, _ in onInteract() }
     }
+
+    /// Back to the window: open it (or the library when nothing plays) *before* the space goes,
+    /// so the user is never left in an empty void if the space's onDisappear does not run.
+    private func exitCinema() {
+        DiagLog.log("exit cinema pressed", "immersive")
+        if let item = library.playback.item {
+            openWindow(id: PlayerWindow.id, value: item)
+        } else {
+            openWindow(id: MainWindow.id)
+        }
+        Task { await dismissImmersiveSpace() }
+    }
 }
 
 /// Open / close button for the cinema screen (used by the player chrome).
 struct ImmersiveScreenToggle: View {
     @EnvironmentObject private var model: ImmersiveScreenModel
+    @EnvironmentObject private var library: LibraryStore
     @Environment(\.openImmersiveSpace) private var openSpace
     @Environment(\.dismissImmersiveSpace) private var dismissSpace
+    @Environment(\.openWindow) private var openWindow
     var compact = false
 
     var body: some View {
         Button {
             Task {
                 if model.isOpen {
+                    if let item = library.playback.item { openWindow(id: PlayerWindow.id, value: item) }
                     await dismissSpace()
                 } else {
                     let result = await openSpace(id: ImmersiveScreenSpace.id)
@@ -469,6 +485,7 @@ struct ImmersiveScreenToggle: View {
 /// Screen placement, picture and room controls (sheet from the player window).
 struct ImmersiveScreenSettings: View {
     @EnvironmentObject private var model: ImmersiveScreenModel
+    @AppStorage(SubtitleSize.key) private var subtitlePercent: Int = 100
 
     var body: some View {
         Form {
@@ -485,6 +502,9 @@ struct ImmersiveScreenSettings: View {
             }
             Section("Picture") {
                 Toggle("Flip vertically", isOn: $model.flipV)
+                Picker("Subtitle size", selection: $subtitlePercent) {
+                    ForEach(SubtitleSize.options, id: \.self) { p in Text(p == 100 ? "Normal" : "\(p) %").tag(p) }
+                }
             }
             Section("Room") {
                 Toggle("Full immersion (hide passthrough)", isOn: $model.darkRoom)

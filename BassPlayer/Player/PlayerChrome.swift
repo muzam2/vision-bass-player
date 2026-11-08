@@ -28,7 +28,7 @@ struct FFmpegPlayerChrome: View {
             KSVideoPlayer(coordinator: playback.coordinator, url: url, options: session.options)
                 .ignoresSafeArea()
 
-            SubtitleOverlay(model: playback.coordinator.subtitleModel)
+            SubtitleOverlay(model: playback.coordinator.subtitleModel, base: 26)
                 .padding(.bottom, showControls ? 150 : 60)
 
             if immersive.isOpen {
@@ -121,6 +121,7 @@ struct TransportBar: View {
                 Spacer()
                 AudioTrackMenu(playback: playback)
                 SubtitleMenu(model: playback.coordinator.subtitleModel, coordinator: playback.coordinator, externalURLs: item.subtitleURLs)
+                SubtitleSizeMenu()
                 speedMenu
                 Divider().frame(height: 24)
                 StereoPickerMenu(item: item)
@@ -215,26 +216,67 @@ private struct AudioTrackMenu: View {
     private func label(_ t: MediaPlayerTrack) -> String { TrackLabel.audio(t) }
 }
 
-/// Short, single-line track names for menus (KSPlayer's own are codec dumps that wrap).
+/// Short, single-line track names for menus. Menu rows on visionOS are narrow, so these stay
+/// under ~24 characters: "English · DTS-HD MA 7.1", "English · Commentary · AC-3 stereo".
 enum TrackLabel {
     static func audio(_ t: MediaPlayerTrack) -> String {
+        let lang = languageName(t.languageCode)
         var parts: [String] = []
-        let lang = t.languageCode.flatMap { Locale.current.localizedString(forLanguageCode: $0) ?? ($0 == "und" ? nil : $0) }
-        if let lang { parts.append(lang.capitalized) }
+        if let lang { parts.append(lang) }
         if let ff = t as? FFmpegAssetTrack {
-            let title = ff.name.trimmingCharacters(in: .whitespaces)
-            if !title.isEmpty, title.lowercased() != (t.languageCode ?? "").lowercased(), title.lowercased() != ff.codecName.lowercased() {
-                parts.append(String(title.prefix(28)))
+            let codec = codecName(ff.codecName)
+            let title = cleanTitle(ff.name, language: lang, code: t.languageCode)
+            if let title, !sameThing(title, codec) {
+                parts.append(title)
+                if !mentions(title, codec) { parts.append(codec) }
+            } else {
+                parts.append(codec)
             }
-            var tech = codecName(ff.codecName)
-            if let ch = ff.audioDescriptor?.audioFormat.channelCount { tech += " " + channels(Int(ch)) }
-            parts.append(tech)
+            if let ch = ff.audioDescriptor?.audioFormat.channelCount {
+                let c = channels(Int(ch))
+                if !(title.map { $0.contains(c) } ?? false) { parts[parts.count - 1] += " " + c }
+            }
         } else if !t.name.isEmpty {
-            parts.append(String(t.name.prefix(40)))
+            parts.append(String(t.name.prefix(24)))
         }
         if parts.isEmpty { parts.append("Track \(t.trackID)") }
         return parts.joined(separator: " · ")
     }
+
+    static func subtitle(_ t: FFmpegAssetTrack) -> String {
+        let lang = languageName(t.languageCode)
+        var parts: [String] = []
+        if let lang { parts.append(lang) }
+        if let title = cleanTitle(t.name, language: lang, code: t.languageCode) { parts.append(title) }
+        parts.append(t.isImageSubtitle ? "image" : codecName(t.codecName).lowercased())
+        return parts.joined(separator: " · ")
+    }
+
+    static func languageName(_ code: String?) -> String? {
+        guard let code, !code.isEmpty, code != "und" else { return nil }
+        return Locale.current.localizedString(forLanguageCode: code)?.capitalized ?? code
+    }
+
+    /// The track title with the language (which the menu already shows) and marketing words
+    /// removed, common codec names abbreviated, capped at 20 characters. Nil if nothing is left.
+    static func cleanTitle(_ raw: String, language: String?, code: String?) -> String? {
+        var s = raw
+        for word in [language, code, "Audio", "Surround", "Sound", "Original", "Stereo"].compactMap({ $0 }) where word.count > 1 {
+            s = s.replacingOccurrences(of: word, with: " ", options: .caseInsensitive)
+        }
+        for (long, short) in [("DTS-HD Master", "DTS-HD MA"), ("DTS-HD High Resolution", "DTS-HD HR"), ("Dolby TrueHD", "TrueHD"),
+                              ("Dolby Digital Plus", "E-AC-3"), ("Dolby Digital", "AC-3"), ("Dolby Atmos", "Atmos"), ("Master", "MA")] {
+            s = s.replacingOccurrences(of: long, with: short, options: .caseInsensitive)
+        }
+        s = s.replacingOccurrences(of: "[\\s/|·:\\-()\\[\\]]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty else { return nil }
+        return String(s.prefix(20)).trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func norm(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+    private static func sameThing(_ a: String, _ b: String) -> Bool { norm(a) == norm(b) }
+    private static func mentions(_ title: String, _ codec: String) -> Bool { norm(title).contains(norm(codec)) }
 
     static func codecName(_ raw: String) -> String {
         let base = raw.split(separator: " ").first.map(String.init) ?? raw
@@ -293,15 +335,8 @@ private struct SubtitleMenu: View {
     }
 
     private func name(_ info: any SubtitleInfo) -> String {
-        if let t = info as? FFmpegAssetTrack {
-            var parts: [String] = []
-            if let lang = t.languageCode.flatMap({ Locale.current.localizedString(forLanguageCode: $0) }) { parts.append(lang.capitalized) }
-            let title = t.name.trimmingCharacters(in: .whitespaces)
-            if !title.isEmpty, title.lowercased() != (t.languageCode ?? "").lowercased() { parts.append(String(title.prefix(28))) }
-            parts.append(t.isImageSubtitle ? "image" : TrackLabel.codecName(t.codecName).lowercased())
-            return parts.joined(separator: " · ")
-        }
-        return String(info.name.prefix(40))
+        if let t = info as? FFmpegAssetTrack { return TrackLabel.subtitle(t) }
+        return String(info.name.prefix(30))
     }
 
     /// Re-collect embedded tracks from the player and the server's external files.
@@ -323,10 +358,14 @@ private struct SubtitleMenu: View {
     }
 }
 
-/// Draws the current subtitle cue(s). `fontSize` scales for the cinema screen attachment.
+/// Draws the current subtitle cue(s). `base` is the point size at 100 %; the user's
+/// "Subtitle size" setting scales it (shared by the window and the cinema screen).
 struct SubtitleOverlay: View {
     @ObservedObject var model: SubtitleModel
-    var fontSize: CGFloat = 40
+    var base: CGFloat = 26
+    @AppStorage(SubtitleSize.key) private var scalePercent: Int = 100
+
+    private var fontSize: CGFloat { base * CGFloat(scalePercent) / 100 }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -335,7 +374,9 @@ struct SubtitleOverlay: View {
                 if let image = part.image {
                     Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: fontSize * 5)
                 } else if let text = part.text {
-                    Text(AttributedString(text))
+                    // Plain string: the parsed cue carries its own font attributes (KSPlayer's
+                    // textFontSize / ASS styles), which would override the size chosen here.
+                    Text(text.string)
                         .font(.system(size: fontSize, weight: .medium))
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.white)
@@ -348,6 +389,30 @@ struct SubtitleOverlay: View {
         }
         .padding(.horizontal, 60)
         .allowsHitTesting(false)
+    }
+}
+
+/// The user's subtitle size, in percent of the default. Stored once, read everywhere.
+enum SubtitleSize {
+    static let key = "subtitle.sizePercent"
+    static let options = [60, 80, 100, 125, 150, 200]
+}
+
+/// "Aa" menu: pick the subtitle size.
+struct SubtitleSizeMenu: View {
+    @AppStorage(SubtitleSize.key) private var scalePercent: Int = 100
+
+    var body: some View {
+        Menu {
+            Picker("Subtitle size", selection: $scalePercent) {
+                ForEach(SubtitleSize.options, id: \.self) { p in
+                    Text(p == 100 ? "Normal" : "\(p) %").tag(p)
+                }
+            }
+        } label: {
+            Image(systemName: "textformat.size")
+        }
+        .help("Subtitle size")
     }
 }
 

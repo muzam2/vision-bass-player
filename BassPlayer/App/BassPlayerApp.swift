@@ -38,6 +38,10 @@ struct BassPlayerApp: App {
         }
 
         FFmpegConfig.apply()
+        if UserDefaults.standard.bool(forKey: "diag.live"),
+           let url = URL(string: UserDefaults.standard.string(forKey: "diag.uploadURL") ?? "http://192.168.0.191:8799/log") {
+            DiagLog.shared.setLive(url: url)
+        }
 
         // Movie playback category; the audio pods / AirPods carry the full mix,
         // the sub gets the low-frequency stream over BLE from BassLink.
@@ -48,7 +52,7 @@ struct BassPlayerApp: App {
 
     var body: some Scene {
         #if os(visionOS)
-        WindowGroup {
+        WindowGroup(id: MainWindow.id) {
             RootView()
                 .modifier(AppEnvironment(library: library, jellyfin: jellyfin, plex: plex, youtube: youtube, nas: nas, bassLink: bassLink))
                 .environmentObject(immersive)
