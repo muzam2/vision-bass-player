@@ -77,6 +77,7 @@ targets:
         excludes:
           - "Info*.plist"
           - "**/*.usda"
+          - "Assets-tvOS.xcassets"
     dependencies:
       - package: KSPlayer
         product: KSPlayer
@@ -104,6 +105,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "7"
         SUPPORTED_PLATFORMS: "xros xrsimulator"
         ENABLE_PREVIEWS: "YES"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # BassPlayer/Assets.xcassets (tools/make_icons.py)
 
   # ---------------- Apple TV ----------------
   BassPlayerTV:
@@ -114,6 +116,7 @@ targets:
         excludes:
           - "Info*.plist"
           - "**/*.usda"
+          - "Assets.xcassets"
     dependencies:
       - package: KSPlayer
         product: KSPlayer
@@ -138,6 +141,7 @@ targets:
         UIUserInterfaceStyle: Automatic
     settings:
       base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"   # BassPlayer/Assets-tvOS.xcassets
         PRODUCT_NAME: BassPlayerTV
         PRODUCT_BUNDLE_IDENTIFIER: com.muzam2.bassplayer.tv
         TARGETED_DEVICE_FAMILY: "3"

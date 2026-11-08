@@ -10,7 +10,7 @@ enum StereoFormat: String, CaseIterable, Identifiable, Codable {
     case tabHalf       // half-height top-and-bottom
     case tabFull       // full-height top-and-bottom
     case mvHEVC        // Apple spatial / MV-HEVC (two coded views; AVPlayer renders it)
-    case mvcPacked     // Blu-ray 3D MVC: FFmpeg decodes the base view only → plays as 2D
+    case mvcPacked     // Blu-ray 3D MVC: decoded by edge264-mvc into full SBS (base | dependent); 2D if that fails
 
     var id: String { rawValue }
 
@@ -23,7 +23,7 @@ enum StereoFormat: String, CaseIterable, Identifiable, Codable {
         case .tabHalf: return "3D · Half TAB"
         case .tabFull: return "3D · Full TAB"
         case .mvHEVC: return "3D · MV-HEVC"
-        case .mvcPacked: return "3D · MVC (plays 2D)"
+        case .mvcPacked: return "3D · MVC (Blu-ray)"
         }
     }
 

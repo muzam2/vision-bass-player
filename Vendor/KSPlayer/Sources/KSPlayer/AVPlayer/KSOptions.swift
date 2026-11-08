@@ -90,6 +90,9 @@ open class KSOptions {
     public var syncDecodeVideo = false
     public var hardwareDecode = KSOptions.hardwareDecode
     public var asynchronousDecompression = KSOptions.asynchronousDecompression
+    /// Bass Player patch: decode H.264 MVC (3D Blu-ray) streams with edge264-mvc so both eyes
+    /// come out (as one full side-by-side frame) instead of the base view only.
+    public var mvcSoftwareDecode = KSOptions.mvcSoftwareDecode
     public var videoDisable = false
     public var canStartPictureInPictureAutomaticallyFromInline = KSOptions.canStartPictureInPictureAutomaticallyFromInline
     public var automaticWindowResize = true
@@ -481,6 +484,7 @@ public extension KSOptions {
     /// seek完是否自动播放
     static var isSeekedAutoPlay = true
     static var hardwareDecode = true
+    public static var mvcSoftwareDecode = true
     // 默认不用自研的硬解，因为有些视频的AVPacket的pts顺序是不对的，只有解码后的AVFrame里面的pts是对的。
     static var asynchronousDecompression = false
     static var isPipPopViewController = false

@@ -38,6 +38,9 @@ public class FFmpegAssetTrack: MediaPlayerTrack {
     public let fieldOrder: FFmpegFieldOrder
     public let formatDescription: CMFormatDescription?
     var closedCaptionsTrack: FFmpegAssetTrack?
+    /// Bass Player patch: set by `Edge264Decode` once an MVC stereo pair has been decoded — the
+    /// frames of this track are then full side-by-side (base | dependent view).
+    public internal(set) var decodesStereoSideBySide = false
     let isConvertNALSize: Bool
     var seekByBytes = false
     public var description: String {

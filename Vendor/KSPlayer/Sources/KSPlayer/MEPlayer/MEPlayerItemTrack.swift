@@ -127,7 +127,7 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
             }
         }
         lastPacketBytes += packet.size
-        let decoder = decoderMap.value(for: packet.assetTrack.trackID, default: makeDecode(assetTrack: packet.assetTrack))
+        let decoder = decoderMap.value(for: packet.assetTrack.trackID, default: makeDecode(assetTrack: packet.assetTrack, firstPacket: packet))
 //        var startTime = CACurrentMediaTime()
         decoder.decodeFrame(from: packet) { [weak self] result in
             guard let self else {
@@ -157,7 +157,7 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
                 }
             } catch {
                 KSLog("Decoder did Failed : \(error)")
-                if decoder is VideoToolboxDecode {
+                if decoder is VideoToolboxDecode || decoder is Edge264Decode {
                     decoder.shutdown()
                     self.decoderMap[packet.assetTrack.trackID] = FFmpegDecode(assetTrack: packet.assetTrack, options: self.options)
                     KSLog("VideoCodec switch to software decompression")
@@ -298,11 +298,19 @@ protocol DecodeProtocol {
 }
 
 extension SyncPlayerItemTrack {
-    func makeDecode(assetTrack: FFmpegAssetTrack) -> DecodeProtocol {
+    func makeDecode(assetTrack: FFmpegAssetTrack, firstPacket: Packet? = nil) -> DecodeProtocol {
         autoreleasepool {
             if mediaType == .subtitle {
                 return SubtitleDecode(assetTrack: assetTrack, options: options)
             } else {
+                // Bass Player: 3D Blu-ray MVC → edge264-mvc (both views); detected from the
+                // codec profile or the MVC NAL units of the first packet.
+                if mediaType == .video, options.mvcSoftwareDecode, let firstPacket,
+                   Edge264Decode.isMVC(packet: firstPacket, assetTrack: assetTrack),
+                   let mvc = Edge264Decode(assetTrack: assetTrack, options: options)
+                {
+                    return mvc
+                }
                 if mediaType == .video, options.asynchronousDecompression, options.hardwareDecode,
                    let session = DecompressionSession(assetTrack: assetTrack, options: options)
                 {

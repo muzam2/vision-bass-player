@@ -109,6 +109,12 @@ final class FFmpegSession: ObservableObject {
         return d.needsMapping ? "DV P\(d.profile) mapped" : "DV P\(d.profile) base layer"
     }
 
+    /// True once KSPlayer's MVC decoder has produced a stereo pair: frames are then full
+    /// side-by-side whatever the item's declared format says.
+    @Published private(set) var mvcStereo = false
+    private var requestedStereo: StereoFormat = .mono
+    private var requestedImmersiveStereo = false
+
     init(bassLink: BassLink) {
         self.bassLink = bassLink
         tap = BassEngineTap(extractor: extractor)
@@ -159,10 +165,15 @@ final class FFmpegSession: ObservableObject {
     /// Apply the 3D mode. `immersiveStereo` = the cinema screen is showing both eyes, so the
     /// decoder must deliver the whole packed frame and the flat view keeps the squeezed picture.
     func setStereo(_ format: StereoFormat, immersiveStereo: Bool) {
-        options.stereo = format
-        options.cropToOneEye = format.isPacked && !immersiveStereo
+        requestedStereo = format
+        requestedImmersiveStereo = immersiveStereo
+        // MVC decoded by edge264 arrives as full side-by-side; a declared-but-undecoded MVC
+        // file is just the 2D base view.
+        let effective: StereoFormat = mvcStereo ? .sbsFull : (format == .mvcPacked ? .mono : format)
+        options.stereo = effective
+        options.cropToOneEye = effective.isPacked && !immersiveStereo
         applyCrop()
-        ImmersiveScreenBridge.shared.stereoFormat = format
+        ImmersiveScreenBridge.shared.stereoFormat = effective
     }
 
     private func applyCrop() {
@@ -231,6 +242,12 @@ final class FFmpegSession: ObservableObject {
         }
         guard let me = player as? KSMEPlayer else { return }
         if let view = me.videoOutput as? MetalPlayView { installFrameSink(on: view) }
+        let mvc = me.tracks(mediaType: .video).contains { ($0 as? FFmpegAssetTrack)?.decodesStereoSideBySide == true }
+        if mvc != mvcStereo {
+            mvcStereo = mvc
+            DiagLog.log("MVC stereo pair \(mvc ? "detected → full side-by-side" : "gone")", "player")
+            setStereo(requestedStereo, immersiveStereo: requestedImmersiveStereo)
+        }
         guard layer.state == .readyToPlay || layer.state == .bufferFinished || layer.state == .buffering || layer.state == .paused else { return }
         applyCrop()
         tap.attach(to: me.audioOutput)
@@ -262,7 +279,7 @@ struct FFmpegPlayerView: View {
 
     private var immersiveStereoActive: Bool {
         #if os(visionOS)
-        return immersive.isOpen && library.effectiveStereo(for: item).isPacked
+        return immersive.isOpen && (library.effectiveStereo(for: item).isPacked || playback.session?.mvcStereo == true)
         #else
         return false
         #endif
