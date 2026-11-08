@@ -90,6 +90,10 @@ CI also builds both and uploads `firmware-<env>` artifacts (`firmware.bin` + boo
 partitions) you can flash with `esptool` or the web flasher. The board advertises as **BassSub**;
 the app connects automatically when you open a film.
 
+**Two devices, one sub.** The receiver accepts the Vision Pro and the Apple TV at the same time
+and plays whichever one is currently sending audio. Pause on one, press play on the other, and
+the sub switches over within about 1.5 s. No re-pairing.
+
 Power the ESP32 from a clean 5 V supply (official Raspberry Pi micro-USB PSU or an Apple USB-C
 brick); cheap chargers can put a whine into the line out. Both apps talk to the same receiver.
 

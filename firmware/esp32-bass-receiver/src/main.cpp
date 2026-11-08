@@ -76,6 +76,14 @@ static volatile uint16_t lastSeq = 0;
 static volatile bool     haveSeq = false;
 
 static NimBLECharacteristic* statusChar = nullptr;
+static NimBLEServer* bleServer = nullptr;
+
+// Source arbitration: two devices (Vision Pro + Apple TV) may both be connected. The one that
+// is currently sending audio owns the ring buffer; another sender takes over only once the
+// current source has been silent for SOURCE_TIMEOUT_MS ("last one to press play wins").
+static const uint32_t SOURCE_TIMEOUT_MS = 1500;
+static volatile uint16_t activeConn = BLE_HS_CONN_HANDLE_NONE;
+static volatile uint32_t lastAudioMs = 0;
 
 static inline uint32_t ringFill() { return (ringHead - ringTail) & (RING_SIZE - 1); }
 static inline uint32_t targetFill() { return BASE_JITTER_MS + extraDelayMs; }
@@ -95,23 +103,38 @@ static void ringReset() { ringHead = ringTail = 0; haveSeq = false; }
 class ServerCB : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, ble_gap_conn_desc* desc) override {
     connected = true;
-    ringReset();
     // 15 ms connection interval, no latency, 4 s supervision timeout.
     server->updateConnParams(desc->conn_handle, 12, 12, 0, 400);
-    Serial.println("[ble] connected");
+    Serial.printf("[ble] connected (handle %u, %u total)\n", desc->conn_handle, server->getConnectedCount());
+    // Keep advertising so the second device can join.
+    if (server->getConnectedCount() < CONFIG_BT_NIMBLE_MAX_CONNECTIONS) NimBLEDevice::startAdvertising();
   }
-  void onDisconnect(NimBLEServer* server) override {
-    connected = false;
-    ringReset();
-    Serial.println("[ble] disconnected, advertising");
+  void onDisconnect(NimBLEServer* server, ble_gap_conn_desc* desc) override {
+    if (desc->conn_handle == activeConn) {
+      activeConn = BLE_HS_CONN_HANDLE_NONE;
+      ringReset();
+    }
+    connected = server->getConnectedCount() > 0;
+    Serial.printf("[ble] disconnected (handle %u), advertising\n", desc->conn_handle);
     NimBLEDevice::startAdvertising();
   }
 };
 
 class AudioCB : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic* c) override {
+  void onWrite(NimBLECharacteristic* c, ble_gap_conn_desc* desc) override {
     const std::string& v = c->getValue();
     if (v.size() != PKT_SIZE || (uint8_t)v[0] != PKT_MAGIC) return;
+
+    uint32_t now = millis();
+    if (desc->conn_handle != activeConn) {
+      bool sourceIdle = (activeConn == BLE_HS_CONN_HANDLE_NONE) || (now - lastAudioMs > SOURCE_TIMEOUT_MS);
+      if (!sourceIdle) return;                 // another device is still playing; ignore
+      activeConn = desc->conn_handle;
+      ringReset();
+      Serial.printf("[ble] audio source -> handle %u\n", activeConn);
+    }
+    lastAudioMs = now;
+
     const uint8_t* p = (const uint8_t*)v.data();
     uint16_t seq = p[1] | (p[2] << 8);
     if (haveSeq) {
@@ -306,6 +329,8 @@ void setup() {
   NimBLEDevice::setMTU(247);
 
   NimBLEServer* server = NimBLEDevice::createServer();
+  bleServer = server;
+  server->advertiseOnDisconnect(false);      // we restart advertising ourselves
   server->setCallbacks(new ServerCB());
 
   NimBLEService* svc = server->createService(SVC_UUID);
