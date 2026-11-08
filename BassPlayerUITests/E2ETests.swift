@@ -22,6 +22,9 @@ final class E2ETests: XCTestCase {
         launchEnv.merge(extra) { $1 }
         app.launchEnvironment = launchEnv
         app.launch()
+        // Cold launches on the hosted runner's visionOS simulator can take minutes (no GPU);
+        // wait for the first drawn control before any test-specific timeout starts.
+        _ = app.buttons.firstMatch.waitForExistence(timeout: 240)
         return app
     }
 
@@ -40,10 +43,17 @@ final class E2ETests: XCTestCase {
 
     /// Waits for the player's status chip, lets playback run, then checks the process is still
     /// alive and reports what the chip said.
-    private func expectPlayback(_ app: XCUIApplication, name: String, chipTimeout: TimeInterval = 60) {
+    private func expectPlayback(_ app: XCUIApplication, name: String, chipTimeout: TimeInterval = 60) throws {
         let chip = app.descendants(matching: .any).matching(identifier: "statusChip").firstMatch
         let appeared = chip.waitForExistence(timeout: chipTimeout)
         attach(app, "\(name)-player")
+        if !appeared {
+            let text = app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | ")
+            if text.localizedCaseInsensitiveContains("not a bot") || text.localizedCaseInsensitiveContains("isn't a bot") {
+                throw XCTSkip("\(name): YouTube bot-checked the runner's IP at playback: \(text.prefix(200))")
+            }
+            print("E2E \(name): screen text without player chip: \(text.prefix(400))")
+        }
         XCTAssertEqual(app.state, .runningForeground, "\(name): the app is no longer running (crash?)")
         XCTAssertTrue(appeared, "\(name): the player chip never appeared")
         sleep(15)
@@ -89,7 +99,7 @@ final class E2ETests: XCTestCase {
         }
         attach(app, "youtube-results")
         card.tap()
-        expectPlayback(app, name: "youtube")
+        try expectPlayback(app, name: "youtube")
     }
 
     func testNASBrowseAndPlay() throws {
@@ -101,7 +111,7 @@ final class E2ETests: XCTestCase {
 
         let app = launch(screen: "nas", extra: ["BASSPLAYER_E2E_NAS_HOST": host])
         let row = app.staticTexts["CI"].firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 20), "pre-seeded share not listed")
+        XCTAssertTrue(row.waitForExistence(timeout: 60), "pre-seeded share not listed")
         attach(app, "nas-shares-list")
         row.tap()
         let shareRow = app.staticTexts[share].firstMatch
@@ -112,7 +122,7 @@ final class E2ETests: XCTestCase {
         XCTAssertTrue(fileRow.waitForExistence(timeout: 30), "file '\(file)' not listed in the share")
         attach(app, "nas-files")
         fileRow.tap()
-        expectPlayback(app, name: "nas")
+        try expectPlayback(app, name: "nas")
     }
 
     func testPlexLibraryAndPlay() throws {
@@ -124,9 +134,12 @@ final class E2ETests: XCTestCase {
         XCTAssertTrue(find.waitForExistence(timeout: 20), "Plex 'Find my servers' button missing (token not accepted?)")
         find.tap()
         attach(app, "plex-discovering")
-        let card = firstCard(in: app, timeout: 90)
+        // Series cards open an episode page, so play from the Movies filter.
+        let movies = app.buttons["Movies"].firstMatch
+        if movies.waitForExistence(timeout: 30) { movies.tap() }
+        let card = firstCard(in: app, timeout: 120)
         attach(app, "plex-library")
         card.tap()
-        expectPlayback(app, name: "plex", chipTimeout: 90)
+        try expectPlayback(app, name: "plex", chipTimeout: 120)
     }
 }

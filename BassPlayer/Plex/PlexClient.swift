@@ -22,6 +22,10 @@ final class PlexClient: ObservableObject, MediaServerClient {
     @Published private(set) var servers: [PlexServer] = []
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
+    /// Episodes fetched per series (`showKey`), for the series page and autoplay-next.
+    @Published private(set) var episodesByShow: [String: [MediaItem]] = [:]
+    /// Bumped by each library load so a superseded load stops publishing.
+    private var loadGeneration = 0
 
     // PIN flow state.
     @Published private(set) var pinCode: String?
@@ -83,7 +87,9 @@ final class PlexClient: ObservableObject, MediaServerClient {
         return req
     }
 
-    private func send<T: Decodable>(_ req: URLRequest, as: T.Type) async throws -> T {
+    /// Nonisolated so that decoding (megabytes of JSON for a big library) happens off the main
+    /// thread; decoding on the main actor froze the UI.
+    nonisolated private func send<T: Decodable & Sendable>(_ req: URLRequest, as: T.Type) async throws -> T {
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw PlexError.badResponse }
         guard (200..<300).contains(http.statusCode) else {
@@ -229,23 +235,48 @@ final class PlexClient: ObservableObject, MediaServerClient {
         await loadLibrary(rediscoverOnNetworkError: true)
     }
 
+    /// Series are listed as one card each (episodes load when a series is opened) and movies
+    /// arrive in pages that are shown as they land. The old single request for every episode
+    /// of every show was 134 MB of JSON on the owner's server: the spinner never ended.
     func loadLibrary(rediscoverOnNetworkError: Bool) async {
         guard isSignedIn, !demoMode, let base = URL(string: serverURL) else { return }
-        isBusy = true; defer { isBusy = false }
+        loadGeneration += 1
+        let generation = loadGeneration
+        isBusy = true
+        defer { if generation == loadGeneration { isBusy = false } }
         errorMessage = nil
+        // A refresh keeps the current grid until the new list is complete; a first load
+        // shows each page as it arrives.
+        let progressive = items.isEmpty
         do {
             let sections = try await send(request(base.appendingPathComponent("library/sections")), as: PlexContainer<PlexDirectory>.self)
+            let dirs = (sections.MediaContainer.Directory ?? []).filter { $0.type == "movie" || $0.type == "show" }
             var all: [MediaItem] = []
-            for dir in sections.MediaContainer.Directory ?? [] {
-                guard dir.type == "movie" || dir.type == "show" else { continue }
-                var comps = URLComponents(url: base.appendingPathComponent("library/sections/\(dir.key)/all"), resolvingAgainstBaseURL: false)!
-                comps.queryItems = [.init(name: "type", value: dir.type == "movie" ? "1" : "4")]   // 1 = movie, 4 = episode
-                let page = try await send(request(comps.url!), as: PlexContainer<PlexMetadata>.self)
-                for m in page.MediaContainer.Metadata ?? [] {
-                    if let item = mediaItem(from: m, base: base) { all.append(item) }
+            func publish() {
+                guard generation == loadGeneration else { return }
+                items = all.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            }
+            // Series first: one small request per section, and the grid fills in under a second.
+            for dir in dirs.sorted(by: { ($0.type == "show" ? 0 : 1) < ($1.type == "show" ? 0 : 1) }) {
+                let isShow = dir.type == "show"
+                var start = 0
+                while true {
+                    try Task.checkCancellation()
+                    guard generation == loadGeneration else { return }
+                    let url = Self.listURL(base: base, section: dir.key, type: isShow ? 2 : 1, start: start, size: Self.pageSize)
+                    let page = try await send(request(url), as: PlexContainer<PlexMetadata>.self)
+                    let metas = page.MediaContainer.Metadata ?? []
+                    for m in metas {
+                        if let item = isShow ? showItem(from: m, base: base) : mediaItem(from: m, base: base) { all.append(item) }
+                    }
+                    if progressive { publish() }
+                    start += metas.count
+                    let total = page.MediaContainer.totalSize ?? start
+                    if metas.isEmpty || start >= total { break }
                 }
             }
-            items = all.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            publish()
+        } catch is CancellationError {
         } catch {
             // A saved address can go stale (server moved, Docker IP, VPN off): re-probe once.
             if rediscoverOnNetworkError, error is URLError {
@@ -257,13 +288,69 @@ final class PlexClient: ObservableObject, MediaServerClient {
         }
     }
 
+    nonisolated static let pageSize = 500
+
+    /// `/library/sections/<key>/all` for one page, title-sorted, without the cast/genre/etc.
+    /// elements the app never shows.
+    nonisolated private static func listURL(base: URL, section: String, type: Int, start: Int, size: Int) -> URL {
+        var comps = URLComponents(url: base.appendingPathComponent("library/sections/\(section)/all"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            .init(name: "type", value: String(type)),          // 1 = movie, 2 = show
+            .init(name: "sort", value: "titleSort"),
+            .init(name: "includeGuids", value: "0"),
+            .init(name: "excludeElements", value: "Genre,Country,Director,Writer,Role,Collection,Label,Producer,Similar,Field,Image,UltraBlurColors,Guid"),
+            .init(name: "X-Plex-Container-Start", value: String(start)),
+            .init(name: "X-Plex-Container-Size", value: String(size)),
+        ]
+        return comps.url!
+    }
+
+    private func tokened(_ path: String, base: URL) -> URL? {
+        guard var comps = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false) else { return nil }
+        comps.queryItems = [.init(name: "X-Plex-Token", value: effectiveServerToken)]
+        return comps.url
+    }
+
+    private func showItem(from m: PlexMetadata, base: URL) -> MediaItem? {
+        guard m.type == "show" else { return nil }
+        let count = m.leafCount.map { "\($0) episode\($0 == 1 ? "" : "s")" }
+        var mi = MediaItem(
+            id: "plex:show:\(m.ratingKey)", source: .plex, title: m.title,
+            subtitle: [m.year.map(String.init), count].compactMap { $0 }.joined(separator: " · "),
+            overview: m.summary, runtimeMinutes: nil, posterURL: m.thumb.flatMap { tokened($0, base: base) },
+            directURL: nil, avPlayerURL: nil, container: nil, videoCodec: nil, audioCodec: nil,
+            audioChannels: nil, videoRange: nil, isEpisode: false, width: nil, height: nil, stereo: nil)
+        mi.showKey = m.ratingKey
+        return mi
+    }
+
+    /// Every episode of a series in season/episode order (cached; refetched on `refresh`).
+    func episodes(of show: MediaItem, refresh: Bool = false) async throws -> [MediaItem] {
+        guard let key = show.showKey ?? show.parentShowKey else { return [] }
+        return try await episodes(showKey: key, refresh: refresh)
+    }
+
+    func episodes(showKey key: String, refresh: Bool = false) async throws -> [MediaItem] {
+        if !refresh, let cached = episodesByShow[key] { return cached }
+        guard let base = URL(string: serverURL) else { return [] }
+        var comps = URLComponents(url: base.appendingPathComponent("library/metadata/\(key)/allLeaves"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [.init(name: "includeGuids", value: "0")]
+        let page = try await send(request(comps.url!), as: PlexContainer<PlexMetadata>.self)
+        let eps = (page.MediaContainer.Metadata ?? []).compactMap { mediaItem(from: $0, base: base) }
+        episodesByShow[key] = eps
+        return eps
+    }
+
+    /// The episode after `item` in its series, if that series' episodes have been fetched.
+    func nextEpisode(after item: MediaItem) -> MediaItem? {
+        guard let key = item.parentShowKey, let eps = episodesByShow[key],
+              let i = eps.firstIndex(where: { $0.id == item.id }), i + 1 < eps.count else { return nil }
+        return eps[i + 1]
+    }
+
     private func mediaItem(from m: PlexMetadata, base: URL) -> MediaItem? {
         guard let media = m.Media?.first, let part = media.Part?.first else { return nil }
-        func tokened(_ path: String) -> URL? {
-            guard var comps = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false) else { return nil }
-            comps.queryItems = [.init(name: "X-Plex-Token", value: effectiveServerToken)]
-            return comps.url
-        }
+        func tokened(_ path: String) -> URL? { self.tokened(path, base: base) }
         let direct = tokened(part.key)
         let poster = m.thumb.flatMap { tokened($0) }
 
@@ -314,6 +401,11 @@ final class PlexClient: ObservableObject, MediaServerClient {
         mi.projection = ScreenProjection.detect(name: m.title, path: part.file)
         if mi.projection != nil, mi.stereo == nil { mi.stereo = ScreenProjection.detectStereoForVR(name: m.title, path: part.file) }
         mi.subtitleURLs = subs
+        if m.type == "episode" {
+            mi.parentShowKey = m.grandparentRatingKey
+            mi.season = m.parentIndex
+            mi.episodeNumber = m.index
+        }
         if let vo = m.viewOffset, vo > 0 { mi.serverResumeSeconds = Double(vo) / 1000 }
         return mi
     }
@@ -345,19 +437,19 @@ struct PlexServer: Identifiable, Hashable {
     let connections: [String]
 }
 
-private struct PlexPin: Decodable {
+private struct PlexPin: Decodable, Sendable {
     let id: Int
     let code: String
     let authToken: String?
 }
 
-private struct PlexResource: Decodable {
+private struct PlexResource: Decodable, Sendable {
     let name: String
     let clientIdentifier: String
     let provides: String
     let accessToken: String?
     let connections: [Connection]?
-    struct Connection: Decodable {
+    struct Connection: Decodable, Sendable {
         let uri: String
         let local: Bool
         let relay: Bool
@@ -367,21 +459,22 @@ private struct PlexResource: Decodable {
     }
 }
 
-private struct PlexContainer<T: Decodable>: Decodable {
+private struct PlexContainer<T: Decodable & Sendable>: Decodable, Sendable {
     let MediaContainer: Inner
-    struct Inner: Decodable {
+    struct Inner: Decodable, Sendable {
         let Directory: [T]?
         let Metadata: [T]?
+        let totalSize: Int?
     }
 }
 
-private struct PlexDirectory: Decodable {
+private struct PlexDirectory: Decodable, Sendable {
     let key: String
     let title: String
     let type: String
 }
 
-private struct PlexMetadata: Decodable {
+private struct PlexMetadata: Decodable, Sendable {
     let ratingKey: String
     let title: String
     let type: String
@@ -390,12 +483,14 @@ private struct PlexMetadata: Decodable {
     let thumb: String?
     let duration: Int?
     let grandparentTitle: String?
+    let grandparentRatingKey: String?
+    let leafCount: Int?
     let parentIndex: Int?
     let index: Int?
     let viewOffset: Int?
     let Media: [Media]?
 
-    struct Media: Decodable {
+    struct Media: Decodable, Sendable {
         let container: String?
         let videoCodec: String?
         let audioCodec: String?
@@ -404,13 +499,13 @@ private struct PlexMetadata: Decodable {
         let height: Int?
         let Part: [Part]?
     }
-    struct Part: Decodable {
+    struct Part: Decodable, Sendable {
         let key: String
         let file: String?
         let container: String?
         let Stream: [Stream]?
     }
-    struct Stream: Decodable {
+    struct Stream: Decodable, Sendable {
         let streamType: Int
         let key: String?
         let codec: String?
