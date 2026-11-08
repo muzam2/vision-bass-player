@@ -108,6 +108,10 @@ room dim / flipV / HDR / brightness / contrast / saturation / HDR boost.
 - `MEPlayer/MetalPlayView.swift` — forces the Metal path for P5 frames, PQ colour space,
   `currentFrame` (public), `contentsCrop` (one-eye display for packed 3D).
 - `MEPlayer/NetworkDirectory.swift` — `avio_open_dir` wrapper for SMB listing.
+- `MEPlayer/Filter.swift` — remembers a failed `avfilter_graph_config` and passes frames through
+  (upstream re-fed the half-built graph on the next frame → SIGSEGV in `config_props`; this was
+  the first on-device crash, reproduced in the simulator by the E2E Plex test); rebuilds the
+  graph cleanly on retry.
 - `Package.swift` — tests removed; FFmpegKit comes from the local `../FFmpegKit` package.
 
 ### FFmpegKit (Vendor/FFmpegKit)
@@ -137,6 +141,10 @@ Ordered by likelihood of needing a fix.
 1. **Dolby Vision P5 colours wrong** — sign of offsets, limited-vs-full range, matrix
    orientation in `doviToPQ`. Compare with the Apple TV app on the same film. Reference:
    libplacebo `src/shaders/colorspace.c` (`pl_shader_dovi_reshape`, DOLBYVISION branch).
+2. ~~Player crashes on play~~ — FIXED 2026-11-08: `autoDeInterlace` put the software `idet`
+   filter into the VideoToolbox pipeline; the graph failed to configure and KSPlayer then
+   pushed frames into it. Now off in `FFmpegConfig.makeOptions`, and `Filter.swift` tolerates
+   configuration failures. Repro: E2E test `testPlexLibraryAndPlay` (crash log in the artifact).
 2. **Bass tap never installs.** `FFmpegSession.poll()` needs
    `engine.mainMixerNode.outputFormat(forBus:0).sampleRate > 0`. If the chip stays "Bass tap
    off", log the format and `layer.state`; check `KSOptions.audioPlayerType` took effect
@@ -166,17 +174,23 @@ Ordered by likelihood of needing a fix.
    backports (§3). Verified on desktop FFmpeg n6.1 with the same streams; not yet on hardware.
 8. **SMB against SMB3-only NAS** — libsmbclient should negotiate; options go through
    `NetworkDirectory.list(options:)`. Guest access with empty username on Windows untested.
-9. **Plex connection choice**: `connect(to:)` probes every advertised address (plus an
+9. **Plex library size.** Series are listed as one card each and open a season/episode page
+   (`ShowEpisodesView`, episodes from `/library/metadata/<id>/allLeaves`, cached for
+   autoplay-next); movies load in pages of 500 (`X-Plex-Container-Start/Size`, title-sorted,
+   cast/genre elements excluded) and appear as each page lands; JSON is decoded off the main
+   thread. Before 2026-11-08 the app fetched every episode of every show in one go — 134 MB of
+   JSON on the owner's server — and the spinner never ended (seen on the headset and in CI).
+10. **Plex connection choice**: `connect(to:)` probes every advertised address (plus an
    `http://IP:port` twin for each LAN `plex.direct` one) with `/identity` and takes the first
    that answers, LAN first, relay last; a stale saved address triggers one rediscovery. The
    owner's OpenWrt router has `plex.direct` in dnsmasq's `rebind_domain`; other users with
    rebind protection fall back to the http twin automatically.
-10. **Firmware drift control** nudges one sample per second when off by >15; scale with error
+11. **Firmware drift control** nudges one sample per second when off by >15; scale with error
     if the buffer still drifts. **A1S line-out level** may clip some subs: lower registers
     0x2E–0x31 in `codecInit()` (0x1E ≈ 0 dB, ~1.5 dB per step). **AC101 variant** unsupported.
-11. ~~Free-ID signing prompts~~ — Local Network permission was present after the first
+12. ~~Free-ID signing prompts~~ — Local Network permission was present after the first
     install (2026-11-08). Bluetooth prompt still to be seen once the receiver exists.
-12. **New UI untested on hardware** (built 2026-11-08, checked only in the simulator via
+13. **New UI untested on hardware** (built 2026-11-08, checked only in the simulator via
     `ui-screenshots.yml`): TabView `.sidebarAdaptable`, player in a separate window on
     visionOS (`WindowGroup(id: "player", for: MediaItem.self)`), `fullScreenCover` on tvOS.
     tvOS focus behaviour in the grids and the YouTube text field needs a look on the Apple TV.

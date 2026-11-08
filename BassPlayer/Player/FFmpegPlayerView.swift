@@ -27,7 +27,10 @@ enum FFmpegConfig {
     static func makeOptions() -> BassPlayerOptions {
         let o = BassPlayerOptions()
         o.destinationDynamicRange = nil
-        o.autoDeInterlace = true
+        // Off: it inserts the software `idet` filter into a VideoToolbox (hardware-frame)
+        // pipeline, which can't be configured; KSPlayer still de-interlaces streams whose
+        // field order says interlaced (KSOptions.process(assetTrack:)) by other means.
+        o.autoDeInterlace = false
         o.autoSelectEmbedSubtitle = true
         o.userAgent = "BassPlayer/0.2"
         o.videoAdaptable = false
@@ -310,6 +313,9 @@ struct FFmpegPlayerView: View {
         .background(.regularMaterial, in: Capsule())
         .foregroundStyle(session.tapInstalled ? .green : .secondary)
         .allowsHitTesting(false)
+        // One accessibility element whose label is the whole chip text (read by the UI tests).
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("statusChip")
     }
 }
 

@@ -18,12 +18,19 @@ class MEFilter {
     private let isAudio: Bool
     private var params = AVBufferSrcParameters()
     private let nominalFrameRate: Float
+    /// Bass Player patch: outcome of the last `setup`. After a failed configuration (e.g. a
+    /// software filter such as `idet` fed VideoToolbox hardware frames: "Impossible to convert
+    /// between the formats"), frames with the same parameters used to skip `setup` and be
+    /// pushed into the half-built graph, which segfaults in libavfilter's config_props.
+    private var configured = false
+    private let options: KSOptions
     deinit {
         graph?.pointee.opaque = nil
         avfilter_graph_free(&graph)
     }
 
     public init(timebase: Timebase, isAudio: Bool, nominalFrameRate: Float, options: KSOptions) {
+        self.options = options
         graph = avfilter_graph_alloc()
         graph?.pointee.opaque = Unmanaged.passUnretained(options).toOpaque()
         self.timebase = timebase
@@ -31,7 +38,21 @@ class MEFilter {
         self.nominalFrameRate = nominalFrameRate
     }
 
+    /// Start from an empty graph: re-running `setup` on a graph that already holds the filters
+    /// of a failed attempt is invalid.
+    private func resetGraph() {
+        if let graph {
+            graph.pointee.opaque = nil
+        }
+        avfilter_graph_free(&graph)
+        bufferSrcContext = nil
+        bufferSinkContext = nil
+        graph = avfilter_graph_alloc()
+        graph?.pointee.opaque = Unmanaged.passUnretained(options).toOpaque()
+    }
+
     private func setup(filters: String) -> Bool {
+        resetGraph()
         var inputs = avfilter_inout_alloc()
         var outputs = avfilter_inout_alloc()
         var ret = avfilter_graph_parse2(graph, filters, &inputs, &outputs)
@@ -131,13 +152,18 @@ class MEFilter {
         if self.params != params || self.filters != filters {
             self.params = params
             self.filters = filters
-            if !setup(filters: filters) {
-                completionHandler(inputFrame)
-                return
+            configured = setup(filters: filters)
+            if !configured {
+                KSLog("MEFilter: could not configure '\(filters)' for this stream; passing frames through unfiltered")
             }
+        }
+        guard configured, bufferSrcContext != nil, bufferSinkContext != nil else {
+            completionHandler(inputFrame)
+            return
         }
         let ret = av_buffersrc_add_frame_flags(bufferSrcContext, inputFrame, 0)
         if ret < 0 {
+            completionHandler(inputFrame)
             return
         }
         while av_buffersink_get_frame_flags(bufferSinkContext, inputFrame, 0) >= 0 {
