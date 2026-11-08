@@ -300,7 +300,7 @@ struct ImmersiveScreenView: View {
             c.orientation = simd_quatf(angle: 0, axis: [1, 0, 0])
         }
         if let subs = state.subtitles {
-            let k = vr ? s : Float(model.width) * 0.8 / (1800 / Self.pointsPerMetre)
+            let k = vr ? max(0.8, Float(model.distance) / 2.2) : Float(model.width) * 0.8 / (1800 / Self.pointsPerMetre)
             subs.scale = SIMD3<Float>(repeating: k)
             subs.position = [0, -halfH + (360 / Self.pointsPerMetre) * k / 2 + 0.05 * k, vr ? -Float(model.distance) + 0.2 : 0.03]
         }
