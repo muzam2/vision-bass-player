@@ -1,0 +1,117 @@
+# Rebuilds mov.o + hls.o of FFmpegKit 6.1.4's Libavformat (FFmpeg n6.1) with the upstream
+# fixes in Vendor/FFmpegKit-patches and splices them into the released static archives for the
+# two slices the app ships (visionOS + tvOS device). Everything else stays byte-identical, so
+# libsmbclient, gnutls, dav1d etc. are untouched.
+#
+# Why only two objects: all four patches touch only libavformat/mov.c and hls.c, and those
+# files use no config macros that depend on external libraries (CONFIG_DV_DEMUXER,
+# CONFIG_H261/H263/MPEG4_DECODER, CONFIG_ZLIB, CONFIG_HTTP_PROTOCOL), so an FFmpeg-only build
+# with FFmpegKit's own plugin (same configure line, same targets) yields equivalent objects.
+#
+# Output: artifact "libavformat-backported" with the two patched Libavformat binaries,
+# a manifest and checks. Publishing them (fork tag) is a separate, manual step: see HANDOFF.
+name: FFmpegKit backports
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/ffmpegkit-backports.yml
+      - Vendor/FFmpegKit-patches/**
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      FFMPEGKIT_TAG: "6.1.4"
+      SLICES: "xros-arm64 tvos-arm64_arm64e"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Clone FFmpegKit ${{ env.FFMPEGKIT_TAG }}
+        run: |
+          git clone -q --depth 1 --branch "$FFMPEGKIT_TAG" https://github.com/kingslay/FFmpegKit.git fk
+          mkdir -p orig
+          for s in $SLICES; do
+            cp "fk/Sources/Libavformat.xcframework/$s/Libavformat.framework/Libavformat" "orig/Libavformat-$s"
+          done
+          shasum -a 256 orig/*
+
+      - name: Add patches to the plugin's FFmpeg patch folder
+        run: |
+          mkdir -p fk/Plugins/BuildFFmpeg/patch/FFmpeg
+          cp Vendor/FFmpegKit-patches/*.patch fk/Plugins/BuildFFmpeg/patch/FFmpeg/
+          ls fk/Plugins/BuildFFmpeg/patch/FFmpeg
+
+      - name: Build FFmpeg only (visionOS + tvOS device)
+        working-directory: fk
+        run: |
+          # The plugin ignores git-apply failures; the next step checks the source instead.
+          # It may fail late (e.g. while assembling an xcframework from a partial build);
+          # only the compiled objects are needed.
+          swift package --disable-sandbox BuildFFmpeg enable-FFmpeg platforms=xros,tvos 2>&1 | tee ../build.log | grep -E "error|Error|warning: patch|BUILD|configure" | tail -40 || true
+
+      - name: Check the patches are in the compiled source
+        run: |
+          src=$(find fk/.Script -maxdepth 1 -type d -name "FFmpeg-*" | head -1)
+          echo "source: $src"
+          test -n "$src"
+          grep -q "Ignoring duplicate Mastering Display Metadata" "$src/libavformat/mov.c"
+          grep -q "Ignoring duplicate FTYP" "$src/libavformat/mov.c"
+          grep -q "Discard current fragment index" "$src/libavformat/mov.c"
+          grep -q "init_sec_buf + v->init_sec_buf_read_offset" "$src/libavformat/hls.c"
+          echo "all four patches present"
+
+      - name: Splice mov.o + hls.o into the released archives
+        run: |
+          set -euo pipefail
+          mkdir -p out work
+          plat_of() { case "$1" in xros-*) echo xros ;; tvos-*) echo tvos ;; esac; }
+          for s in $SLICES; do
+            p=$(plat_of "$s")
+            archs=$(lipo -archs "orig/Libavformat-$s")
+            echo "== $s ($p): $archs"
+            thins=()
+            for a in $archs; do
+              obj=$(find fk/.Script/FFmpeg/$p/scratch/$a/libavformat -maxdepth 1 \( -name mov.o -o -name hls.o \) | sort)
+              test "$(echo "$obj" | wc -l | tr -d ' ')" = 2 || { echo "missing objects for $p/$a"; find fk/.Script/FFmpeg -maxdepth 4 -type d | head -40; exit 1; }
+              lipo -info $obj
+              t="work/$s-$a.a"
+              lipo -thin "$a" "orig/Libavformat-$s" -output "$t"
+              before=$(ar -t "$t" | wc -l | tr -d ' ')
+              ar -r "$t" $obj 2>/dev/null
+              ranlib "$t"
+              after=$(ar -t "$t" | wc -l | tr -d ' ')
+              echo "$a: members $before -> $after"
+              test "$before" = "$after"
+              thins+=("$t")
+            done
+            lipo -create "${thins[@]}" -output "out/Libavformat-$s"
+            lipo -info "out/Libavformat-$s"
+            strings "out/Libavformat-$s" | grep -c "Ignoring duplicate FTYP" | xargs echo "patched string occurrences:"
+            nm "out/Libavformat-$s" 2>/dev/null | grep -c " T _ff_mov_read_" | xargs echo "ff_mov_read_* symbols:" || true
+          done
+          {
+            echo "FFmpegKit $FFMPEGKIT_TAG Libavformat with backports:"
+            ls Vendor/FFmpegKit-patches
+            echo
+            shasum -a 256 orig/* out/*
+          } | tee out/MANIFEST.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libavformat-backported
+          path: out/
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpegkit-build-log
+          path: build.log
