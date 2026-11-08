@@ -242,9 +242,9 @@ searches, and a pasted link or video id plays directly. Streams are fetched from
 player API at play time, so there are no ads; SponsorBlock skips sponsor segments (Settings →
 YouTube to turn off). The sub works exactly as with films.
 
-Quality goes up to 4K; lower it in Settings → YouTube → **Max quality** if 4K stutters on your
-Wi‑Fi. For now YouTube plays the SDR version of HDR videos, and you can't skip around inside a
-YouTube video (it always starts from the beginning). Both come with a player update.
+Quality goes up to 4K, in HDR when the video has it. If 4K stutters on your Wi‑Fi, lower
+Settings → YouTube → **Max quality**; if HDR looks wrong or stutters, turn off **HDR when
+available**.
 
 If YouTube suddenly stops playing ("no playable streams"), YouTube changed something on their
 side; the fix is updating the client identities in `InnerTubeClient.swift` from yt-dlp.

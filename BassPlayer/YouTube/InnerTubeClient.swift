@@ -163,8 +163,8 @@ struct InnerTubeClient {
 
     // MARK: - Player
 
-    /// Stream URLs for a video. `maxHeight` caps the variant picked for FFmpeg.
-    func streams(videoId: String, maxHeight: Int = 2160) async throws -> Streams {
+    /// Stream URLs for a video. `maxHeight` caps the variant picked for FFmpeg; `preferHDR` lets it take PQ/HLG.
+    func streams(videoId: String, maxHeight: Int = 2160, preferHDR: Bool = true) async throws -> Streams {
         var lastError: Swift.Error = Error.noStreams
         // One retry with a fresh visitor id if every client got the bot check.
         for attempt in 0..<2 {
@@ -182,7 +182,7 @@ struct InnerTubeClient {
                     if Self.isBotCheck(json) { botChecked = true; continue }
                     guard var s = try Self.parseStreams(json, client: client) else { continue }
                     if let hls = s.hlsURL,
-                       let picked = await HLSVariantPicker.localMaster(for: hls, videoId: videoId, userAgent: client.userAgent, maxHeight: maxHeight) {
+                       let picked = await HLSVariantPicker.localMaster(for: hls, videoId: videoId, userAgent: client.userAgent, maxHeight: maxHeight, preferHDR: preferHDR) {
                         s.ffmpegURL = picked.url
                         s.variantLabel = picked.label
                     }

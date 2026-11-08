@@ -52,11 +52,16 @@ Apple ID. Nothing has run on hardware yet.
   playback breaks (`_base.py` clients, `_video.py` `_DEFAULT_JSLESS_CLIENTS`). VISIONOS first,
   IOS fallback; every player call sends a visitor id (`VisitorID`, scraped from the home page),
   without which YouTube bot-checks. FFmpeg gets a local one-variant master
-  (`HLSVariantPicker`, SDR only, `protocol_whitelist` set in `FFmpegSession.configure`).
-- FFmpegKit 6.1.4 is stock FFmpeg 6.1 (no patches): it rejects init segments with both
-  `mdcv` + `SmDm` (YouTube HDR; fixed in 7.1) and loses video after any seek in fMP4 HLS
-  (`mov_read_packet` doesn't reset its fragment index on HLS seek; fixed in 8.1). YouTube
-  resume is disabled for that reason. FFmpegKit 9.x has the fixes but drops libsmbclient.
+  (`HLSVariantPicker`: no AV1, HDR only if `yt.preferHDR`; `protocol_whitelist` set in
+  `FFmpegSession.configure`).
+- FFmpeg comes from `Vendor/FFmpegKit`: FFmpegKit 6.1.4's binaries, device slices only,
+  hosted as release `ffmpegkit-6.1.4-bp1`, with Libavformat's `mov.o` + `hls.o` rebuilt from
+  n6.1 + `Vendor/FFmpegKit-patches` (workflow `ffmpegkit-backports.yml`). Stock 6.1 rejects
+  YouTube HDR init segments (`mdcv` + `SmDm`) and loses VP9 video after any seek in fMP4 HLS
+  (needs both the duplicate-`ftyp` and fragment-reset patches). No simulator slices: build
+  for devices only. FFmpegKit 9.x has the fixes too but drops libsmbclient. To add a patch:
+  drop it in `Vendor/FFmpegKit-patches`, bump `RELEASE_TAG`, run the workflow, commit the
+  generated `Package.swift` from its artifact.
 - `MediaItem` is `Codable` (recents); new fields need defaults so the memberwise init stays
   compatible with the four source clients.
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and
