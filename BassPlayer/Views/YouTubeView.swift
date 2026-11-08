@@ -20,6 +20,12 @@ struct YouTubeView: View {
                 content
             }
             .navigationTitle("YouTube")
+            .task {
+                if let q = ProcessInfo.processInfo.environment["BASSPLAYER_E2E_YT_QUERY"], !q.isEmpty, youtube.items.isEmpty {
+                    query = q
+                    submit(q)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {

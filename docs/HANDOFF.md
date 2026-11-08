@@ -108,6 +108,10 @@ room dim / flipV / HDR / brightness / contrast / saturation / HDR boost.
 - `MEPlayer/MetalPlayView.swift` — forces the Metal path for P5 frames, PQ colour space,
   `currentFrame` (public), `contentsCrop` (one-eye display for packed 3D).
 - `MEPlayer/NetworkDirectory.swift` — `avio_open_dir` wrapper for SMB listing.
+- `MEPlayer/Filter.swift` — remembers a failed `avfilter_graph_config` and passes frames through
+  (upstream re-fed the half-built graph on the next frame → SIGSEGV in `config_props`; this was
+  the first on-device crash, reproduced in the simulator by the E2E Plex test); rebuilds the
+  graph cleanly on retry.
 - `Package.swift` — tests removed; FFmpegKit comes from the local `../FFmpegKit` package.
 
 ### FFmpegKit (Vendor/FFmpegKit)
@@ -137,6 +141,10 @@ Ordered by likelihood of needing a fix.
 1. **Dolby Vision P5 colours wrong** — sign of offsets, limited-vs-full range, matrix
    orientation in `doviToPQ`. Compare with the Apple TV app on the same film. Reference:
    libplacebo `src/shaders/colorspace.c` (`pl_shader_dovi_reshape`, DOLBYVISION branch).
+2. ~~Player crashes on play~~ — FIXED 2026-11-08: `autoDeInterlace` put the software `idet`
+   filter into the VideoToolbox pipeline; the graph failed to configure and KSPlayer then
+   pushed frames into it. Now off in `FFmpegConfig.makeOptions`, and `Filter.swift` tolerates
+   configuration failures. Repro: E2E test `testPlexLibraryAndPlay` (crash log in the artifact).
 2. **Bass tap never installs.** `FFmpegSession.poll()` needs
    `engine.mainMixerNode.outputFormat(forBus:0).sampleRate > 0`. If the chip stays "Bass tap
    off", log the format and `layer.state`; check `KSOptions.audioPlayerType` took effect
