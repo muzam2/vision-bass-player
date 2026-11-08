@@ -41,6 +41,7 @@ struct ContentView: View {
 
 struct LibraryView: View {
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var youtube: YouTubeClient
     @Binding var selectedItem: MediaItem?
 
     var body: some View {
@@ -66,14 +67,19 @@ struct LibraryView: View {
                         LibraryRow(item: item).tag(item)
                     }
                     .refreshable { await library.refresh() }
-                    #if !os(tvOS)
-                    .searchable(text: $library.searchText, prompt: "Search titles")
-                    #endif
+                    .searchable(text: $library.searchText,
+                                prompt: library.selectedSource == .youtube ? "Search YouTube, or paste a link" : "Search titles")
                 }
             }
         }
         .task(id: library.selectedSource) {
             if library.currentIsSignedIn && library.items.isEmpty { await library.refresh() }
+        }
+        .onChange(of: library.searchText) { _, text in
+            if library.selectedSource == .youtube { youtube.scheduleSearch(text) }
+        }
+        .onSubmit(of: .search) {
+            if library.selectedSource == .youtube { Task { await youtube.search(library.searchText) } }
         }
         .overlay(alignment: .bottom) {
             if let err = library.currentError {
@@ -117,6 +123,7 @@ struct SettingsView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var jellyfin: JellyfinClient
     @EnvironmentObject private var plex: PlexClient
+    @EnvironmentObject private var youtube: YouTubeClient
     @EnvironmentObject private var bassLink: BassLink
     @AppStorage("bass.leadMs") private var leadMs: Int = 0
     @State private var jfPassword = ""
@@ -176,6 +183,12 @@ struct SettingsView: View {
                     Button("Sign in with plex.tv") { plex.beginPinSignIn() }
                 }
                 if let err = plex.errorMessage { Text(err).foregroundStyle(.red).font(.footnote) }
+            }
+
+            Section("YouTube") {
+                Toggle("SponsorBlock (skip sponsors, intros, outros)", isOn: $youtube.sponsorBlockEnabled)
+                Text("Streams come straight from YouTube's player API, so there are no ads. Search or paste a link in the library's search box.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
 
             Section("Subwoofer receiver") {
