@@ -68,12 +68,34 @@ the same film in the Apple TV app and adjust `doviToPQ` in the shader. Reference
 implementation: libplacebo `src/shaders/colorspace.c` (`pl_shader_dovi_reshape`,
 `pl_shader_decode_color` DOLBYVISION branch).
 
+### 3D (added later)
+`StereoFormat` (detection + eye rects + display aspect), `BassPlayerOptions.customizeDar` and
+`MetalPlayView.contentsCrop` (vendored) give one-eye display on flat screens without re-decoding.
+The cinema screen uses `StereoScreen.usda`, a hand-written MaterialX graph with
+`ND_realitykit_cameraindexswitch_color3`; if RealityKit refuses to load it (check the log for
+"stereo material unavailable"), rebuild the same graph in Reality Composer Pro on any Mac and
+drop the exported `.usda` in — the node ids are the ones RCP exports. MV-HEVC goes through
+AVPlayer + `VideoPlayerComponent` (set `ImmersiveScreenBridge.avPlayer`).
+
+### YouTube (added later)
+`InnerTubeClient` mirrors yt-dlp's client table; `Client.playbackOrder` is the thing to update
+when playback breaks (yt-dlp `youtube/_base.py`, INNERTUBE_CLIENTS). The iOS client returns an
+HLS manifest (FFmpeg plays it; AVPlayer can too but then the bass tap doesn't work, so the
+AVPlayer backend prefers the progressive MP4). `options.userAgent` is set to the issuing
+client's UA because googlevideo checks it. SponsorBlock skipping lives in
+`FFmpegSession.poll()`; the AVPlayer backend doesn't skip yet. Search parsing walks the whole
+JSON for `videoRenderer` so layout changes don't break it.
+
 ## 3. Known risks — check these first on hardware
 
 Ordered by likelihood of needing a fix.
 
 0. **Dolby Vision P5 colours wrong** — see the section above; everything else about DV
    (detection, pipeline selection, texture feed) is plumbing that compiles and is simple.
+0b. **YouTube playback stops working** — client identities out of date (see above). Also
+    possible: HLS from the iOS client needs the `X-Goog-Visitor-Id`/PO token in future; yt-dlp
+    will show the current recipe.
+0c. **Stereo material fails to load** — see the 3D section; fallback is left-eye-only.
 1. **Tap never installs on visionOS/tvOS.** `FFmpegSession.poll()` requires
    `engine.mainMixerNode.outputFormat(forBus:0).sampleRate > 0`. If the chip stays "Bass tap
    off" while audio plays, log the format and the `layer.state` sequence; possibly KSPlayer's

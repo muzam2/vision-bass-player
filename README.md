@@ -23,7 +23,7 @@ receiver, so one sub serves the headset and the TV.
 | `Vendor/KSPlayer` | KSPlayer GPLv3 source, vendored and patched (Dolby Vision P5, frame renderer). `UPSTREAM_COMMIT` records the base. |
 | `BassPlayer/App` | SwiftUI app entry, audio session |
 | `BassPlayer/Media` | `MediaItem` model shared by both servers, `LibraryStore` (source/backend settings) |
-| `BassPlayer/Jellyfin`, `BassPlayer/Plex` | Server clients |
+| `BassPlayer/Jellyfin`, `BassPlayer/Plex`, `BassPlayer/YouTube` | Sources: media servers and YouTube (InnerTube + SponsorBlock) |
 | `BassPlayer/Player` | `FFmpegPlayerView` (KSPlayer) and the AVPlayer fallback |
 | `BassPlayer/Audio` | `BassExtractor` (LPF → 1 kHz Int16 packets), `BassEngineTap` (AVAudioEngine tap + lead delay), `BassTapProcessor` (MTAudioProcessingTap glue for AVPlayer) |
 | `BassPlayer/Immersive` | RealityKit cinema screen (visionOS only) |
@@ -60,6 +60,17 @@ for the step-by-step setup.
   buffers via a `DrawableQueue` (CoreImage does YUV→RGB and HDR). Flat or curved mesh, drag /
   pinch / rotate gestures plus sliders, 200 m black dome so there are no edge artifacts in
   either lens, full immersion by default.
+- **3D:** side-by-side and top-and-bottom (half and full), detected from Jellyfin's
+  `Video3DFormat`, file-name tokens (HSBS, SBS, HOU, 3D…) and frame shape, with a per-film
+  override in the player. On the Vision Pro cinema screen each eye gets its own texture via a
+  hand-written shader-graph material (`StereoScreen.usda`, Camera Index Switch). On the flat
+  window and on Apple TV one eye is shown, un-squeezed. MV-HEVC / Apple spatial video plays
+  through AVPlayer and RealityKit's `VideoPlayerComponent`, which renders stereo natively.
+  Blu-ray MVC (frame-packed) plays as 2D (FFmpeg decodes the base view only).
+- **YouTube:** search, trending and pasted links via YouTube's InnerTube player API (the
+  NewPipe / yt-dlp approach), played through our own pipeline so the sub works and there are
+  no ads. SponsorBlock segments are skipped (toggle in Settings). Client identities are tried
+  in order (iOS → Android VR → TV embedded → web); update them from yt-dlp when YouTube moves.
 - **Two devices, one sub:** receiver accepts both and follows whichever is sending.
 
 ## Wire protocol
