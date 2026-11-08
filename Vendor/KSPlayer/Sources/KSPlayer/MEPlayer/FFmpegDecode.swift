@@ -39,24 +39,6 @@ class FFmpegDecode: DecodeProtocol {
             return
         }
 
-        // 需要avcodec_send_packet之后，properties的值才会变成FF_CODEC_PROPERTY_CLOSED_CAPTIONS
-        if packet.assetTrack.mediaType == .video {
-            if Int32(codecContext.pointee.properties) & FF_CODEC_PROPERTY_CLOSED_CAPTIONS != 0, packet.assetTrack.closedCaptionsTrack == nil {
-                var codecpar = AVCodecParameters()
-                codecpar.codec_type = AVMEDIA_TYPE_SUBTITLE
-                codecpar.codec_id = AV_CODEC_ID_EIA_608
-                if let subtitleAssetTrack = FFmpegAssetTrack(codecpar: codecpar) {
-                    subtitleAssetTrack.name = "Closed Captions"
-                    subtitleAssetTrack.startTime = packet.assetTrack.startTime
-                    subtitleAssetTrack.timebase = packet.assetTrack.timebase
-                    let subtitle = SyncPlayerItemTrack<SubtitleFrame>(mediaType: .subtitle, frameCapacity: 255, options: options)
-                    subtitleAssetTrack.subtitle = subtitle
-                    packet.assetTrack.closedCaptionsTrack = subtitleAssetTrack
-                    subtitle.decode()
-                }
-            }
-        }
-
         while true {
             let result = avcodec_receive_frame(codecContext, coreFrame)
             if result == 0, let inputFrame = coreFrame {
@@ -70,6 +52,23 @@ class FFmpegDecode: DecodeProtocol {
                     for i in 0 ..< inputFrame.pointee.nb_side_data {
                         if let sideData = inputFrame.pointee.side_data[Int(i)]?.pointee {
                             if sideData.type == AV_FRAME_DATA_A53_CC {
+                                // FFmpeg 9 dropped AVCodecContext.properties /
+                                // FF_CODEC_PROPERTY_CLOSED_CAPTIONS; the first frame carrying
+                                // A53 side data is what tells us the stream has captions.
+                                if packet.assetTrack.mediaType == .video, packet.assetTrack.closedCaptionsTrack == nil {
+                                    var codecpar = AVCodecParameters()
+                                    codecpar.codec_type = AVMEDIA_TYPE_SUBTITLE
+                                    codecpar.codec_id = AV_CODEC_ID_EIA_608
+                                    if let subtitleAssetTrack = FFmpegAssetTrack(codecpar: codecpar) {
+                                        subtitleAssetTrack.name = "Closed Captions"
+                                        subtitleAssetTrack.startTime = packet.assetTrack.startTime
+                                        subtitleAssetTrack.timebase = packet.assetTrack.timebase
+                                        let subtitle = SyncPlayerItemTrack<SubtitleFrame>(mediaType: .subtitle, frameCapacity: 255, options: options)
+                                        subtitleAssetTrack.subtitle = subtitle
+                                        packet.assetTrack.closedCaptionsTrack = subtitleAssetTrack
+                                        subtitle.decode()
+                                    }
+                                }
                                 if let closedCaptionsTrack = packet.assetTrack.closedCaptionsTrack,
                                    let subtitle = closedCaptionsTrack.subtitle
                                 {

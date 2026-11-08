@@ -80,8 +80,8 @@ class SubtitleDecode: DecodeProtocol {
     func shutdown() {
         scale.shutdown()
         avsubtitle_free(&subtitle)
-        if let codecContext {
-            avcodec_close(codecContext)
+        if codecContext != nil {
+            // FFmpeg 9: avcodec_close is gone; avcodec_free_context closes too.
             avcodec_free_context(&self.codecContext)
         }
     }
