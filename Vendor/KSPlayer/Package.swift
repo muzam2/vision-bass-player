@@ -14,12 +14,15 @@ let package = Package(
         // Local FFmpegKit 9.0.2 (stock, visionOS + tvOS slices; binaries in this repo's release
         // ffmpegkit-9.0.2-vt1); see Vendor/FFmpegKit and docs/HANDOFF.md §3.
         .package(path: "../FFmpegKit"),
+        // Bass Player: H.264 MVC (3D Blu-ray) software decoder, see MEPlayer/Edge264Decode.swift.
+        .package(path: "../edge264-mvc"),
     ],
     targets: [
         .target(
             name: "KSPlayer",
             dependencies: [
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
+                .product(name: "edge264mvc", package: "edge264mvc"),
                 "DisplayCriteria",
             ],
             resources: [.process("Metal/Shaders.metal")],

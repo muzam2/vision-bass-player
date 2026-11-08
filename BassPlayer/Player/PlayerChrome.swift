@@ -175,6 +175,7 @@ struct BassStatusChip: View {
             Text("·")
             Text(session.backendName)
             if let dv = session.doviStatus { Text("·"); Text(dv) }
+            if session.mvcStereo { Text("·"); Text("3D MVC") }
             if session.sponsorSkips > 0 { Text("·"); Text("Skipped \(session.sponsorSkips)") }
         }
         .font(.caption)

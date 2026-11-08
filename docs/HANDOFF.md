@@ -335,16 +335,25 @@ Ordered by likelihood of needing a fix.
 
 ## 5. Not done, and why
 
-- **Blu-ray 3D (frame-packed MVC).** FFmpeg decodes only the base view; VideoToolbox has no
-  MVC. It *is* doable in software: **edge264-mvc** (BSD-3, C, NEON, both views per access
-  unit, https://github.com/jens-duttke/edge264-mvc) is what players like 4XVR effectively do.
-  Plan: add it as a C target in `Vendor/KSPlayer/Package.swift`; new `Edge264Decode:
-  DecodeProtocol` chosen when the H.264 track is Stereo High (profile 128 / NAL 15/20
-  present); feed Annex B (bsf `h264_mp4toannexb` for MKV/MP4; merge the 0x1012 PID stream for
-  m2ts/ssif); extend `VideoVTBFrame` with `rightPixelBuffer` (420YpCbCr8Planar); new
-  `ScreenFrame` case with two buffers → feeder → existing stereo material. Owner agreed this
-  can wait. Offline alternative today: `mvctools` (https://github.com/brunoga/bdtools, Linux)
-  or BD3D2MK3D/FRIM (Windows + Intel GPU) → half-SBS MKV.
+- **Blu-ray 3D (frame-packed MVC) — DONE 2026-11-08, untested on device.** `Vendor/edge264-mvc`
+  (BSD-3, commit 515a7ba, one C translation unit, its own local SwiftPM package with the
+  Makefile's iOS flags) + `Vendor/KSPlayer/.../MEPlayer/Edge264Decode.swift`, a
+  `DecodeProtocol` picked in `makeDecode(assetTrack:firstPacket:)` when the H.264 track is
+  profile 118/128 or the first packet carries NAL 14/15/20 (`KSOptions.mvcSoftwareDecode`).
+  NALs are fed one by one (avcC length-prefixed or Annex B; SPS/PPS from avcC first and after
+  every flush); each decoded pair is packed into ONE full side-by-side NV12 CVPixelBuffer
+  (base | dependent) so the existing packed-3D path does the rest: the track sets
+  `decodesStereoSideBySide`, `FFmpegSession.poll` sees it and re-applies stereo as `.sbsFull`
+  (window crops to the left eye, cinema gets `viewPackingKind = sideBySide`), the chip says
+  "3D MVC". Falls back to FFmpeg (2D base view) if the decoder fails, like VideoToolbox.
+  Not handled: m2ts/ssif with the dependent view on a separate PID (needs stream merging),
+  10-bit MVC (does not exist on Blu-ray). Perf unknown on M2: 1080p ×2 software decode at 24p
+  should fit (edge264 is faster than FFmpeg's h264 per the project's benchmarks), watch the
+  `video delay` lines in the log. Offline alternative remains BD3D2MK3D/FRIM → half-SBS MKV.
+- **App icon (2026-11-08):** `tools/make_icons.py` (Pillow) generates the visionOS layered
+  icon (`BassPlayer/Assets.xcassets/AppIcon.solidimagestack`) and the tvOS layered icon + top
+  shelf images (`Assets-tvOS.xcassets`); each target excludes the other's catalog in
+  project.yml. Re-run the script to change the artwork; `docs/icon-preview.png` is the flat look.
 - **DRM services (Netflix etc.).** Not possible and not to be attempted: streams are
   encrypted and keys only reach Apple's own pipeline; impersonating the client would mean DRM
   circumvention. Owner asked theoretically and accepted the answer.
