@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import Metal
 import KSPlayer
 
 /// Global KSPlayer configuration. Called once from the App init.
@@ -8,7 +9,12 @@ enum FFmpegConfig {
         KSOptions.firstPlayerType = KSMEPlayer.self          // FFmpeg first: MKV, DTS, TrueHD, FLAC, AV1…
         KSOptions.secondPlayerType = KSAVPlayer.self         // fall back to AVPlayer if FFmpeg can't open it
         KSOptions.audioPlayerType = AudioEnginePlayer.self   // we tap its AVAudioEngine for the bass
-        KSOptions.hardwareDecode = true                      // VideoToolbox for H.264/HEVC/AV1/ProRes
+        KSOptions.hardwareDecode = true                      // VideoToolbox via FFmpeg hwaccel
+        // Keep FFmpeg in charge of the HEVC bitstream (not KSPlayer's own VideoToolbox session):
+        // that way the Dolby Vision RPU is parsed and attached to every frame, which the
+        // profile 5 shader needs. Profile 7's enhancement layer is dropped by FFmpeg, so P7
+        // plays as its HDR10 base layer; profile 8 is HDR10/HLG-compatible by design.
+        KSOptions.asynchronousDecompression = false
         KSOptions.isAutoPlay = true
         KSOptions.isSecondOpen = true
         KSOptions.preferredForwardBufferDuration = 4
@@ -43,10 +49,29 @@ final class FFmpegSession: ObservableObject {
     private var pollTimer: Timer?
     private let bassLink: BassLink
 
-    /// Current decoded frame (for the RealityKit screen). Nil when nothing is playing.
-    var currentPixelBuffer: CVPixelBuffer? {
-        guard let me = coordinator?.playerLayer?.player as? KSMEPlayer else { return nil }
-        return me.videoOutput?.pixelBuffer?.cvPixelBuffer
+    private lazy var doviRenderer = DoviFrameRenderer()
+    private var lastFrameId: ObjectIdentifier?
+    private var frameCounter = 0
+
+    /// Current decoded frame for the RealityKit screen. Dolby Vision profile 5 frames are
+    /// pre-mapped into a PQ texture because CoreImage can't interpret IPT. Nil when idle.
+    var currentScreenFrame: ScreenFrame? {
+        guard let me = coordinator?.playerLayer?.player as? KSMEPlayer, let output = me.videoOutput else { return nil }
+        if let view = output as? MetalPlayView, let frame = view.currentFrame, DoviFrameRenderer.needsMapping(frame) {
+            let id = ObjectIdentifier(frame)
+            if id != lastFrameId { lastFrameId = id; frameCounter += 1 }
+            guard let tex = doviRenderer.render(frame: frame) else { return nil }
+            return ScreenFrame(pixelBuffer: nil, pqTexture: tex, id: frameCounter)
+        }
+        guard let pb = output.pixelBuffer?.cvPixelBuffer else { return nil }
+        return ScreenFrame(pixelBuffer: pb, pqTexture: nil, id: Int(bitPattern: Unmanaged.passUnretained(pb).toOpaque()))
+    }
+
+    /// Human-readable Dolby Vision status for the UI.
+    var doviStatus: String? {
+        guard let me = coordinator?.playerLayer?.player as? KSMEPlayer, let view = me.videoOutput as? MetalPlayView,
+              let frame = view.currentFrame, let d = frame.dovi else { return nil }
+        return d.needsMapping ? "DV P\(d.profile) mapped" : "DV P\(d.profile) base layer"
     }
 
     init(bassLink: BassLink) {
@@ -118,7 +143,7 @@ struct FFmpegPlayerView: View {
             .onAppear {
                 if bassLink.state == .off { bassLink.start() }
                 session.start(coordinator: coordinator, leadMs: leadMs)
-                ImmersiveScreenBridge.shared.frameSource = { [weak session] in session?.currentPixelBuffer }
+                ImmersiveScreenBridge.shared.frameSource = { [weak session] in session?.currentScreenFrame }
             }
             .onDisappear {
                 session.stop()
@@ -133,6 +158,7 @@ struct FFmpegPlayerView: View {
             Text(session.tapInstalled ? "Bass tap · \(session.audioFormat)" : "Bass tap off")
             Text("·")
             Text(session.backendName)
+            if let dv = session.doviStatus { Text("·"); Text(dv) }
         }
         .font(.caption)
         .padding(.horizontal, 10)
@@ -143,10 +169,19 @@ struct FFmpegPlayerView: View {
     }
 }
 
+/// A frame for the immersive screen: either a raw decoded pixel buffer (CoreImage handles the
+/// colour), or an already colour-mapped PQ BT.2020 texture (Dolby Vision profile 5).
+struct ScreenFrame {
+    let pixelBuffer: CVPixelBuffer?
+    let pqTexture: MTLTexture?
+    /// Changes whenever the content changes; lets the consumer skip duplicate uploads.
+    let id: Int
+}
+
 /// Lets the immersive screen (visionOS) pull frames from whichever player is active.
 /// Kept platform-neutral so the shared player code compiles on tvOS too.
 final class ImmersiveScreenBridge {
     static let shared = ImmersiveScreenBridge()
     /// Returns the latest decoded frame, or nil.
-    var frameSource: (() -> CVPixelBuffer?)?
+    var frameSource: (() -> ScreenFrame?)?
 }

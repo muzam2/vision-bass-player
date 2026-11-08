@@ -21,8 +21,13 @@ GitHub Actions and sideloaded with a free Apple ID.
   `project.yml` or the KSPlayer dependency.
 
 ## Hard-won facts (don't rediscover)
-- KSPlayer: use the **`GPLv3` branch** (full source, visionOS). `main` ships a binary
-  xcframework with no xros slice.
+- KSPlayer is **vendored** at `Vendor/KSPlayer` (from the `GPLv3` branch; `main` ships a binary
+  xcframework with no xros slice) and patched: `MEPlayer/DoviMetadata.swift`,
+  `Metal/DoviFrameRenderer.swift`, the `displayDovi*` shaders, and small hooks in
+  `FFmpegDecode`, `MetalPlayView`, `MetalRender`, `DisplayModel`. To pull upstream changes,
+  diff against `UPSTREAM_COMMIT` and re-apply those files.
+- Dolby Vision P5 needs `KSOptions.asynchronousDecompression = false` (FFmpeg hwaccel path),
+  otherwise the RPU side data never reaches the frame.
 - `KSVideoPlayerView` overwrites `coordinator.onStateChanged`; `FFmpegSession` therefore polls
   `coordinator.playerLayer` every 0.5 s to find the `KSMEPlayer`, its `AudioEnginePlayer.engine`
   and `videoOutput.pixelBuffer`.
