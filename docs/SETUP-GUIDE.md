@@ -205,8 +205,10 @@ rip isn't detected, or detected wrongly, use the **3D** menu in the player to pi
   me; a left/right swap toggle is a one-line addition.
 - **Apple spatial videos / MV-HEVC** (iPhone 15 Pro+, Vision Pro recordings, Apple TV+ 3D)
   play 3D on the cinema screen too, via Apple's own pipeline.
-- **Blu-ray 3D ISOs / MVC MKVs** play as 2D. Convert them to half-SBS once (MakeMKV + a
-  SBS encode) if you want them in 3D.
+- **Blu-ray 3D ISOs / MVC MKVs** play as 2D for now. To get them in 3D, convert once to
+  half-SBS on your server: on Linux, `mvctools` from https://github.com/brunoga/bdtools
+  (`mvctools convert disc.iso out.mkv` keeps audio and subtitles); on Windows with an Intel
+  iGPU, BD3D2MK3D (uses FRIM). Native MVC playback in the app is on the roadmap.
 
 ## 10c. YouTube
 
