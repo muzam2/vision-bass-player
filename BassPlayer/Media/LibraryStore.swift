@@ -184,9 +184,9 @@ final class LibraryStore: ObservableObject {
     /// Start playing an item. tvOS presents it full screen; visionOS opens the player window
     /// (RootView watches `playCounter`).
     func play(_ item: MediaItem) {
-        // Make autoplay-next work for a Plex episode started from Continue Watching too.
-        if item.source == .plex, let key = item.parentShowKey, plex.episodesByShow[key] == nil {
-            Task { _ = try? await plex.episodes(showKey: key) }
+        // Make autoplay-next work for an episode started from Continue Watching too.
+        if let key = item.parentShowKey, item.source == .plex || item.source == .jellyfin {
+            Task { _ = try? await episodes(showKey: key, source: item.source) }
         }
         nowPlaying = item
         playCounter += 1
@@ -255,8 +255,23 @@ final class LibraryStore: ObservableObject {
     }
 
     /// The item after `item` in its source's list (for autoplay).
+    /// Episodes of a series, from whichever server it lives on.
+    func episodes(of show: MediaItem, refresh: Bool = false) async throws -> [MediaItem] {
+        guard let key = show.showKey ?? show.parentShowKey else { return [] }
+        return try await episodes(showKey: key, source: show.source, refresh: refresh)
+    }
+
+    func episodes(showKey key: String, source: MediaSource, refresh: Bool = false) async throws -> [MediaItem] {
+        switch source {
+        case .plex: return try await plex.episodes(showKey: key, refresh: refresh)
+        case .jellyfin: return try await jellyfin.episodes(showKey: key, refresh: refresh)
+        default: return []
+        }
+    }
+
     func next(after item: MediaItem) -> MediaItem? {
-        if item.source == .plex, item.isEpisode { return plex.nextEpisode(after: item) }
+        if item.isEpisode, item.source == .plex { return plex.nextEpisode(after: item) }
+        if item.isEpisode, item.source == .jellyfin { return jellyfin.nextEpisode(after: item) }
         let list = items(for: item.source).filter { (showEpisodes || !$0.isEpisode) && !$0.isShow }
         guard let i = list.firstIndex(of: item), i + 1 < list.count else { return nil }
         return list[i + 1]

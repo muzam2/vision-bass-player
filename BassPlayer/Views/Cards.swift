@@ -47,18 +47,21 @@ struct Artwork: View {
     var cornerRadius: CGFloat = 14
 
     var body: some View {
-        ZStack {
-            placeholder
-            if let url {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().aspectRatio(contentMode: .fill)
+        // The frame is fixed by the aspect ratio; the image is an overlay so a `.fill` picture
+        // can never push the cell wider than its column (that made the Home rows overlap).
+        Color.clear
+            .aspectRatio(aspect, contentMode: .fit)
+            .overlay { placeholder }
+            .overlay {
+                if let url {
+                    AsyncImage(url: url) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().aspectRatio(contentMode: .fill)
+                        }
                     }
                 }
             }
-        }
-        .aspectRatio(aspect, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
     private var placeholder: some View {

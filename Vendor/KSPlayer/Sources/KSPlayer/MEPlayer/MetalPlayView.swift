@@ -33,6 +33,10 @@ public final class MetalPlayView: UIView, VideoOutput {
     private var isDovi: Bool = false
     /// Last frame handed to the renderer (lets hosts read per-frame Dolby Vision metadata).
     public private(set) var currentFrame: VideoVTBFrame?
+    /// Bass Player patch: called on the main thread with every frame handed to the renderer
+    /// (hardware CVPixelBuffer or software planes), so a second consumer — the immersive
+    /// cinema screen — can display the same frames.
+    public var frameSink: ((VideoVTBFrame, PixelBufferProtocol, CMTime) -> Void)?
     /// Visible portion of the frame (unit rect, origin top-left). Used to show one eye of a
     /// side-by-side / top-bottom 3D frame on a flat display. Pair with `KSOptions.customizeDar`.
     public var contentsCrop = CGRect(x: 0, y: 0, width: 1, height: 1) {
@@ -196,6 +200,7 @@ extension MetalPlayView {
             // Dolby Vision profile 5 must go through our Metal shader; the display layer can't map IPT.
             let dovi = frame.dovi?.needsMapping == true ? frame.dovi : nil
             currentFrame = frame
+            frameSink?(frame, pixelBuffer, cmtime)
             if dovi == nil, let pixelBuffer = pixelBuffer.cvPixelBuffer, options.isUseDisplayLayer() {
                 if displayView.isHidden {
                     displayView.isHidden = false

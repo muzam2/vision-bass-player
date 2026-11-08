@@ -65,6 +65,20 @@ struct InnerTubeClient {
         let thumbnailURL: URL?
     }
 
+    struct Playlist: Identifiable, Hashable {
+        let id: String
+        let title: String
+        let countText: String?
+        let thumbnailURL: URL?
+    }
+
+    /// One page of a feed / playlist.
+    struct BrowsePage {
+        var videos: [Video] = []
+        var playlists: [Playlist] = []
+        var continuation: String?
+    }
+
     struct Streams {
         let title: String
         let author: String?
@@ -98,7 +112,7 @@ struct InnerTubeClient {
 
     // MARK: - Requests
 
-    private func request(_ path: String, client: Client, body: [String: Any], visitorData: String? = nil) throws -> URLRequest {
+    private func request(_ path: String, client: Client, body: [String: Any], visitorData: String? = nil, auth: [String: String]? = nil) throws -> URLRequest {
         var comps = URLComponents(url: Self.endpoint.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         comps.queryItems = [.init(name: "prettyPrint", value: "false")]
         var req = URLRequest(url: comps.url!)
@@ -119,6 +133,10 @@ struct InnerTubeClient {
         var context: [String: Any] = ["client": clientCtx]
         if client.thirdPartyEmbed {
             context["thirdParty"] = ["embedUrl": "https://www.youtube.com/"]
+        }
+        if let auth {
+            for (k, v) in auth { req.setValue(v, forHTTPHeaderField: k) }
+            context["user"] = ["lockedSafetyMode": false]
         }
         var payload = body
         payload["context"] = context
@@ -145,6 +163,28 @@ struct InnerTubeClient {
         let req = try request("browse", client: .browse, body: ["browseId": "FEtrending"])
         let json = try await send(req)
         return Self.videos(in: json)
+    }
+
+    /// A feed (`FEwhat_to_watch`, `FEsubscriptions`, `FEhistory`, `FElibrary`) or a playlist
+    /// (`VL<id>`), optionally as the signed-in user. Pass `continuation` for the next page.
+    func browse(_ browseId: String, continuation: String? = nil, auth: [String: String]?) async throws -> BrowsePage {
+        var body: [String: Any] = [:]
+        if let continuation { body["continuation"] = continuation } else { body["browseId"] = browseId }
+        let req = try request("browse", client: .browse, body: body, auth: auth)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw Error.badResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            DiagLog.log("browse \(browseId) HTTP \(http.statusCode): \(String(data: data.prefix(300), encoding: .utf8) ?? "")", "youtube")
+            if http.statusCode == 401 || http.statusCode == 403 { throw Error.unplayable("YouTube rejected the account session; sign in again.") }
+            throw Error.badResponse
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Error.badResponse }
+        var page = BrowsePage()
+        page.videos = Self.videos(in: json)
+        page.playlists = Self.playlists(in: json)
+        page.continuation = Self.continuationToken(in: json)
+        DiagLog.log("browse \(browseId)\(continuation == nil ? "" : " (more)") → \(page.videos.count) videos, \(page.playlists.count) playlists\(page.continuation == nil ? "" : ", more available")", "youtube")
+        return page
     }
 
     /// Resolve a pasted URL or bare id to a video id.
@@ -246,25 +286,107 @@ struct InnerTubeClient {
 
     // MARK: - JSON walking
 
-    /// Finds every `videoRenderer` anywhere in a response. Layouts change often; this doesn't care.
+    private static let videoRendererKeys = ["videoRenderer", "compactVideoRenderer", "gridVideoRenderer", "playlistVideoRenderer", "playlistPanelVideoRenderer"]
+
+    /// Finds every video renderer anywhere in a response, in document order. Layouts change
+    /// often (shelves, grids, the newer `lockupViewModel`); this doesn't care. Shorts are skipped.
     private static func videos(in json: Any) -> [Video] {
         var out: [Video] = []
         var seen = Set<String>()
+        func add(_ v: Video) {
+            guard !seen.contains(v.id) else { return }
+            seen.insert(v.id)
+            out.append(v)
+        }
         func walk(_ node: Any) {
             if let dict = node as? [String: Any] {
-                if let vr = dict["videoRenderer"] as? [String: Any] ?? dict["compactVideoRenderer"] as? [String: Any],
-                   let id = vr["videoId"] as? String, !seen.contains(id) {
-                    seen.insert(id)
-                    out.append(Video(
-                        id: id,
-                        title: text(vr["title"]) ?? "Untitled",
-                        channel: text(vr["ownerText"]) ?? text(vr["longBylineText"]) ?? text(vr["shortBylineText"]),
-                        durationText: text(vr["lengthText"]),
-                        durationSeconds: seconds(text(vr["lengthText"])),
-                        viewsText: text(vr["shortViewCountText"]) ?? text(vr["viewCountText"]),
-                        thumbnailURL: ((vr["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]])?.last?["url"]
-                            .flatMap { $0 as? String }.flatMap(URL.init(string:))
-                    ))
+                for key in videoRendererKeys {
+                    if let vr = dict[key] as? [String: Any], let id = vr["videoId"] as? String {
+                        add(Video(
+                            id: id,
+                            title: text(vr["title"]) ?? "Untitled",
+                            channel: text(vr["ownerText"]) ?? text(vr["longBylineText"]) ?? text(vr["shortBylineText"]),
+                            durationText: text(vr["lengthText"]),
+                            durationSeconds: seconds(text(vr["lengthText"])),
+                            viewsText: text(vr["shortViewCountText"]) ?? text(vr["viewCountText"]),
+                            thumbnailURL: thumbnail(vr["thumbnail"])
+                        ))
+                    }
+                }
+                if let lv = dict["lockupViewModel"] as? [String: Any], lv["contentType"] as? String == "LOCKUP_CONTENT_TYPE_VIDEO",
+                   let id = lv["contentId"] as? String, let v = lockupVideo(lv, id: id) {
+                    add(v)
+                }
+                // Don't descend into Shorts shelves.
+                if dict["reelShelfRenderer"] != nil || dict["shortsLockupViewModel"] != nil { return }
+                for v in dict.values { walk(v) }
+            } else if let arr = node as? [Any] {
+                for v in arr { walk(v) }
+            }
+        }
+        walk(json)
+        return out
+    }
+
+    /// The 2024+ "lockup" layout: title/metadata/thumbnail live in nested view models.
+    private static func lockupVideo(_ lv: [String: Any], id: String) -> Video? {
+        let meta = (lv["metadata"] as? [String: Any])?["lockupMetadataViewModel"] as? [String: Any]
+        let title = ((meta?["title"] as? [String: Any])?["content"] as? String) ?? "Untitled"
+        var parts: [String] = []
+        if let rows = ((meta?["metadata"] as? [String: Any])?["contentMetadataViewModel"] as? [String: Any])?["metadataRows"] as? [[String: Any]] {
+            for row in rows {
+                for p in row["metadataParts"] as? [[String: Any]] ?? [] {
+                    if let t = (p["text"] as? [String: Any])?["content"] as? String { parts.append(t) }
+                }
+            }
+        }
+        let image = (lv["contentImage"] as? [String: Any])?["thumbnailViewModel"] as? [String: Any]
+        let sources = (image?["image"] as? [String: Any])?["sources"] as? [[String: Any]]
+        let thumb = (sources?.last?["url"] as? String).flatMap(URL.init(string:))
+        var duration: String?
+        for o in image?["overlays"] as? [[String: Any]] ?? [] {
+            if let badges = (o["thumbnailOverlayBadgeViewModel"] as? [String: Any])?["thumbnailBadges"] as? [[String: Any]] {
+                for b in badges {
+                    if let t = (b["thumbnailBadgeViewModel"] as? [String: Any])?["text"] as? String, t.contains(":") { duration = t }
+                }
+            }
+        }
+        return Video(id: id, title: title, channel: parts.first, durationText: duration, durationSeconds: seconds(duration),
+                     viewsText: parts.dropFirst().first, thumbnailURL: thumb)
+    }
+
+    /// Playlists in a library / channel response (old renderers and the lockup layout).
+    private static func playlists(in json: Any) -> [Playlist] {
+        var out: [Playlist] = []
+        var seen = Set<String>()
+        func add(_ p: Playlist) {
+            guard !seen.contains(p.id), p.id != "WL", p.id != "LL" else { return }   // Watch later / Liked have their own tabs
+            seen.insert(p.id)
+            out.append(p)
+        }
+        func walk(_ node: Any) {
+            if let dict = node as? [String: Any] {
+                for key in ["gridPlaylistRenderer", "playlistRenderer", "compactPlaylistRenderer"] {
+                    if let pr = dict[key] as? [String: Any], let id = pr["playlistId"] as? String {
+                        let thumbs = (pr["thumbnail"] as? [String: Any]) ?? ((pr["thumbnails"] as? [[String: Any]])?.first)
+                        add(Playlist(id: id, title: text(pr["title"]) ?? "Playlist",
+                                     countText: text(pr["videoCountShortText"]) ?? text(pr["videoCountText"]) ?? (pr["videoCount"] as? String).map { "\($0) videos" },
+                                     thumbnailURL: thumbnail(thumbs)))
+                    }
+                }
+                if let lv = dict["lockupViewModel"] as? [String: Any], lv["contentType"] as? String == "LOCKUP_CONTENT_TYPE_PLAYLIST",
+                   let id = lv["contentId"] as? String {
+                    let meta = (lv["metadata"] as? [String: Any])?["lockupMetadataViewModel"] as? [String: Any]
+                    let title = ((meta?["title"] as? [String: Any])?["content"] as? String) ?? "Playlist"
+                    let coll = (lv["contentImage"] as? [String: Any])?["collectionThumbnailViewModel"] as? [String: Any]
+                    let primary = (coll?["primaryThumbnail"] as? [String: Any])?["thumbnailViewModel"] as? [String: Any]
+                    let sources = (primary?["image"] as? [String: Any])?["sources"] as? [[String: Any]]
+                    var count: String?
+                    for o in primary?["overlays"] as? [[String: Any]] ?? [] {
+                        if let badges = (o["thumbnailOverlayBadgeViewModel"] as? [String: Any])?["thumbnailBadges"] as? [[String: Any]],
+                           let t = (badges.first?["thumbnailBadgeViewModel"] as? [String: Any])?["text"] as? String { count = t }
+                    }
+                    add(Playlist(id: id, title: title, countText: count, thumbnailURL: (sources?.last?["url"] as? String).flatMap(URL.init(string:))))
                 }
                 for v in dict.values { walk(v) }
             } else if let arr = node as? [Any] {
@@ -273,6 +395,30 @@ struct InnerTubeClient {
         }
         walk(json)
         return out
+    }
+
+    private static func continuationToken(in json: Any) -> String? {
+        var token: String?
+        func walk(_ node: Any) {
+            guard token == nil else { return }
+            if let dict = node as? [String: Any] {
+                if let c = dict["continuationItemRenderer"] as? [String: Any],
+                   let t = ((c["continuationEndpoint"] as? [String: Any])?["continuationCommand"] as? [String: Any])?["token"] as? String {
+                    token = t
+                    return
+                }
+                for v in dict.values { walk(v) }
+            } else if let arr = node as? [Any] {
+                for v in arr { walk(v) }
+            }
+        }
+        walk(json)
+        return token
+    }
+
+    private static func thumbnail(_ node: Any?) -> URL? {
+        guard let d = node as? [String: Any], let list = d["thumbnails"] as? [[String: Any]] else { return nil }
+        return (list.last?["url"] as? String).flatMap { URL(string: $0.hasPrefix("//") ? "https:" + $0 : $0) }
     }
 
     /// InnerTube text objects are either {"simpleText": "..."} or {"runs": [{"text": "..."}]}.

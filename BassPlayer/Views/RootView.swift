@@ -8,6 +8,8 @@ struct RootView: View {
     @EnvironmentObject private var bassLink: BassLink
     #if os(visionOS)
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @EnvironmentObject private var immersive: ImmersiveScreenModel
     #endif
 
     var body: some View {
@@ -24,6 +26,9 @@ struct RootView: View {
         .ornament(attachmentAnchor: .scene(.bottom)) { BassStatusOrnament() }
         .onChange(of: library.playCounter) { _, _ in
             if let item = library.nowPlaying { openWindow(id: PlayerWindow.id, value: item) }
+        }
+        .onChange(of: immersive.closeRequest) { _, _ in
+            if immersive.isOpen { Task { await dismissImmersiveSpace() } }
         }
         #else
         .fullScreenCover(item: $library.nowPlaying) { item in

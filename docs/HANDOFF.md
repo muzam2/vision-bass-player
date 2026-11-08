@@ -82,11 +82,17 @@ docs/SETUP-GUIDE.md             End-user step-by-step (hardware, flashing, sidel
    Int16 → 47-byte packets (magic 0xB5, u16 seq, u32 ms, 20 samples) → `BassLink.send`.
 5. Firmware: ring buffer (target 60 ms + extraDelay), ×8/×16 linear upsample, I²S. Two
    connections allowed; the connection currently sending owns playback (1.5 s idle → takeover).
-6. `ImmersiveScreenBridge.shared` carries `frameSource` (ScreenFrame = pixel buffer or
-   pre-mapped DV texture), `stereoFormat`, `projection`, `avPlayer`. `ScreenTextureFeeder`
-   renders with CoreImage (picture controls applied) into one or two RealityKit
-   `DrawableQueue`s; the view binds them to an `UnlitMaterial` or the stereo
-   `ShaderGraphMaterial`, on a flat/curved/VR mesh; MV-HEVC uses `VideoPlayerComponent`.
+6. `ImmersiveScreenBridge.shared` carries `pushFrame` (set by the cinema screen while open),
+   `stereoFormat`, `projection`, `avPlayer`. `FFmpegSession` installs a `frameSink` on
+   KSPlayer's `MetalPlayView` and pushes every frame (DoVi P5 colour-mapped first).
+   `ImmersiveFrameFeed` turns frames into `CMSampleBuffer`s tagged with Apple Projected Media
+   Profile extensions (`viewPackingKind` side-by-side / over-under, `projectionKind`) and
+   enqueues them on an `AVSampleBufferVideoRenderer`; a `VideoMaterial(videoRenderer:)` on the
+   flat/curved/VR mesh renders them — stereo per eye and HDR handled by the system (the approach
+   OpenImmersive ships with). Software frames (VP9) are repacked to NV12/P010 by two compute
+   kernels (`FrameConvert.metal`). MV-HEVC uses `VideoPlayerComponent`.
+   Before 2026-11-08 this was CoreImage → `DrawableQueue` → hand-written shader graph, which
+   showed a magenta (failed-material) box on the headset.
 
 ### Persisted settings
 Backend, show episodes, resume, autoplay next, Jellyfin creds, Plex token/server/server-token,
@@ -108,6 +114,8 @@ room dim / flipV / HDR / brightness / contrast / saturation / HDR boost.
 - `MEPlayer/MetalPlayView.swift` — forces the Metal path for P5 frames, PQ colour space,
   `currentFrame` (public), `contentsCrop` (one-eye display for packed 3D).
 - `MEPlayer/NetworkDirectory.swift` — `avio_open_dir` wrapper for SMB listing.
+- `MEPlayer/MetalPlayView.swift` — `frameSink` (every rendered frame, hardware or software, with
+  its time) for the immersive screen; plus the Dolby Vision / `contentsCrop` changes below.
 - `MEPlayer/Filter.swift` — remembers a failed `avfilter_graph_config` and passes frames through
   (upstream re-fed the half-built graph on the next frame → SIGSEGV in `config_props`; this was
   the first on-device crash, reproduced in the simulator by the E2E Plex test); rebuilds the
@@ -141,7 +149,23 @@ Ordered by likelihood of needing a fix.
 1. **Dolby Vision P5 colours wrong** — sign of offsets, limited-vs-full range, matrix
    orientation in `doviToPQ`. Compare with the Apple TV app on the same film. Reference:
    libplacebo `src/shaders/colorspace.c` (`pl_shader_dovi_reshape`, DOLBYVISION branch).
-2. ~~Player crashes on play~~ — FIXED 2026-11-08: `autoDeInterlace` put the software `idet`
+2. **Cinema screen (rewritten 2026-11-08, untested on hardware).** First on-device attempt
+   showed the black dome with a magenta box (RealityKit's failed-material colour) and the
+   settings popover did nothing. Now: native `AVSampleBufferVideoRenderer` + `VideoMaterial`
+   path (§2 data flow 6), the player window becomes a remote (controls + screen settings
+   inline, picture hidden) while the screen is open, Stop button closes everything. Check the
+   log (Settings → Diagnostics → Send log) for `immersive |` lines: "video material created",
+   "first frame enqueued", "format …", "status: pushed N". If frames are pushed but the screen
+   stays black, suspect `VideoMaterial(videoRenderer:)` on a custom mesh → try
+   `VideoPlayerComponent(videoRenderer:)` on the entity instead (flat screen only). Picture
+   controls (brightness/contrast/saturation) were dropped with the CoreImage path.
+2b. **Subtitles / audio tracks (2026-11-08).** KSPlayer's stock view hid its subtitle menu in a
+   scene ornament that collided with the app's; visionOS now uses the app's own chrome
+   (`Player/PlayerChrome.swift`: transport, scrubber, audio/subtitle/speed menus, 3D +
+   projection pickers, cinema toggle, Stop; controls and the bass-tap chip fade after 4 s).
+   Subtitles render via `SubtitleOverlay` from KSPlayer's `SubtitleModel.parts`. tvOS still
+   uses `KSVideoPlayerView`.
+3. ~~Player crashes on play~~ — FIXED 2026-11-08: `autoDeInterlace` put the software `idet`
    filter into the VideoToolbox pipeline; the graph failed to configure and KSPlayer then
    pushed frames into it. Now off in `FFmpegConfig.makeOptions`, and `Filter.swift` tolerates
    configuration failures. Repro: E2E test `testPlexLibraryAndPlay` (crash log in the artifact).
@@ -174,6 +198,17 @@ Ordered by likelihood of needing a fix.
    backports (§3). Verified on desktop FFmpeg n6.1 with the same streams; not yet on hardware.
 8. **SMB against SMB3-only NAS** — libsmbclient should negotiate; options go through
    `NetworkDirectory.list(options:)`. Guest access with empty username on Windows untested.
+8b. **Jellyfin library size** — same treatment as Plex (series cards + `Shows/{id}/Episodes`,
+   movies paged 500 at a time, decode off the main thread). Untested against a real server
+   since the change.
+8c. **YouTube account (2026-11-08, untested).** Google sign-in in a `WKWebView`
+   (`YouTube/YouTubeAccount.swift`); youtube.com cookies stay in WebKit's store; feeds use the
+   WEB client with `SAPISIDHASH` + cookies (`InnerTubeClient.browse`), parsed by a generic
+   walker that knows the old renderers and the 2024+ `lockupViewModel`. Feeds: Home
+   (`FEwhat_to_watch`), Subscriptions, History, Watch later (`VLWL`), Liked (`VLLL`), Playlists
+   (`FElibrary`) → `VL<id>`. Playback stays anonymous (visitor id). Risks: Google refusing the
+   embedded browser ("this browser may not be secure") — then try a desktop Safari user agent on
+   the WKWebView; `FElibrary` layout changing — check `DiagLog` "browse … → N videos".
 9. **Plex library size.** Series are listed as one card each and open a season/episode page
    (`ShowEpisodesView`, episodes from `/library/metadata/<id>/allLeaves`, cached for
    autoplay-next); movies load in pages of 500 (`X-Plex-Container-Start/Size`, title-sorted,
@@ -232,6 +267,10 @@ Ordered by likelihood of needing a fix.
   launches with `BASSPLAYER_DEMO=1` + `BASSPLAYER_SCREEN=<tab>` and uploads one PNG per screen.
   `DemoData.swift` seeds the clients (`enableDemo` on Jellyfin/Plex/YouTube) and a few
   part-watched items. Download with `gh run download <id> -n screenshots-visionos`.
+- **Logs from the headset:** Settings → Diagnostics → "Send log to computer" posts the in-app
+  log (`DiagLog`, app + KSPlayer messages) to `tools/diag_receiver.py` running on the LAN box
+  (`python3 tools/diag_receiver.py --bind <ip> --port 8799 --dir <ipa dir>`; logs land in
+  `<dir>/logs/`). The same server serves the `.ipa` for installing through SideStore in Safari.
 - **Installing on the Vision Pro from the Linux box:** launch the ported iloader
   (`~/src/iloader-vp/src-tauri/target/release/iloader`, DISPLAY=:10), headset awake, Import IPA
   with the artifact's `.ipa`. The same step renews the 7-day signature.
