@@ -25,7 +25,7 @@ jobs:
             scheme: BassPlayer
             destination: "generic/platform=visionOS Simulator"
             device: "Apple Vision Pro"
-            runtime: visionOS
+            runtime: xrOS            # CoreSimulator still calls visionOS "xrOS" in runtime identifiers
             app: BassPlayer.app
             bundle: com.muzam2.bassplayer
             suffix: visionos
@@ -99,7 +99,7 @@ jobs:
             # The image has the runtime but not always a pre-made device: create one.
             RT=$(xcrun simctl list runtimes -j | python3 -c '
           import json, sys
-          rts = [r for r in json.load(sys.stdin)["runtimes"] if r["platform"] == sys.argv[1] and r["isAvailable"]]
+          rts = [r for r in json.load(sys.stdin)["runtimes"] if sys.argv[1].lower() in r["identifier"].lower() and r["isAvailable"]]
           rts.sort(key=lambda r: [int(x) for x in r["version"].split(".")], reverse=True)
           print(rts[0]["identifier"] if rts else "")
           ' "${{ matrix.runtime }}")
