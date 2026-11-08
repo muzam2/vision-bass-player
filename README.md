@@ -21,24 +21,37 @@ receiver, so one sub serves the headset and the TV.
 |---|---|
 | `project.yml` | XcodeGen spec with two targets, `BassPlayer` (visionOS) and `BassPlayerTV` (tvOS), sharing all sources |
 | `BassPlayer/App` | SwiftUI app entry, audio session |
-| `BassPlayer/Jellyfin` | Minimal Jellyfin client (sign-in, movie list, stream URL) |
-| `BassPlayer/Player` | `PlayerController` (AVPlayer, phase 1) + `PlayerView` |
-| `BassPlayer/Audio` | `BassExtractor` (LPF → 1 kHz Int16 packets) and `BassTapProcessor` (MTAudioProcessingTap glue) |
+| `BassPlayer/Media` | `MediaItem` model shared by both servers, `LibraryStore` (source/backend settings) |
+| `BassPlayer/Jellyfin`, `BassPlayer/Plex` | Server clients |
+| `BassPlayer/Player` | `FFmpegPlayerView` (KSPlayer) and the AVPlayer fallback |
+| `BassPlayer/Audio` | `BassExtractor` (LPF → 1 kHz Int16 packets), `BassEngineTap` (AVAudioEngine tap + lead delay), `BassTapProcessor` (MTAudioProcessingTap glue for AVPlayer) |
+| `BassPlayer/Immersive` | RealityKit cinema screen (visionOS only) |
+| `docs/SETUP-GUIDE.md` | Step-by-step hardware, install and tuning guide |
 | `BassPlayer/BLE` | `BassLink` CoreBluetooth central |
 | `BassPlayer/Views` | Library, settings, status ornament |
 | `firmware/esp32-bass-receiver` | PlatformIO project for the ESP32 receiver |
 | `.github/workflows/build.yml` | Builds the unsigned IPA on a macOS runner |
 
-## Phase plan
+## Status
 
-1. **Now:** AVPlayer backend. Plays MP4/MOV with H.264/HEVC + AAC/AC‑3/E‑AC‑3 directly; anything
-   else (MKV, DTS, TrueHD…) is remuxed/transcoded by Jellyfin to MP4 on the fly. Bass tap, BLE
-   link and receiver are complete.
-2. **Next:** swap the backend for [KSPlayer](https://github.com/kingslay/KSPlayer) (FFmpeg) so
-   MKV/DTS/TrueHD direct-play, and feed `BassExtractor` from an `AVAudioEngine` tap. Same
-   `BassExtractor` and `BassLink`, no firmware change.
-3. **Later:** ImmersiveSpace screen (tilt / curve / giant cinema) by pushing decoded frames
-   into a RealityKit texture.
+Everything is built; what remains is on-device testing and tuning. See **docs/SETUP-GUIDE.md**
+for the step-by-step setup.
+
+- **Playback:** [KSPlayer](https://github.com/kingslay/KSPlayer) (GPLv3 branch, FFmpeg 6.1) is
+  the default backend. Direct-plays MKV/MP4/MOV/TS/AVI with H.264, HEVC, AV1, VP9, ProRes and
+  more; audio AAC, AC‑3, E‑AC‑3, DTS, DTS‑HD, TrueHD, FLAC, Opus; HDR10, HLG and Dolby Vision
+  profile 8 passed to the display. Hardware decoding via VideoToolbox. AVPlayer remains as a
+  fallback backend (MP4 only; Jellyfin remuxes for it).
+- **Servers:** Jellyfin (username/password) and Plex (plex.tv PIN sign-in, server discovery,
+  per-server tokens). Both map into one `MediaItem` model; movies and TV episodes.
+- **Bass:** with the FFmpeg backend the tap sits on KSPlayer's `AVAudioEngine` mixer, picking
+  the LFE channel for 5.1/7.1 tracks. A "Bass lead" setting inserts an `AVAudioUnitDelay`
+  before the output and delays video by the same amount, so the sub's BLE latency is cancelled.
+- **Immersive screen (visionOS):** RealityKit cinema screen fed from the decoder's pixel
+  buffers via a `DrawableQueue` (CoreImage does YUV→RGB and HDR). Flat or curved mesh, drag /
+  pinch / rotate gestures plus sliders, 200 m black dome so there are no edge artifacts in
+  either lens, full immersion by default.
+- **Two devices, one sub:** receiver accepts both and follows whichever is sending.
 
 ## Wire protocol
 

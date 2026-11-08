@@ -87,6 +87,11 @@ jobs:
           APP=$(find build/Build/Products -name "${{ matrix.app }}" -type d | head -n1)
           test -n "$APP" || { echo "No .app found"; exit 1; }
           echo "App at: $APP"
+          du -sh "$APP"
+          BIN="$APP/$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist")"
+          ls -lh "$BIN"
+          if strings "$BIN" | grep -q "avcodec_open2\|avformat_open_input"; then echo "FFmpeg: linked"; else echo "FFmpeg: NOT FOUND in binary"; fi
+          ls "$APP/Frameworks" 2>/dev/null || echo "(no embedded frameworks)"
           rm -rf Payload && mkdir Payload
           cp -R "$APP" Payload/
           VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
