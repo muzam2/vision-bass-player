@@ -210,7 +210,21 @@ rip isn't detected, or detected wrongly, use the **3D** menu in the player to pi
   (`mvctools convert disc.iso out.mkv` keeps audio and subtitles); on Windows with an Intel
   iGPU, BD3D2MK3D (uses FRIM). Native MVC playback in the app is on the roadmap.
 
-## 10c. YouTube
+## 10c. Play straight off the NAS (no media server)
+
+Source switch → **NAS** → **+**. Two kinds:
+
+- **SMB** (Synology, QNAP, TrueNAS, Windows shares): address `nas.local` or `192.168.1.20`
+  lists the shares; `192.168.1.20/video` opens one share directly. Username/password as for
+  the NAS; leave blank for guest. The first time, visionOS/tvOS asks for Local Network access
+  → Allow.
+- **WebDAV / HTTP**: the full URL of the WebDAV folder (Synology: `https://nas:5006/video`),
+  or any web server folder with directory listing turned on.
+
+Then browse folders and tap a video. Everything the FFmpeg backend plays from Jellyfin plays
+here too (MKV, DTS, HDR, 3D by file name). Blu-ray ISOs don't play; use MakeMKV first.
+
+## 10d. YouTube
 
 Pick **YouTube** in the library's source switch. Trending loads by default; the search box
 searches, and a pasted link or video id plays directly. Streams are fetched from YouTube's
