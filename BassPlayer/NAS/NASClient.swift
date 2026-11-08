@@ -1,9 +1,9 @@
 import Foundation
 import Security
 import SwiftUI
-import KSPlayer
 
-/// A saved NAS share: SMB (via FFmpeg's libsmbclient) or WebDAV / plain HTTP directory index.
+/// A saved NAS share: SMB (libsmb2 behind the loopback `SMBBridge`) or WebDAV / plain HTTP
+/// directory index.
 struct NASShare: Identifiable, Codable, Hashable {
     enum Kind: String, Codable, CaseIterable, Identifiable {
         case smb, webdav
@@ -48,12 +48,19 @@ final class NASClient: ObservableObject {
         } else {
             shares = []
         }
+        publishToBridge()
         if shares.isEmpty, let host = ProcessInfo.processInfo.environment["BASSPLAYER_E2E_NAS_HOST"], !host.isEmpty {
             shares = [NASShare(name: "CI", kind: .smb, address: host, username: "")]
         }
     }
 
+    /// The bridge serves files off the main actor, so it keeps its own copy of the shares.
+    private func publishToBridge() {
+        SMBBridge.shared.update(shares.filter { $0.kind == .smb }.map { ($0, password(for: $0)) })
+    }
+
     private func save() {
+        publishToBridge()
         if let data = try? JSONEncoder().encode(shares) { defaults.set(data, forKey: "nas.shares") }
     }
 
@@ -81,21 +88,18 @@ final class NASClient: ObservableObject {
     func list(share: NASShare, path: String) async throws -> [NASEntry] {
         switch share.kind {
         case .smb:
-            let url = smbURL(share: share, path: path)
-            let entries = try await Task.detached(priority: .userInitiated) {
-                try NetworkDirectory.list(url: url, options: ["timeout": "15000"])
-            }.value
-            return entries.map { NASEntry(name: $0.name, isDirectory: $0.isDirectory, size: $0.size, path: join(path, $0.name)) }
+            return try await SMBBridge.shared.list(shareID: share.id, path: path)
         case .webdav:
             return try await WebDAVLister(share: share, password: password(for: share)).list(path: path)
         }
     }
 
-    /// Playable item for a file. Always the FFmpeg backend (AVPlayer can't speak SMB or HTTP basic auth).
+    /// Playable item for a file. SMB files come through the loopback bridge, so both backends
+    /// can open them; WebDAV with basic auth still needs FFmpeg.
     func mediaItem(share: NASShare, entry: NASEntry) -> MediaItem {
         let url: URL?
         switch share.kind {
-        case .smb: url = URL(string: smbURL(share: share, path: entry.path))
+        case .smb: url = SMBBridge.shared.url(shareID: share.id, path: entry.path)
         case .webdav: url = WebDAVLister(share: share, password: password(for: share)).fileURL(path: entry.path)
         }
         let title = (entry.name as NSString).deletingPathExtension
@@ -103,7 +107,7 @@ final class NASClient: ObservableObject {
             id: "nas:\(share.id.uuidString):\(entry.path)", source: .nas, title: title,
             subtitle: "\(share.name) · \(ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))",
             overview: nil, runtimeMinutes: nil, posterURL: nil,
-            directURL: url, avPlayerURL: nil,
+            directURL: url, avPlayerURL: share.kind == .smb ? url : nil,
             container: (entry.name as NSString).pathExtension.lowercased(), videoCodec: nil, audioCodec: nil, audioChannels: nil, videoRange: nil,
             isEpisode: false, width: nil, height: nil,
             stereo: StereoFormat.detect(name: entry.name, path: entry.path, width: nil, height: nil, codecTag: nil),
@@ -115,24 +119,6 @@ final class NASClient: ObservableObject {
     }
 
     // MARK: - URLs
-
-    /// smb://[domain;]user:pass@host/share/path — percent-encoded as libsmbclient expects.
-    private func smbURL(share: NASShare, path: String) -> String {
-        var address = share.address.trimmingCharacters(in: .whitespacesAndNewlines)
-        if address.lowercased().hasPrefix("smb://") { address.removeFirst(6) }
-        while address.hasSuffix("/") { address.removeLast() }
-        let cs = CharacterSet.urlUserAllowed.subtracting(CharacterSet(charactersIn: ":;@/"))
-        var auth = ""
-        if !share.username.isEmpty {
-            if !share.domain.isEmpty { auth += (share.domain.addingPercentEncoding(withAllowedCharacters: cs) ?? "") + ";" }
-            auth += share.username.addingPercentEncoding(withAllowedCharacters: cs) ?? ""
-            let pw = password(for: share)
-            if !pw.isEmpty { auth += ":" + (pw.addingPercentEncoding(withAllowedCharacters: cs) ?? "") }
-            auth += "@"
-        }
-        let pathPart = path.split(separator: "/").map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? String($0) }.joined(separator: "/")
-        return "smb://" + auth + address + (pathPart.isEmpty ? "" : "/" + pathPart)
-    }
 }
 
 private func join(_ base: String, _ name: String) -> String {

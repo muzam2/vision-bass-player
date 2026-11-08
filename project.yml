@@ -26,6 +26,11 @@ packages:
   # profile 5. See Vendor/KSPlayer/UPSTREAM_COMMIT.
   KSPlayer:
     path: Vendor/KSPlayer
+  # SMB client (libsmb2, LGPL-2.1) for NAS browsing and the loopback SMBBridge; replaces
+  # FFmpeg's libsmbclient, which FFmpegKit 9 no longer ships.
+  AMSMB2:
+    url: https://github.com/amosavian/AMSMB2.git
+    from: 4.0.3
 
 schemes:
   # Explicit scheme so `xcodebuild test -scheme BassPlayer` runs the UI tests in the simulator
@@ -76,6 +81,8 @@ targets:
     dependencies:
       - package: KSPlayer
         product: KSPlayer
+      - package: AMSMB2
+        product: AMSMB2
     info:
       path: BassPlayer/Info.plist
       properties:
@@ -111,6 +118,8 @@ targets:
     dependencies:
       - package: KSPlayer
         product: KSPlayer
+      - package: AMSMB2
+        product: AMSMB2
     info:
       path: BassPlayer/Info-tvOS.plist
       properties:

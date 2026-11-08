@@ -142,6 +142,30 @@ workflow artifact.
 Dolby Vision P5 needs `KSOptions.asynchronousDecompression = false` (FFmpeg hwaccel path) so
 the RPU side data reaches the frame. P7/P8 bypass the mapping (HDR10/HLG base layer).
 
+### SMB bridge (BassPlayer/NAS/SMBBridge.swift, 2026-11-08)
+SMB no longer goes through FFmpeg. `AMSMB2` (libsmb2, LGPL-2.1, SwiftPM) lists shares and
+directories and reads files; a loopback HTTP/1.1 server (Network.framework, 127.0.0.1, random
+port) exposes each file as `http://127.0.0.1:<port>/smb/<share id>/<path>` with byte-range
+support, so FFmpeg *and* AVPlayer can open NAS files (MV-HEVC from a NAS can go to AVPlayer).
+One libsmb2 context per in-flight request (small per-share pool), one chunk in flight for
+back-pressure, `Connection: close` per request (FFmpeg reconnects on seek, AVPlayer makes
+parallel ranged requests). This removes the only reason to keep libsmbclient in FFmpeg, which
+is the prerequisite for FFmpegKit 9 (below). KSPlayer's `NetworkDirectory` patch is now unused.
+
+### FFmpegKit 9.0.2 (plan, started 2026-11-08)
+Facts checked: kingslay/FFmpegKit's latest tag is 9.0.2 = FFmpeg 9.0.2 (lavu 61.1, lavf 63);
+all four of our n6.1 backports are upstream in it (mov.c duplicate mastering/ftyp, seek reset
+at pos 0, hls init-section offset). The xcframeworks are committed in the repo at the tag
+(no release assets; xros slices 216 MB, tvos 297 MB). libsmbclient and gnutls are gone;
+libssl/libcrypto, libopus, libdovi, libplacebo and a `renderer.c` are new in `Sources/FFmpegKit`.
+Upstream KSPlayer moved to 9.0.2 on 2026-10-07 but its FFmpeg-facing code is now a binary
+`KSPlayer.xcframework`, so the API port of our vendored (2026-10-05, source) copy is ours to
+do: known removals are two `avcodec_close` calls; the rest will surface as compile errors.
+Steps: (1) SMB bridge — done; (2) workflow `ffmpegkit-repack.yml`: sparse-clone the tag,
+strip to visionOS/tvOS, zip, checksums, generated Package.swift + the tag's `Sources/FFmpegKit`
+shims, publish release `ffmpegkit-9.0.2-vt1`; (3) point `Vendor/FFmpegKit` at it, port
+KSPlayer, drop `NetworkDirectory.swift`; (4) later: MV-HEVC through FFmpeg instead of AVPlayer.
+
 ## 4. Known risks — check these first on hardware
 
 Ordered by likelihood of needing a fix.
