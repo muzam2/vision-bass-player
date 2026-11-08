@@ -9,6 +9,53 @@ enum PlayerBackend: String, CaseIterable, Identifiable {
     var label: String { self == .ffmpeg ? "FFmpeg (all formats)" : "AVPlayer (MP4 only)" }
 }
 
+/// Top-level destinations of the app (tab bar / sidebar).
+enum AppTab: String, CaseIterable, Identifiable {
+    case home, jellyfin, plex, youtube, nas, settings
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .home: return "Home"
+        case .jellyfin: return "Jellyfin"
+        case .plex: return "Plex"
+        case .youtube: return "YouTube"
+        case .nas: return "NAS"
+        case .settings: return "Settings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .home: return "house.fill"
+        case .jellyfin: return "film.stack"
+        case .plex: return "play.rectangle.on.rectangle.fill"
+        case .youtube: return "play.tv.fill"
+        case .nas: return "externaldrive.connected.to.line.below.fill"
+        case .settings: return "gearshape.fill"
+        }
+    }
+
+    var source: MediaSource? {
+        switch self {
+        case .jellyfin: return .jellyfin
+        case .plex: return .plex
+        case .youtube: return .youtube
+        case .nas: return .nas
+        default: return nil
+        }
+    }
+
+    init(source: MediaSource) {
+        switch source {
+        case .jellyfin: self = .jellyfin
+        case .plex: self = .plex
+        case .youtube: self = .youtube
+        case .nas: self = .nas
+        }
+    }
+}
+
 /// App-wide settings and the merged library from Jellyfin + Plex.
 @MainActor
 final class LibraryStore: ObservableObject {
@@ -20,8 +67,13 @@ final class LibraryStore: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     @Published var selectedSource: MediaSource { didSet { defaults.set(selectedSource.rawValue, forKey: "lib.source") } }
+    @Published var selectedTab: AppTab { didSet { defaults.set(selectedTab.rawValue, forKey: "lib.tab") } }
     @Published var backend: PlayerBackend { didSet { defaults.set(backend.rawValue, forKey: "lib.backend") } }
     @Published var searchText = ""
+    /// The item being played (tvOS presents it full screen; visionOS opens the player window).
+    @Published var nowPlaying: MediaItem?
+    /// Bumped on every `play(_:)` so the same item can be played again.
+    @Published private(set) var playCounter = 0
     @Published var showEpisodes: Bool { didSet { defaults.set(showEpisodes, forKey: "lib.showEpisodes") } }
     @Published var autoplayNext: Bool { didSet { defaults.set(autoplayNext, forKey: "lib.autoplayNext") } }
     @Published var resumePlayback: Bool { didSet { defaults.set(resumePlayback, forKey: "lib.resume") } }
@@ -35,6 +87,7 @@ final class LibraryStore: ObservableObject {
         self.youtube = youtube
         self.nas = nas
         selectedSource = MediaSource(rawValue: defaults.string(forKey: "lib.source") ?? "") ?? .jellyfin
+        selectedTab = AppTab(rawValue: defaults.string(forKey: "lib.tab") ?? "") ?? .home
         backend = PlayerBackend(rawValue: defaults.string(forKey: "lib.backend") ?? "") ?? .ffmpeg
         showEpisodes = defaults.object(forKey: "lib.showEpisodes") as? Bool ?? false
         autoplayNext = defaults.object(forKey: "lib.autoplayNext") as? Bool ?? true
@@ -47,8 +100,10 @@ final class LibraryStore: ObservableObject {
         nas.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
     }
 
-    var currentIsSignedIn: Bool {
-        switch selectedSource {
+    // MARK: - Per-source state
+
+    func isSignedIn(_ source: MediaSource) -> Bool {
+        switch source {
         case .jellyfin: return jellyfin.isSignedIn
         case .plex: return plex.isSignedIn && plex.hasServer
         case .youtube: return true
@@ -56,8 +111,8 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    var currentIsBusy: Bool {
-        switch selectedSource {
+    func isBusy(_ source: MediaSource) -> Bool {
+        switch source {
         case .jellyfin: return jellyfin.isBusy
         case .plex: return plex.isBusy
         case .youtube: return youtube.isBusy
@@ -65,8 +120,8 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    var currentError: String? {
-        switch selectedSource {
+    func error(for source: MediaSource) -> String? {
+        switch source {
         case .jellyfin: return jellyfin.errorMessage
         case .plex: return plex.errorMessage
         case .youtube: return youtube.errorMessage
@@ -74,24 +129,76 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// Everything a source currently offers, unfiltered (YouTube: the current search result).
+    func items(for source: MediaSource) -> [MediaItem] {
+        switch source {
+        case .jellyfin: return jellyfin.items
+        case .plex: return plex.items
+        case .youtube: return youtube.items
+        case .nas: return []          // NAS has its own folder browser
+        }
+    }
+
+    func refresh(_ source: MediaSource) async {
+        switch source {
+        case .jellyfin: await jellyfin.loadLibrary()
+        case .plex: await plex.loadLibrary()
+        case .youtube: await youtube.loadLibrary()
+        case .nas: break
+        }
+    }
+
+    /// One-line connection summary for the Home and Settings screens.
+    func status(of source: MediaSource) -> String {
+        switch source {
+        case .jellyfin:
+            return jellyfin.isSignedIn ? "\(jellyfin.items.count) titles · \(jellyfin.serverURL)" : "Not signed in"
+        case .plex:
+            if !plex.isSignedIn { return "Not signed in" }
+            return plex.hasServer ? "\(plex.items.count) titles · \(plex.serverName)" : "Signed in · no server chosen"
+        case .youtube:
+            return "No account needed"
+        case .nas:
+            return nas.shares.isEmpty ? "No shares added" : "\(nas.shares.count) share\(nas.shares.count == 1 ? "" : "s")"
+        }
+    }
+
+    // Convenience for the current `selectedSource` (older call sites).
+    var currentIsSignedIn: Bool { isSignedIn(selectedSource) }
+    var currentIsBusy: Bool { isBusy(selectedSource) }
+    var currentError: String? { error(for: selectedSource) }
+
     var items: [MediaItem] {
-        // YouTube's list is already the search result; local filtering applies to the servers.
-        if selectedSource == .youtube { return youtube.items }
-        if selectedSource == .nas { return [] }     // NAS has its own folder browser
-        let all = selectedSource == .jellyfin ? jellyfin.items : plex.items
+        let all = items(for: selectedSource)
+        guard selectedSource == .jellyfin || selectedSource == .plex else { return all }
         return all.filter { item in
             (showEpisodes || !item.isEpisode) &&
             (searchText.isEmpty || item.title.localizedCaseInsensitiveContains(searchText) || (item.subtitle?.localizedCaseInsensitiveContains(searchText) ?? false))
         }
     }
 
-    func refresh() async {
-        switch selectedSource {
-        case .jellyfin: await jellyfin.loadLibrary()
-        case .plex: await plex.loadLibrary()
-        case .youtube: await youtube.loadLibrary()
-        case .nas: break
-        }
+    func refresh() async { await refresh(selectedSource) }
+
+    // MARK: - Playback
+
+    /// Start playing an item. tvOS presents it full screen; visionOS opens the player window
+    /// (RootView watches `playCounter`).
+    func play(_ item: MediaItem) {
+        nowPlaying = item
+        playCounter += 1
+    }
+
+    /// Fraction watched (0...1) from the locally saved position, or nil when unknown/unstarted.
+    func progress(for item: MediaItem) -> Double? {
+        guard let minutes = item.runtimeMinutes, minutes > 0 else { return nil }
+        let pos = defaults.double(forKey: "pos.\(item.id)")
+        guard pos > 0 else { return nil }
+        return min(1, pos / (Double(minutes) * 60))
+    }
+
+    /// Recently played items that were left part-way through.
+    var continueWatching: [MediaItem] {
+        recents.filter { (progress(for: $0) ?? 0) > 0.02 }
     }
 
     /// Fetch anything the item needs just before playback (YouTube stream URLs expire).
@@ -143,9 +250,9 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    /// The item after `item` in the current list (for autoplay).
+    /// The item after `item` in its source's list (for autoplay).
     func next(after item: MediaItem) -> MediaItem? {
-        let list = items
+        let list = items(for: item.source).filter { showEpisodes || !$0.isEpisode }
         guard let i = list.firstIndex(of: item), i + 1 < list.count else { return nil }
         return list[i + 1]
     }

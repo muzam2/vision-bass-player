@@ -31,7 +31,15 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
         }
     }
 
-    var isSignedIn: Bool { !storedToken.isEmpty && !storedUserId.isEmpty }
+    var isSignedIn: Bool { demoMode || (!storedToken.isEmpty && !storedUserId.isEmpty) }
+
+    /// Simulator screenshots: show sample items without a server (see DemoData).
+    private(set) var demoMode = false
+    func enableDemo(items: [MediaItem], server: String) {
+        demoMode = true
+        serverURL = server
+        self.items = items
+    }
     var accessToken: String? { storedToken.isEmpty ? nil : storedToken }
 
     private var baseURL: URL? {
@@ -98,7 +106,7 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
     // MARK: - Library
 
     func loadLibrary() async {
-        guard isSignedIn else { return }
+        guard isSignedIn, !demoMode else { return }
         isBusy = true; defer { isBusy = false }
         errorMessage = nil
         do {

@@ -33,18 +33,22 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     var isSignedIn: Bool { true }
     func signOut() {}
 
-    /// Default view: trending if YouTube still serves it. It retired the Trending page in 2025
-    /// (browse FEtrending now answers HTTP 400), so an empty start screen is the normal case;
-    /// that is not an error.
+    /// Simulator screenshots: show sample results without the network (see DemoData).
+    private(set) var demoMode = false
+    func enableDemo(items: [MediaItem], query: String) {
+        demoMode = true
+        self.items = items
+        lastQuery = query
+    }
+
+    /// Re-run the last search. YouTube retired the anonymous Trending page in 2025 (browse
+    /// FEtrending answers HTTP 400), so with no query the list simply stays empty; the view shows
+    /// recent searches instead. That is not an error.
     func loadLibrary() async {
+        guard !demoMode else { return }
+        if !lastQuery.isEmpty { await search(lastQuery); return }
         if !query.isEmpty { await search(query); return }
-        isBusy = true; defer { isBusy = false }
         errorMessage = nil
-        lastQuery = ""
-        items = (try? await api.trending().map(mediaItem)) ?? []
-        if items.isEmpty {
-            errorMessage = "Search YouTube or paste a link in the search box."
-        }
     }
 
     /// Debounced search; a pasted link or 11-character id becomes a single playable item.
