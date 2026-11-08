@@ -10,23 +10,42 @@
 // pushed out over I²S to a PCM5102A DAC (line out → subwoofer). Drift between the headset's
 // audio clock and this crystal is absorbed by nudging the buffer level back to target.
 //
-// Wiring (PCM5102A purple board):  BCK→GPIO26  LRCK→GPIO25  DIN→GPIO22  SCK→GND
-//                                   XSMT→GPIO21 (soft mute)  VIN→3V3  GND→GND
-//   Board jumpers: FLT=L, DEMP=L, XSMT=H(or GPIO), FMT=L (I²S)
+// Two board targets (select in platformio.ini):
+//   env:esp32dev   generic ESP32 + PCM5102A purple board
+//                  BCK→GPIO26  LRCK→GPIO25  DIN→GPIO22  SCK→GND  XSMT→GPIO21  VIN→3V3
+//                  Board jumpers: FLT=L, DEMP=L, XSMT=H(or GPIO), FMT=L (I²S)
+//   env:esp32-a1s  AI-Thinker ESP32-A1S Audio Kit (ES8388 codec, 3.5 mm jack = line out)
+//                  Nothing to wire; codec is on-board. PA (speaker amp) is left disabled.
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <driver/i2s.h>
+#ifdef BOARD_A1S
+#include <Wire.h>
+#endif
 
 // ---------- Pins ----------
+#ifdef BOARD_A1S
+static const int PIN_MCLK = 0;
+static const int PIN_BCK  = 27;
+static const int PIN_LRCK = 25;
+static const int PIN_DIN  = 26;      // ESP32 → codec DSDIN
+static const int PIN_I2C_SDA = 33;
+static const int PIN_I2C_SCL = 32;
+static const int PIN_PA_EN = 21;     // NS4150 speaker amp enable; keep LOW
+static const uint8_t ES8388_ADDR = 0x10;
+#else
 static const int PIN_BCK  = 26;
 static const int PIN_LRCK = 25;
 static const int PIN_DIN  = 22;
 static const int PIN_XSMT = 21;
+#endif
 
 // ---------- Stream constants ----------
 static const uint32_t IN_RATE        = 1000;     // Hz, from the headset
-static const uint32_t OUT_RATE       = 8000;     // Hz, to the DAC (PCM5102A minimum)
+#ifndef OUT_RATE
+#define OUT_RATE 8000                            // Hz, to the DAC (PCM5102A minimum)
+#endif
 static const int      UPSAMPLE       = OUT_RATE / IN_RATE;
 static const int      SAMPLES_PER_PKT = 20;
 static const int      PKT_HEADER     = 7;
@@ -134,10 +153,17 @@ static void i2sSetup() {
   cfg.dma_buf_len = 64;
   cfg.use_apll = true;                    // cleaner clock for the DAC
   cfg.tx_desc_auto_clear = true;
+#ifdef BOARD_A1S
+  cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+#endif
   i2s_driver_install(I2S_NUM_0, &cfg, 0, nullptr);
 
   i2s_pin_config_t pins = {};
+#ifdef BOARD_A1S
+  pins.mck_io_num = PIN_MCLK;             // ES8388 needs MCLK (256 × fs)
+#else
   pins.mck_io_num = I2S_PIN_NO_CHANGE;
+#endif
   pins.bck_io_num = PIN_BCK;
   pins.ws_io_num = PIN_LRCK;
   pins.data_out_num = PIN_DIN;
@@ -145,6 +171,62 @@ static void i2sSetup() {
   i2s_set_pin(I2S_NUM_0, &pins);
   i2s_zero_dma_buffer(I2S_NUM_0);
 }
+
+// ---------- Output mute (DAC-specific) ----------
+static volatile bool wantMute = true;     // set by audio task, applied by loop()/GPIO
+
+#ifdef BOARD_A1S
+// Minimal ES8388 bring-up: slave mode, I²S 16-bit, DAC → LOUT1/ROUT1 (headphone/line jack)
+// and LOUT2/ROUT2 (speaker amp, which we leave powered off via PA_EN).
+static bool esWrite(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(ES8388_ADDR);
+  Wire.write(reg);
+  Wire.write(val);
+  return Wire.endTransmission() == 0;
+}
+
+static void codecInit() {
+  pinMode(PIN_PA_EN, OUTPUT);
+  digitalWrite(PIN_PA_EN, LOW);
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000);
+  delay(10);
+  bool ok = true;
+  ok &= esWrite(0x19, 0x04);   // DACCONTROL3: DAC mute while configuring
+  ok &= esWrite(0x01, 0x50);   // CONTROL2: power up analogue, VREF
+  ok &= esWrite(0x02, 0x00);   // CHIPPOWER: everything on
+  ok &= esWrite(0x08, 0x00);   // MASTERMODE: slave
+  ok &= esWrite(0x04, 0xC0);   // DACPOWER: DAC off during setup
+  ok &= esWrite(0x00, 0x12);   // CONTROL1: play mode
+  ok &= esWrite(0x17, 0x18);   // DACCONTROL1: I²S, 16-bit
+  ok &= esWrite(0x18, 0x02);   // DACCONTROL2: single speed, MCLK/LRCK = 256
+  ok &= esWrite(0x26, 0x00);   // DACCONTROL16: mixer inputs (unused)
+  ok &= esWrite(0x27, 0x90);   // DACCONTROL17: L DAC → L mixer, 0 dB
+  ok &= esWrite(0x2A, 0x90);   // DACCONTROL20: R DAC → R mixer, 0 dB
+  ok &= esWrite(0x2B, 0x80);   // DACCONTROL21: DAC/ADC share LRCK
+  ok &= esWrite(0x2D, 0x00);   // DACCONTROL23: vroi = 0
+  ok &= esWrite(0x1A, 0x00);   // DACCONTROL4: L DAC digital volume 0 dB
+  ok &= esWrite(0x1B, 0x00);   // DACCONTROL5: R DAC digital volume 0 dB
+  ok &= esWrite(0x2E, 0x1E);   // LOUT1 volume ≈ 0 dB
+  ok &= esWrite(0x2F, 0x1E);   // ROUT1
+  ok &= esWrite(0x30, 0x1E);   // LOUT2
+  ok &= esWrite(0x31, 0x1E);   // ROUT2
+  ok &= esWrite(0x04, 0x3C);   // DACPOWER: DAC on, LOUT1/ROUT1/LOUT2/ROUT2 on
+  Serial.printf("[codec] ES8388 init %s\n", ok ? "ok" : "FAILED (check I2C / board variant)");
+}
+
+static void applyMute(bool m) {
+  static int last = -1;
+  if (last == (int)m) return;
+  last = m;
+  esWrite(0x19, m ? 0x04 : 0x00);   // DACCONTROL3 soft mute bit
+}
+#else
+static void codecInit() {
+  pinMode(PIN_XSMT, OUTPUT);
+  digitalWrite(PIN_XSMT, LOW);
+}
+static void applyMute(bool m) { digitalWrite(PIN_XSMT, m ? LOW : HIGH); }
+#endif
 
 // ---------- Audio task ----------
 // Pops one 1 kHz sample per iteration, emits 8 stereo frames at 8 kHz. i2s_write blocks on the
@@ -197,7 +279,10 @@ static void audioTask(void*) {
       silentMs = 0;
     }
     // Soft-mute the DAC after half a second of silence; un-mute as soon as audio flows.
-    digitalWrite(PIN_XSMT, (silentMs > 500 || muted) ? LOW : HIGH);
+    wantMute = (silentMs > 500 || muted);
+#ifndef BOARD_A1S
+    applyMute(wantMute);            // GPIO is cheap enough to do here
+#endif
 
     // Linear interpolation prev → cur across 8 output frames, duplicated to L and R.
     for (int k = 0; k < UPSAMPLE; k++) {
@@ -213,9 +298,7 @@ static void audioTask(void*) {
 // ---------- Setup / loop ----------
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_XSMT, OUTPUT);
-  digitalWrite(PIN_XSMT, LOW);
-
+  codecInit();
   i2sSetup();
 
   NimBLEDevice::init("BassSub");
@@ -247,6 +330,9 @@ void setup() {
 void loop() {
   static uint32_t lastStatus = 0;
   uint32_t now = millis();
+#ifdef BOARD_A1S
+  applyMute(wantMute);              // I²C write; done here, not on the audio task
+#endif
   if (connected && statusChar && now - lastStatus >= 500) {
     lastStatus = now;
     uint16_t fill = (uint16_t)ringFill();

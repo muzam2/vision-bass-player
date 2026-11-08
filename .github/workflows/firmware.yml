@@ -1,0 +1,54 @@
+name: Build ESP32 firmware
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+  pull_request:
+    paths: ["firmware/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    name: ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [esp32-a1s, esp32dev]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/esp32-bass-receiver/platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+      - name: Build ${{ matrix.env }}
+        working-directory: firmware/esp32-bass-receiver
+        run: pio run -e ${{ matrix.env }}
+      - name: Collect binaries
+        working-directory: firmware/esp32-bass-receiver
+        run: |
+          mkdir -p out
+          cp .pio/build/${{ matrix.env }}/firmware.bin out/bass-receiver-${{ matrix.env }}.bin
+          cp .pio/build/${{ matrix.env }}/bootloader.bin out/bootloader-${{ matrix.env }}.bin
+          cp .pio/build/${{ matrix.env }}/partitions.bin out/partitions-${{ matrix.env }}.bin
+          ls -lh out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.env }}
+          path: firmware/esp32-bass-receiver/out/*
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: firmware/esp32-bass-receiver/out/*
