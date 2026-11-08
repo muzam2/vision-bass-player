@@ -42,11 +42,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash Vendor/FFmpegKit/tools/fetch_binaries.sh
 
-      - name: Start a Samba share with a sample video (NAS stand-in)
+      - name: Start an SMB share with a sample video (NAS stand-in)
         run: |
           set -euo pipefail
-          brew install samba
-          mkdir -p "$SMB_SHARE_DIR" /Users/runner/smb/{private,lock,state,cache,pid,log}
+          mkdir -p "$SMB_SHARE_DIR" /Users/runner/smb
           # Test clip: 20 s colour bars with a 60 Hz sine (gives the bass extractor real low end).
           command -v ffmpeg >/dev/null || brew install ffmpeg
           if ! ffmpeg -v error -y -f lavfi -i "testsrc2=duration=20:size=1280x720:rate=30" \
@@ -59,38 +58,23 @@ jobs:
             done
           fi
           ls -la "$SMB_SHARE_DIR"; test -s "$SMB_SHARE_DIR/sample.mp4"
-          cat > /Users/runner/smb/smb.conf <<EOF
-          [global]
-            workgroup = WORKGROUP
-            server string = ci
-            server min protocol = SMB2
-            map to guest = Bad User
-            guest account = runner
-            security = user
-            interfaces = lo0
-            bind interfaces only = yes
-            private dir = /Users/runner/smb/private
-            lock directory = /Users/runner/smb/lock
-            state directory = /Users/runner/smb/state
-            cache directory = /Users/runner/smb/cache
-            pid directory = /Users/runner/smb/pid
-            log file = /Users/runner/smb/log/%m.log
-            log level = 1
-            load printers = no
-            disable spoolss = yes
-          [video]
-            path = $SMB_SHARE_DIR
-            guest ok = yes
-            read only = yes
-            browseable = yes
+          # Homebrew's samba has no smbd on macOS; impacket's SMB2 server (Python) stands in.
+          python3 -m venv /Users/runner/smb/venv
+          /Users/runner/smb/venv/bin/pip install -q impacket
+          # Port 445 needs root; anonymous/guest share, SMB2 enabled.
+          sudo nohup /Users/runner/smb/venv/bin/smbserver.py -smb2support -ip 0.0.0.0 -port 445 video "$SMB_SHARE_DIR" > /Users/runner/smb/smbserver.log 2>&1 &
+          sleep 4
+          /Users/runner/smb/venv/bin/python - <<'EOF'
+          from impacket.smbconnection import SMBConnection
+          c = SMBConnection("127.0.0.1", "127.0.0.1", sess_port=445)
+          c.login("", "")
+          shares = [s["shi1_netname"][:-1] for s in c.listShares()]
+          print("shares:", shares)
+          assert "video" in shares
+          files = [f.get_longname() for f in c.listPath("video", "*")]
+          print("files:", files)
+          assert "sample.mp4" in files
           EOF
-          # samba is keg-only in Homebrew: binaries are under its own prefix.
-          SMB=$(brew --prefix samba)
-          ls "$SMB/sbin" "$SMB/bin" | head -20
-          sudo "$SMB/sbin/smbd" -D -s /Users/runner/smb/smb.conf
-          sleep 3
-          "$SMB/bin/smbclient" -N -L 127.0.0.1 || { echo "smbd not answering"; sudo cat /Users/runner/smb/log/*.log; exit 1; }
-          "$SMB/bin/smbclient" -N //127.0.0.1/video -c 'ls'
 
       - name: Resolve Swift packages
         run: |
