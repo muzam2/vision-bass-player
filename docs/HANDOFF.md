@@ -123,6 +123,18 @@ room dim / flipV / HDR / brightness / contrast / saturation / HDR boost.
 - `Package.swift` — tests removed; FFmpegKit comes from the local `../FFmpegKit` package.
 
 ### FFmpegKit (Vendor/FFmpegKit)
+**Branch `ffmpegkit-9` (2026-11-08): stock FFmpegKit 9.0.2 = FFmpeg 9.0.2.** Release
+`ffmpegkit-9.0.2-vt1` of this repo holds the tag's 22 xcframeworks stripped to visionOS +
+tvOS slices plus `FFmpegKit-sources.zip` (the C shim target), produced by
+`.github/workflows/ffmpegkit-repack.yml` + `tools/repack_release.py` (sparse clone of the tag:
+its binaries are committed in git, there are no upstream release assets). `Package.swift`,
+`checksums.json`, `RELEASE_TAG` are the workflow's artifact; `tools/fetch_binaries.sh` unpacks
+everything, so `Sources/FFmpegKit` is no longer in git either. The 6.1.4 backports below are
+upstream in 9.0.2 and `ffmpegkit-backports.yml` is retired once the branch merges. KSPlayer
+port: `avcodec_close` removed, closed captions detected from `AV_FRAME_DATA_A53_CC` side data
+(`AVCodecContext.properties` is gone), `NetworkDirectory.swift` deleted (SMB bridge).
+
+The paragraphs below describe the 6.1.4 setup still on `main` until the branch merges.
 FFmpegKit 6.1.4 is stock FFmpeg n6.1. Four upstream libavformat fixes are backported
 (`Vendor/FFmpegKit-patches`): duplicate mastering-display boxes (YouTube HDR), duplicate
 `ftyp`, fragment/index reset when HLS seeks back to pos 0 (trac #7359), HLS init-section read
