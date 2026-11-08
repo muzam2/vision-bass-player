@@ -19,7 +19,7 @@ final class ScreenTextureFeeder {
         .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3) as Any,
         .workingFormat: CIFormat.RGBAh,
     ])
-    private var lastBufferPointer: UnsafeMutableRawPointer?
+    private var lastFrameId: Int?
     private(set) var frameCount = 0
     /// Set by the view once the texture has been bound to the screen material.
     var materialApplied = false
@@ -28,21 +28,32 @@ final class ScreenTextureFeeder {
     var hdr = true
 
     /// Called once per RealityKit frame. Cheap when there is no new video frame.
-    func tick(frameSource: (() -> CVPixelBuffer?)?) {
-        guard let source = frameSource, let pb = source() else { return }
-        // Skip if KSPlayer handed us the same buffer as last tick.
-        let ptr = Unmanaged.passUnretained(pb).toOpaque()
-        if ptr == lastBufferPointer { return }
-        lastBufferPointer = ptr
+    func tick(frameSource: (() -> ScreenFrame?)?) {
+        guard let source = frameSource, let frame = source() else { return }
+        // Skip if the player handed us the same frame as last tick.
+        if frame.id == lastFrameId { return }
+        lastFrameId = frame.id
 
-        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+        let image: CIImage
+        let w: Int, h: Int
+        if let pb = frame.pixelBuffer {
+            w = CVPixelBufferGetWidth(pb); h = CVPixelBufferGetHeight(pb)
+            image = CIImage(cvPixelBuffer: pb)
+        } else if let tex = frame.pqTexture {
+            // Dolby Vision frames arrive pre-mapped as PQ BT.2020; tell CoreImage so it linearises correctly.
+            w = tex.width; h = tex.height
+            let pq = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpaceCreateDeviceRGB()
+            guard let ci = CIImage(mtlTexture: tex, options: [.colorSpace: pq]) else { return }
+            image = ci.oriented(.downMirrored)   // Metal textures are top-left origin; CI is bottom-left
+        } else {
+            return
+        }
         guard w > 0, h > 0 else { return }
         if queueSize != (w, h) || queue == nil {
             rebuildQueue(width: w, height: h)
         }
         guard let queue, let drawable = try? queue.nextDrawable() else { return }
 
-        let image = CIImage(cvPixelBuffer: pb)
         let colorSpace = hdr
             ? (CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3) ?? CGColorSpaceCreateDeviceRGB())
             : (CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB())

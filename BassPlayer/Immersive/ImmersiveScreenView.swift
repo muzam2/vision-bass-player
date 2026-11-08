@@ -43,9 +43,14 @@ struct ImmersiveScreenView: View {
                         feeder.materialApplied = true
                     }
                     // Follow the video's aspect ratio once we know it.
-                    if let src = ImmersiveScreenBridge.shared.frameSource, let pb = src() {
-                        let a = Double(CVPixelBufferGetWidth(pb)) / Double(max(1, CVPixelBufferGetHeight(pb)))
-                        if abs(a - model.aspect) > 0.01 { model.aspect = a }
+                    if let src = ImmersiveScreenBridge.shared.frameSource, let f = src() {
+                        var w = 0, h = 0
+                        if let pb = f.pixelBuffer { w = CVPixelBufferGetWidth(pb); h = CVPixelBufferGetHeight(pb) }
+                        else if let t = f.pqTexture { w = t.width; h = t.height }
+                        if w > 0, h > 0 {
+                            let a = Double(w) / Double(h)
+                            if abs(a - model.aspect) > 0.01 { model.aspect = a }
+                        }
                     }
                 }
             }
