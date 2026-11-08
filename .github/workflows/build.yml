@@ -1,4 +1,4 @@
-name: Build visionOS IPA
+name: Build unsigned IPAs
 
 on:
   push:
@@ -12,9 +12,23 @@ permissions:
 
 jobs:
   build:
-    name: Build unsigned IPA
+    name: ${{ matrix.name }}
     runs-on: macos-15
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: visionOS
+            scheme: BassPlayer
+            destination: generic/platform=visionOS
+            app: BassPlayer.app
+            suffix: visionos
+          - name: tvOS
+            scheme: BassPlayerTV
+            destination: generic/platform=tvOS
+            app: BassPlayerTV.app
+            suffix: tvos
 
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +41,7 @@ jobs:
       - name: Show toolchain
         run: |
           xcodebuild -version
-          xcodebuild -showsdks | grep -i xros || true
+          xcodebuild -showsdks | grep -Ei "xros|appletvos" || true
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -35,37 +49,37 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build for visionOS device (unsigned)
+      - name: Build ${{ matrix.name }} (unsigned)
         run: |
           set -o pipefail
           xcodebuild \
             -project BassPlayer.xcodeproj \
-            -scheme BassPlayer \
+            -scheme "${{ matrix.scheme }}" \
             -configuration Release \
-            -destination 'generic/platform=visionOS' \
+            -destination "${{ matrix.destination }}" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
-            build | tee build.log | grep -E "error:|warning: .*BassPlayer|BUILD" || true
-          grep -q "BUILD SUCCEEDED" build.log
+            build 2>&1 | tee build-${{ matrix.suffix }}.log | grep -E "error:|warning: .*BassPlayer|BUILD" || true
+          grep -q "BUILD SUCCEEDED" build-${{ matrix.suffix }}.log
 
       - name: Package IPA
         run: |
-          APP=$(find build/Build/Products -name "BassPlayer.app" -type d | head -n1)
+          APP=$(find build/Build/Products -name "${{ matrix.app }}" -type d | head -n1)
           test -n "$APP" || { echo "No .app found"; exit 1; }
           echo "App at: $APP"
           rm -rf Payload && mkdir Payload
           cp -R "$APP" Payload/
           VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
-          zip -qry "BassPlayer-${VERSION}-unsigned.ipa" Payload
+          zip -qry "BassPlayer-${VERSION}-${{ matrix.suffix }}-unsigned.ipa" Payload
           ls -lh *.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BassPlayer-unsigned-ipa
+          name: BassPlayer-${{ matrix.suffix }}-unsigned-ipa
           path: "*.ipa"
           if-no-files-found: error
 
@@ -73,8 +87,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build.log
+          name: build-log-${{ matrix.suffix }}
+          path: build-${{ matrix.suffix }}.log
 
       - name: Attach IPA to release
         if: startsWith(github.ref, 'refs/tags/v')

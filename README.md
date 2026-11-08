@@ -1,6 +1,6 @@
-# Bass Player for Apple Vision Pro
+# Bass Player for Apple Vision Pro and Apple TV
 
-A visionOS video player that streams the low-frequency channel of whatever you're watching
+A visionOS / tvOS video player that streams the low-frequency channel of whatever you're watching
 to a powered subwoofer over Bluetooth LE, while the full mix plays through the headset's
 audio pods or AirPods.
 
@@ -10,14 +10,16 @@ Jellyfin server ──HTTP──▶ Vision Pro app ──BLE (1 kHz sub-bass)─
                                  └─▶ built-in audio pods / AirPods (full mix)
 ```
 
-Built without a Mac: GitHub Actions produces an **unsigned IPA**, which you sideload with a
-free Apple ID using SideStore / iloader (wireless pairing, no dev strap).
+Built without a Mac: GitHub Actions produces **unsigned IPAs** for both platforms. Sideload with a
+free Apple ID: SideStore / iloader for the Vision Pro (wireless pairing, no dev strap),
+[atvloadly](https://github.com/bitxeno/atvloadly) for the Apple TV. Both talk to the same ESP32
+receiver, so one sub serves the headset and the TV.
 
 ## Repo layout
 
 | Path | What |
 |---|---|
-| `project.yml` | XcodeGen spec; CI generates `BassPlayer.xcodeproj` from it |
+| `project.yml` | XcodeGen spec with two targets, `BassPlayer` (visionOS) and `BassPlayerTV` (tvOS), sharing all sources |
 | `BassPlayer/App` | SwiftUI app entry, audio session |
 | `BassPlayer/Jellyfin` | Minimal Jellyfin client (sign-in, movie list, stream URL) |
 | `BassPlayer/Player` | `PlayerController` (AVPlayer, phase 1) + `PlayerView` |
@@ -55,7 +57,8 @@ free Apple ID using SideStore / iloader (wireless pairing, no dev strap).
 ## Building the app (CI)
 
 Every push to `main` runs `.github/workflows/build.yml` and uploads
-`BassPlayer-<version>-unsigned.ipa` as a workflow artifact. Tag `vX.Y.Z` to attach it to a
+`BassPlayer-<version>-visionos-unsigned.ipa` and `BassPlayer-<version>-tvos-unsigned.ipa` as
+workflow artifacts. Tag `vX.Y.Z` to attach it to a
 GitHub release.
 
 ## Installing on the Vision Pro
@@ -66,6 +69,12 @@ GitHub release.
    Settings → General → Remote Devices on the headset.
 3. Install SideStore, sign in with a free Apple ID, then install the IPA from the Actions
    artifact. Free-ID limits: 7-day signature (SideStore refreshes it), 3 apps max.
+
+## Installing on the Apple TV
+
+Run atvloadly (Docker, Linux/OpenWrt) on your LAN, pair it with the Apple TV via Settings →
+Remotes and Devices → Remote App and Devices, then upload the tvOS IPA. It re-signs with your free
+Apple ID and keeps the signature refreshed.
 
 ## Receiver
 
