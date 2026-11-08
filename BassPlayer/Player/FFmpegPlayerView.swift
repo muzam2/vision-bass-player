@@ -310,6 +310,9 @@ struct FFmpegPlayerView: View {
         .background(.regularMaterial, in: Capsule())
         .foregroundStyle(session.tapInstalled ? .green : .secondary)
         .allowsHitTesting(false)
+        // One accessibility element whose label is the whole chip text (read by the UI tests).
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("statusChip")
     }
 }
 

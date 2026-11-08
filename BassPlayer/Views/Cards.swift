@@ -29,6 +29,7 @@ struct CardButton<Label: View>: View {
 
     var body: some View {
         Button(action: action, label: label)
+            .accessibilityIdentifier("card")
         #if os(tvOS)
             .buttonStyle(.card)
         #else
