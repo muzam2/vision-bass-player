@@ -1,0 +1,52 @@
+From 189c32f53659b8f9dc402765905fc12a321ab1ac Mon Sep 17 00:00:00 2001
+From: James Almer <jamrial@gmail.com>
+Date: Tue, 26 Mar 2024 21:11:20 -0300
+Subject: [PATCH] avformat/mov: don't abort on duplicate Mastering Display
+ Metadata boxes
+
+The VP9 spec defines a SmDm box for this information, and the ISOBMFF spec defines a
+mdvc one. If both are present, just ignore one of them.
+This is in line with clli and CoLL boxes.
+
+Fixes ticket #10711.
+
+Signed-off-by: James Almer <jamrial@gmail.com>
+---
+ libavformat/mov.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/libavformat/mov.c b/libavformat/mov.c
+index e7aa8d183364d..5463f3677057d 100644
+--- a/libavformat/mov.c
++++ b/libavformat/mov.c
+@@ -6140,8 +6140,10 @@ static int mov_read_smdm(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+         av_log(c->fc, AV_LOG_WARNING, "Unsupported Mastering Display Metadata box version %d\n", version);
+         return 0;
+     }
+-    if (sc->mastering)
+-        return AVERROR_INVALIDDATA;
++    if (sc->mastering) {
++        av_log(c->fc, AV_LOG_WARNING, "Ignoring duplicate Mastering Display Metadata\n");
++        return 0;
++    }
+ 
+     avio_skip(pb, 3); /* flags */
+ 
+@@ -6178,11 +6180,16 @@ static int mov_read_mdcv(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+ 
+     sc = c->fc->streams[c->fc->nb_streams - 1]->priv_data;
+ 
+-    if (atom.size < 24 || sc->mastering) {
++    if (atom.size < 24) {
+         av_log(c->fc, AV_LOG_ERROR, "Invalid Mastering Display Color Volume box\n");
+         return AVERROR_INVALIDDATA;
+     }
+ 
++    if (sc->mastering) {
++        av_log(c->fc, AV_LOG_WARNING, "Ignoring duplicate Mastering Display Color Volume\n");
++        return 0;
++    }
++
+     sc->mastering = av_mastering_display_metadata_alloc();
+     if (!sc->mastering)
+         return AVERROR(ENOMEM);
