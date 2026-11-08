@@ -62,6 +62,15 @@ public final class MetalPlayView: UIView, VideoOutput {
                     } else {
                         displayLink.preferredFramesPerSecond = Int(preferredFramesPerSecond) << 1
                     }
+                } else {
+                    #if os(xrOS)
+                    // Bass Player patch: let the link run at the panel's own rate and pick frames
+                    // by clock (videoClockSync returns .remain when the next frame is not due).
+                    // For film rates ask for a 4x multiple (96 Hz for 24p) in case the panel
+                    // offers it; otherwise the native 90 Hz is still far better than 22.5.
+                    let preferred = fps <= 31 ? ceil(fps) * 4 : (fps <= 61 ? ceil(fps) * 2 : ceil(fps))
+                    displayLink.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, __preferred: preferred)
+                    #endif
                 }
                 options.updateVideo(refreshRate: fps, isDovi: isDovi, formatDescription: formatDescription)
             }
