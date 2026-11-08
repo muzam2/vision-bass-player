@@ -15,7 +15,7 @@ on:
 jobs:
   shots:
     name: ${{ matrix.name }}
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -23,7 +23,7 @@ jobs:
         include:
           - name: visionOS
             scheme: BassPlayer
-            destination: "platform=visionOS Simulator,name=Apple Vision Pro"
+            destination: "generic/platform=visionOS Simulator"
             device: "Apple Vision Pro"
             runtime: visionOS
             app: BassPlayer.app
@@ -31,7 +31,7 @@ jobs:
             suffix: visionos
           - name: tvOS
             scheme: BassPlayerTV
-            destination: "platform=tvOS Simulator,name=Apple TV 4K (3rd generation)"
+            destination: "generic/platform=tvOS Simulator"
             device: "Apple TV 4K (3rd generation)"
             runtime: tvOS
             app: BassPlayerTV.app
@@ -82,14 +82,30 @@ jobs:
           set -euo pipefail
           APP=$(find build/Build/Products -name "${{ matrix.app }}" -type d | head -n1)
           test -n "$APP"
-          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          pick() {
+            xcrun simctl list devices available -j | python3 -c '
           import json, sys
           data = json.load(sys.stdin)["devices"]
           want, runtime = sys.argv[1], sys.argv[2]
           picks = [(rt, d) for rt, ds in data.items() if runtime in rt for d in ds if d["name"] == want]
           picks.sort(key=lambda p: p[0], reverse=True)   # newest runtime first
           print(picks[0][1]["udid"] if picks else "")
-          ' "${{ matrix.device }}" "${{ matrix.runtime }}")
+          ' "${{ matrix.device }}" "${{ matrix.runtime }}"
+          }
+          UDID=$(pick)
+          if [ -z "$UDID" ]; then
+            # The image has the runtime but not always a pre-made device: create one.
+            RT=$(xcrun simctl list runtimes -j | python3 -c '
+          import json, sys
+          rts = [r for r in json.load(sys.stdin)["runtimes"] if r["platform"] == sys.argv[1] and r["isAvailable"]]
+          rts.sort(key=lambda r: [int(x) for x in r["version"].split(".")], reverse=True)
+          print(rts[0]["identifier"] if rts else "")
+          ' "${{ matrix.runtime }}")
+            test -n "$RT" || { xcrun simctl list runtimes; echo "no ${{ matrix.runtime }} runtime"; exit 1; }
+            echo "creating ${{ matrix.device }} on $RT"
+            xcrun simctl create "${{ matrix.device }}" "${{ matrix.device }}" "$RT"
+            UDID=$(pick)
+          fi
           test -n "$UDID" || { xcrun simctl list devices available; echo "no ${{ matrix.device }} simulator"; exit 1; }
           echo "simulator $UDID"
           xcrun simctl boot "$UDID" || true

@@ -61,7 +61,11 @@ struct LibraryGridView: View {
                 }
             }
             .navigationTitle(source.label)
+            #if !os(tvOS)
+            // tvOS's .searchable takes over the top of the screen with a keyboard that sits on
+            // top of the toolbar; there the search field is drawn inline above the grid instead.
             .searchable(text: $search, prompt: "Search titles")
+            #endif
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Picker("Show", selection: $filter) {
@@ -89,6 +93,19 @@ struct LibraryGridView: View {
     private var grid: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 32) {
+                #if os(tvOS)
+                HStack(spacing: 12) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search titles", text: $search)
+                        .textFieldStyle(.plain)
+                    if !search.isEmpty {
+                        Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 18).padding(.vertical, 12)
+                .background(.regularMaterial, in: Capsule())
+                #endif
                 if search.isEmpty && !continueWatching.isEmpty {
                     VStack(alignment: .leading, spacing: 14) {
                         SectionHeader(title: "Continue watching")
