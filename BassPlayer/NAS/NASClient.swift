@@ -48,6 +48,9 @@ final class NASClient: ObservableObject {
         } else {
             shares = []
         }
+        if shares.isEmpty, let host = ProcessInfo.processInfo.environment["BASSPLAYER_E2E_NAS_HOST"], !host.isEmpty {
+            shares = [NASShare(name: "CI", kind: .smb, address: host, username: "")]
+        }
     }
 
     private func save() {

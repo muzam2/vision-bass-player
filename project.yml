@@ -27,7 +27,43 @@ packages:
   KSPlayer:
     path: Vendor/KSPlayer
 
+schemes:
+  # Explicit scheme so `xcodebuild test -scheme BassPlayer` runs the UI tests in the simulator
+  # (e2e-tests.yml). The tvOS scheme stays auto-generated.
+  BassPlayer:
+    build:
+      targets:
+        BassPlayer: all
+        BassPlayerUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - BassPlayerUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
 targets:
+  # ---------------- End-to-end UI tests (visionOS simulator, CI) ----------------
+  BassPlayerUITests:
+    type: bundle.ui-testing
+    platform: visionOS
+    sources:
+      - path: BassPlayerUITests
+    dependencies:
+      - target: BassPlayer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.muzam2.bassplayer.uitests
+        TEST_TARGET_NAME: BassPlayer
+        TARGETED_DEVICE_FAMILY: "7"
+        SUPPORTED_PLATFORMS: "xros xrsimulator"
+
   # ---------------- Apple Vision Pro ----------------
   BassPlayer:
     type: application

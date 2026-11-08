@@ -15,6 +15,10 @@ struct BassPlayerApp: App {
     #endif
 
     init() {
+        // UI tests start from a clean slate (no saved servers, shares, recents or positions).
+        if ProcessInfo.processInfo.environment["BASSPLAYER_UITEST"] == "1", let id = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: id)
+        }
         let link = BassLink()
         BassLinkHolder.shared = link
         _bassLink = StateObject(wrappedValue: link)

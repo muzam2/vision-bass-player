@@ -120,10 +120,12 @@ struct NASShareEditor: View {
             Form {
                 Section("Share") {
                     TextField("Name (e.g. Synology)", text: $share.name)
+                        .accessibilityIdentifier("nasName")
                     Picker("Type", selection: $share.kind) {
                         ForEach(NASShare.Kind.allCases) { Text($0.label).tag($0) }
                     }
                     TextField(share.kind == .smb ? "nas.local/video  or  192.168.1.20" : "https://nas.local:5006/video", text: $share.address)
+                        .accessibilityIdentifier("nasAddress")
                         .textInputAutocapitalization(.never)
                     if share.kind == .smb {
                         Text("Host alone lists the shares; host/share opens one share directly.")

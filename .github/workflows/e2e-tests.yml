@@ -1,0 +1,150 @@
+# Drives the app in the visionOS simulator with XCUITest (BassPlayerUITests/E2ETests.swift):
+# YouTube search + playback against the real YouTube, NAS browsing + playback against a Samba
+# share started on the runner, and Plex (sign-in via a token from the PLEX_TOKEN repository
+# secret, through plex.tv remote access) when the secret exists. Screenshots, the app log and
+# any crash reports are uploaded as artifacts.
+name: E2E simulator tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [e2e-tests]
+    paths:
+      - "BassPlayer/**"
+      - "BassPlayerUITests/**"
+      - project.yml
+      - .github/workflows/e2e-tests.yml
+
+jobs:
+  e2e:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    env:
+      SMB_SHARE_DIR: /Users/runner/smbshare
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen and generate the project
+        run: brew install xcodegen && xcodegen generate
+
+      - name: Cache FFmpegKit binaries
+        uses: actions/cache@v4
+        with:
+          path: Vendor/FFmpegKit/Sources/*.xcframework
+          key: ffmpegkit-${{ hashFiles('Vendor/FFmpegKit/checksums.json', 'Vendor/FFmpegKit/RELEASE_TAG') }}
+
+      - name: Fetch FFmpegKit binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash Vendor/FFmpegKit/tools/fetch_binaries.sh
+
+      - name: Start an SMB share with a sample video (NAS stand-in)
+        run: |
+          set -euo pipefail
+          mkdir -p "$SMB_SHARE_DIR" /Users/runner/smb
+          # Test clip: 20 s colour bars with a 60 Hz sine (gives the bass extractor real low end).
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          if ! ffmpeg -v error -y -f lavfi -i "testsrc2=duration=20:size=1280x720:rate=30" \
+               -f lavfi -i "sine=frequency=60:duration=20" -c:v libx264 -preset veryfast -pix_fmt yuv420p \
+               -c:a aac -b:a 128k -shortest "$SMB_SHARE_DIR/sample.mp4"; then
+            echo "ffmpeg generation failed; trying public samples"
+            for u in "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4" \
+                     "https://download.samplelib.com/mp4/sample-5s.mp4"; do
+              curl -fsSL -o "$SMB_SHARE_DIR/sample.mp4" "$u" && break
+            done
+          fi
+          ls -la "$SMB_SHARE_DIR"; test -s "$SMB_SHARE_DIR/sample.mp4"
+          # Homebrew's samba has no smbd on macOS; impacket's SMB2 server (Python) stands in.
+          python3 -m venv /Users/runner/smb/venv
+          /Users/runner/smb/venv/bin/pip install -q impacket
+          # Port 445 needs root; anonymous/guest share, SMB2 enabled.
+          sudo nohup /Users/runner/smb/venv/bin/smbserver.py -smb2support -ip 0.0.0.0 -port 445 video "$SMB_SHARE_DIR" > /Users/runner/smb/smbserver.log 2>&1 &
+          sleep 4
+          /Users/runner/smb/venv/bin/python - <<'EOF'
+          from impacket.smbconnection import SMBConnection
+          c = SMBConnection("127.0.0.1", "127.0.0.1", sess_port=445)
+          c.login("", "")
+          shares = [s["shi1_netname"][:-1] for s in c.listShares()]
+          print("shares:", shares)
+          assert "VIDEO" in shares      # impacket upper-cases share names
+          files = [f.get_longname() for f in c.listPath("VIDEO", "*")]
+          print("files:", files)
+          assert "sample.mp4" in files
+          EOF
+
+      - name: Resolve Swift packages
+        run: |
+          for attempt in 1 2 3; do
+            xcodebuild -resolvePackageDependencies -project BassPlayer.xcodeproj -scheme BassPlayer \
+              -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation > resolve.log 2>&1 && exit 0
+            echo "resolve attempt $attempt failed"; grep -E "error|failed" resolve.log | cut -c1-200 | head -3
+          done
+          tail -40 resolve.log; exit 1
+
+      - name: Create the Apple Vision Pro simulator if missing
+        run: |
+          set -euo pipefail
+          if ! xcrun simctl list devices available | grep -q "Apple Vision Pro"; then
+            RT=$(xcrun simctl list runtimes -j | python3 -c '
+          import json, sys
+          rts = [r for r in json.load(sys.stdin)["runtimes"] if "xros" in r["identifier"].lower() and r["isAvailable"]]
+          rts.sort(key=lambda r: [int(x) for x in r["version"].split(".")], reverse=True)
+          print(rts[0]["identifier"])')
+            xcrun simctl create "Apple Vision Pro" "Apple Vision Pro" "$RT"
+          fi
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          for rt, ds in json.load(sys.stdin)["devices"].items():
+              for d in ds:
+                  if d["name"] == "Apple Vision Pro": print(d["udid"]); raise SystemExit')
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Run the UI tests
+        env:
+          TEST_RUNNER_E2E_SMB_HOST: 127.0.0.1
+          TEST_RUNNER_E2E_SMB_SHARE: VIDEO
+          TEST_RUNNER_E2E_SMB_FILE: sample.mp4
+          TEST_RUNNER_E2E_PLEX_TOKEN: ${{ secrets.PLEX_TOKEN }}
+        run: |
+          set -o pipefail
+          xcodebuild test -project BassPlayer.xcodeproj -scheme BassPlayer \
+            -destination "platform=visionOS Simulator,id=$UDID" \
+            -derivedDataPath build -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation \
+            -resultBundlePath e2e.xcresult \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO EXCLUDED_ARCHS=x86_64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            2>&1 | tee test.log | grep -E "error:|Test Case|Test Suite|passed|failed|skipped|E2E |BUILD|TEST" || true
+          # Fails on compile errors and on failing tests alike (skipped tests still succeed).
+          grep -q "TEST SUCCEEDED" test.log
+
+      - name: Collect results
+        if: always()
+        run: |
+          mkdir -p out
+          xcrun xcresulttool get test-results summary --path e2e.xcresult > out/summary.json 2>/dev/null || true
+          xcrun xcresulttool get test-results tests --path e2e.xcresult > out/tests.json 2>/dev/null || true
+          xcrun xcresulttool export attachments --path e2e.xcresult --output-path out/attachments 2>/dev/null || true
+          ls -la out/attachments 2>/dev/null | head -40 || true
+          cp ~/Library/Logs/DiagnosticReports/BassPlayer* out/ 2>/dev/null || true
+          xcrun simctl spawn "$UDID" log show --last 30m --predicate 'process == "BassPlayer"' > out/app.log 2>&1 || true
+          grep -E "E2E |Test Case|error:" test.log > out/test-highlights.txt || true
+          cp test.log out/
+          python3 - <<'EOF' || true
+          import json
+          s = json.load(open("out/summary.json"))
+          print("RESULT:", s.get("result"), "passed", s.get("passedTests"), "failed", s.get("failedTests"), "skipped", s.get("skippedTests"))
+          for f in s.get("testFailures", []): print("FAIL:", f.get("testName"), "-", (f.get("failureText") or "")[:300])
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results
+          path: out/
+          if-no-files-found: warn

@@ -184,6 +184,10 @@ final class LibraryStore: ObservableObject {
     /// Start playing an item. tvOS presents it full screen; visionOS opens the player window
     /// (RootView watches `playCounter`).
     func play(_ item: MediaItem) {
+        // Make autoplay-next work for a Plex episode started from Continue Watching too.
+        if item.source == .plex, let key = item.parentShowKey, plex.episodesByShow[key] == nil {
+            Task { _ = try? await plex.episodes(showKey: key) }
+        }
         nowPlaying = item
         playCounter += 1
     }
@@ -252,7 +256,8 @@ final class LibraryStore: ObservableObject {
 
     /// The item after `item` in its source's list (for autoplay).
     func next(after item: MediaItem) -> MediaItem? {
-        let list = items(for: item.source).filter { showEpisodes || !$0.isEpisode }
+        if item.source == .plex, item.isEpisode { return plex.nextEpisode(after: item) }
+        let list = items(for: item.source).filter { (showEpisodes || !$0.isEpisode) && !$0.isShow }
         guard let i = list.firstIndex(of: item), i + 1 < list.count else { return nil }
         return list[i + 1]
     }

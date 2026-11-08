@@ -20,6 +20,12 @@ struct YouTubeView: View {
                 content
             }
             .navigationTitle("YouTube")
+            .task {
+                if let q = ProcessInfo.processInfo.environment["BASSPLAYER_E2E_YT_QUERY"], !q.isEmpty, youtube.items.isEmpty {
+                    query = q
+                    submit(q)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
@@ -49,6 +55,7 @@ struct YouTubeView: View {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Search YouTube, or paste a link", text: $query)
                 .textFieldStyle(.plain)
+                .accessibilityIdentifier("youtubeSearch")
                 .focused($searchFocused)
                 .submitLabel(.search)
                 .onSubmit { submit(query) }
