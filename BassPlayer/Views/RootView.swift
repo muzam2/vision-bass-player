@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Top level: a tab bar (visionOS: the floating side ornament that expands into a sidebar;
 /// tvOS: the same adaptable style) with one destination per source plus Home and Settings.
@@ -31,6 +34,10 @@ struct RootView: View {
         .onChange(of: immersive.closeRequest) { _, _ in
             if immersive.isOpen { Task { await dismissImmersiveSpace() } }
         }
+        .background(WindowSceneProbe { s in if let s { MainWindowTracker.shared.attach(s) } })
+        .onReceive(NotificationCenter.default.publisher(for: UIScene.didDisconnectNotification)) { n in
+            MainWindowTracker.shared.detach(n.object as? UIWindowScene)
+        }
         .onAppear { immersive.reconcile(playback: library.playback, openWindow: openWindow) }
         .onChange(of: scenePhase) { _, p in if p == .active { immersive.reconcile(playback: library.playback, openWindow: openWindow) } }
         #else
@@ -62,3 +69,29 @@ enum PlayerWindow {
 enum MainWindow {
     static let id = "library"
 }
+
+#if os(visionOS)
+/// `openWindow(id:)` on a value-less WindowGroup opens *another* instance every time; three
+/// callers racing to bring the library back used to leave three library windows. This knows
+/// which library scenes are connected and opens one only when there is none.
+@MainActor
+final class MainWindowTracker {
+    static let shared = MainWindowTracker()
+    private var scenes: [ObjectIdentifier: WeakScene] = [:]
+    private var lastOpen = Date.distantPast
+    private struct WeakScene { weak var scene: UIWindowScene? }
+
+    func attach(_ scene: UIWindowScene) { scenes[ObjectIdentifier(scene)] = WeakScene(scene: scene) }
+    func detach(_ scene: UIWindowScene?) { if let scene { scenes[ObjectIdentifier(scene)] = nil } }
+
+    var isOpen: Bool { scenes.values.contains { $0.scene != nil } }
+
+    func open(_ openWindow: OpenWindowAction) {
+        if isOpen { return }
+        guard Date().timeIntervalSince(lastOpen) > 2 else { return }   // one in flight already
+        lastOpen = Date()
+        DiagLog.log("opening library window", "app")
+        openWindow(id: MainWindow.id)
+    }
+}
+#endif

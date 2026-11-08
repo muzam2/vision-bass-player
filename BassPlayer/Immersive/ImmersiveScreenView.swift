@@ -109,8 +109,12 @@ struct ImmersiveScreenView: View {
                     try await session.run([world])
                     state.arSession = session
                     state.worldTracking = world
-                    try? await Task.sleep(for: .milliseconds(300))
-                    recentre()
+                    // The device anchor is nil until tracking is actually running.
+                    for attempt in 1...30 {
+                        try? await Task.sleep(for: .milliseconds(150))
+                        if recentre() { DiagLog.log("initial recentre after \(attempt) tries", "immersive"); break }
+                        if attempt == 30 { DiagLog.log("no device anchor after 4.5 s; screen left at the space origin", "immersive") }
+                    }
                 } catch {
                     DiagLog.log("world tracking unavailable (\(error))", "immersive")
                 }
@@ -273,10 +277,7 @@ struct ImmersiveScreenView: View {
             root.position = model.headPosition
             root.orientation = simd_quatf(angle: Float(model.yaw * .pi / 180), axis: [0, 1, 0])
         } else {
-            // Rotate the offset around the viewer so yaw swings the screen around you.
-            let yawQ = simd_quatf(angle: Float(model.yaw * .pi / 180), axis: [0, 1, 0])
-            let offset = yawQ.act(SIMD3<Float>(0, 0, -Float(model.distance)))
-            root.position = SIMD3<Float>(model.headPosition.x, 0, model.headPosition.z) + offset + SIMD3<Float>(0, Float(model.height), 0)
+            root.position = model.position
             root.orientation = model.orientation
         }
     }
@@ -287,10 +288,11 @@ struct ImmersiveScreenView: View {
     private func placeAttachments() {
         let vr = ImmersiveScreenBridge.shared.projection.isImmersiveVideo
         let halfH = vr ? 0.9 : Float(model.screenHeight) / 2
-        let yawQ = simd_quatf(angle: Float(model.yaw * .pi / 180), axis: [0, 1, 0])
-        let head = model.headPosition
-        hud.position = SIMD3<Float>(head.x, 0, head.z) + yawQ.act(SIMD3<Float>(0, 0, -1.35)) + SIMD3<Float>(0, head.y - 0.45, 0)
-        hud.orientation = yawQ * simd_quatf(angle: -0.35, axis: [1, 0, 0])
+        // Along the same (tilted) gaze line as the screen, a little below it, facing the viewer.
+        let gaze = simd_quatf(angle: Float(model.yaw * .pi / 180), axis: [0, 1, 0])
+            * simd_quatf(angle: Float((vr ? 0 : model.tilt) * .pi / 180), axis: [1, 0, 0])
+        hud.position = model.headPosition + gaze.act(SIMD3<Float>(0, -0.45, -1.35))
+        hud.orientation = gaze * simd_quatf(angle: -0.35, axis: [1, 0, 0])
         if let c = state.controls {
             c.scale = SIMD3<Float>(repeating: 1)
             c.position = .zero
@@ -313,13 +315,15 @@ struct ImmersiveScreenView: View {
     }
 
     /// Place the screen (or VR sphere) straight ahead of where the user is looking now.
-    private func recentre() {
+    @discardableResult
+    private func recentre() -> Bool {
         guard let world = state.worldTracking,
-              let anchor = world.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()) else { return }
+              let anchor = world.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()), anchor.isTracked else { return false }
         let t = anchor.originFromAnchorTransform
         let p = SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z)
         let f = -SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z)
         model.recentre(headPosition: p, headForward: f)
+        return true
     }
 
     // MARK: - Gestures
@@ -349,11 +353,14 @@ struct ImmersiveScreenView: View {
                 if dragStart == nil { dragStart = root.position }
                 guard let start = dragStart else { return }
                 guard !ImmersiveScreenBridge.shared.projection.isImmersiveVideo else { return }
+                // Dragging moves the screen around the viewer and keeps it facing them.
                 let delta = value.convert(value.translation3D, from: .local, to: .scene)
-                let p = start + delta - SIMD3<Float>(model.headPosition.x, 0, model.headPosition.z)
-                model.distance = Double(max(0.5, simd_length(SIMD2<Float>(p.x, p.z))))
-                model.height = Double(p.y)
+                let p = start + delta - model.headPosition
+                let d = max(0.5, simd_length(p))
+                model.distance = Double(d)
                 model.yaw = Double(atan2(-p.x, -p.z) * 180 / .pi)
+                model.tilt = Double(asin(max(-1, min(1, p.y / d))) * 180 / .pi)
+                model.height = 0
             }
             .onEnded { _ in dragStart = nil }
     }
@@ -393,7 +400,7 @@ struct ImmersiveControlPanel: View {
                         // scenes next), bring the library back, then take the cinema down.
                         DiagLog.log("stop pressed (cinema)", "player")
                         library.playback.end()
-                        openWindow(id: MainWindow.id)
+                        MainWindowTracker.shared.open(openWindow)
                         Task {
                             await dismissImmersiveSpace()
                             model.noteClosed(playback: library.playback, openWindow: openWindow, reason: "stop")
@@ -409,20 +416,29 @@ struct ImmersiveControlPanel: View {
                         .buttonStyle(.borderedProminent)
                 }
             }
-            HStack(spacing: 14) {
-                Label("Size", systemImage: "arrow.up.left.and.arrow.down.right")
-                Slider(value: $model.width, in: 1...14).frame(width: 170)
-                Label("Distance", systemImage: "arrow.left.and.right")
-                Slider(value: $model.distance, in: 1...10).frame(width: 170)
-                Label("Curve", systemImage: "rectangle.portrait.and.arrow.right")
-                Slider(value: $model.curvature, in: 0...1).frame(width: 120)
-                Button("Recentre") { model.recentreRequest += 1 }
-                Button("Reset") { model.reset() }
-                Spacer()
-                Button { exitCinema() } label: {
-                    Label("Exit cinema", systemImage: "rectangle.on.rectangle")
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                GridRow {
+                    Label("Size", systemImage: "arrow.up.left.and.arrow.down.right")
+                    Slider(value: $model.width, in: 1...14).frame(width: 190)
+                    Label("Distance", systemImage: "arrow.left.and.right")
+                    Slider(value: $model.distance, in: 1...10).frame(width: 190)
+                    Label("Curve", systemImage: "rectangle.portrait.and.arrow.right")
+                    Slider(value: $model.curvature, in: 0...1).frame(width: 150)
+                    Button("Recentre") { model.recentreRequest += 1 }
+                    Button("Reset") { model.reset() }
                 }
-                .buttonStyle(.borderedProminent)
+                GridRow {
+                    Label("Height", systemImage: "arrow.up.and.down")
+                    Slider(value: $model.height, in: -2...2).frame(width: 190)
+                    Label("Tilt", systemImage: "rotate.3d")
+                    Slider(value: $model.tilt, in: -60...85).frame(width: 190)
+                    Text(String(format: "%.0f°", model.tilt)).font(.caption).foregroundStyle(.secondary).gridCellColumns(2)
+                    Button { exitCinema() } label: {
+                        Label("Exit cinema", systemImage: "rectangle.on.rectangle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .gridCellColumns(2)
+                }
             }
             .font(.callout)
             .labelStyle(.iconOnly)
@@ -436,13 +452,15 @@ struct ImmersiveControlPanel: View {
         .onChange(of: model.width) { _, _ in onInteract() }
         .onChange(of: model.distance) { _, _ in onInteract() }
         .onChange(of: model.curvature) { _, _ in onInteract() }
+        .onChange(of: model.height) { _, _ in onInteract() }
+        .onChange(of: model.tilt) { _, _ in onInteract() }
     }
 
     /// Back to the window: open it (or the library when nothing plays) *before* the space goes,
     /// so the user is never left in an empty void if the space's onDisappear does not run.
     private func exitCinema() {
         DiagLog.log("exit cinema pressed", "immersive")
-        openWindow(id: MainWindow.id)
+        MainWindowTracker.shared.open(openWindow)
         if let item = library.playback.item {
             openWindow(id: PlayerWindow.id, value: item)
         }
@@ -466,7 +484,7 @@ struct ImmersiveScreenToggle: View {
         Button {
             Task {
                 if model.isOpen {
-                    openWindow(id: MainWindow.id)
+                    MainWindowTracker.shared.open(openWindow)
                     if let item = library.playback.item { openWindow(id: PlayerWindow.id, value: item) }
                     await dismissSpace()
                     model.noteClosed(playback: library.playback, openWindow: openWindow, reason: "toggle")
@@ -496,8 +514,8 @@ struct ImmersiveScreenSettings: View {
             Section("Screen") {
                 LabeledSlider("Width", value: $model.width, range: 1...14, unit: "m")
                 LabeledSlider("Distance", value: $model.distance, range: 1...10, unit: "m")
-                LabeledSlider("Height", value: $model.height, range: -2...3, unit: "m")
-                LabeledSlider("Tilt", value: $model.tilt, range: -60...60, unit: "°")
+                LabeledSlider("Height", value: $model.height, range: -2...2, unit: "m")
+                LabeledSlider("Tilt", value: $model.tilt, range: -60...85, unit: "°")
                 LabeledSlider("Curve", value: $model.curvature, range: 0...1, unit: "")
                 HStack {
                     Button("Recentre") { model.recentreRequest += 1 }
@@ -549,7 +567,7 @@ extension ImmersiveScreenModel {
         ImmersiveScreenBridge.shared.pushFrame = nil
         let wasDetached = playback.detachedForImmersive
         playback.detachedForImmersive = false
-        openWindow(id: MainWindow.id)
+        MainWindowTracker.shared.open(openWindow)
         if wasDetached, let item = playback.item {
             openWindow(id: PlayerWindow.id, value: item)
         }

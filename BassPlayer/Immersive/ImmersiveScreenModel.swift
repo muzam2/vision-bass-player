@@ -60,10 +60,15 @@ final class ImmersiveScreenModel: ObservableObject {
             for k in ["imm.width", "imm.distance", "imm.height", "imm.tilt", "imm.yaw", "imm.curve"] { d.removeObject(forKey: k) }
             d.set(3, forKey: "imm.layoutVersion")
         }
+        // Layout v4: height became an offset from the gaze line and tilt the gaze pitch.
+        if d.integer(forKey: "imm.layoutVersion") < 4 {
+            for k in ["imm.height", "imm.tilt"] { d.removeObject(forKey: k) }
+            d.set(4, forKey: "imm.layoutVersion")
+        }
         func num(_ k: String, _ def: Double) -> Double { d.object(forKey: k) == nil ? def : d.double(forKey: k) }
         width = num("imm.width", Self.defaultWidth)
         distance = num("imm.distance", Self.defaultDistance)
-        height = num("imm.height", 1.5)        // metres above the floor (immersive-space origin)
+        height = num("imm.height", 0)          // metres above/below the gaze line
         tilt = num("imm.tilt", 0)
         yaw = num("imm.yaw", 0)
         curvature = num("imm.curve", Self.defaultCurve)
@@ -83,30 +88,41 @@ final class ImmersiveScreenModel: ObservableObject {
 
     var screenHeight: Double { width / aspect }
 
+    /// Defaults for size and shape, then the screen is put back on the current gaze line.
     func reset() {
         width = Self.defaultWidth; distance = Self.defaultDistance
-        height = max(1.0, Double(headPosition.y) + 0.1); tilt = 0; yaw = 0; curvature = Self.defaultCurve
+        height = 0; curvature = Self.defaultCurve
+        recentreRequest += 1
     }
 
-    /// Put the screen straight ahead of the given head pose at the current distance.
+    /// Put the screen on the line the user is looking along right now, at the current distance:
+    /// yaw from the horizontal heading, tilt from the pitch (so lying down and looking at the
+    /// ceiling puts the screen above you, facing down). Height offset is cleared.
     func recentre(headPosition p: SIMD3<Float>, headForward f: SIMD3<Float>) {
         headPosition = p
         let fh = SIMD3<Float>(f.x, 0, f.z)
         if simd_length(fh) > 0.01 {
             yaw = Double(atan2(-fh.x, -fh.z) * 180 / .pi)
         }
-        height = Double(p.y) + 0.1
+        tilt = Double(asin(max(-1, min(1, f.y))) * 180 / .pi)
+        height = 0
+        DiagLog.log(String(format: "recentre: head (%.2f, %.2f, %.2f) yaw %.0f° pitch %.0f°", p.x, p.y, p.z, yaw, tilt), "immersive")
     }
 
-    /// Orientation from yaw (around Y) then tilt (around X).
+    /// Yaw (around Y) then tilt (around X). Positive tilt raises the screen above the eye line
+    /// and turns it to face down at the viewer; negative lowers it.
     var orientation: simd_quatf {
         let y = simd_quatf(angle: Float(yaw * .pi / 180), axis: [0, 1, 0])
-        let t = simd_quatf(angle: Float(-tilt * .pi / 180), axis: [1, 0, 0])
+        let t = simd_quatf(angle: Float(tilt * .pi / 180), axis: [1, 0, 0])
         return y * t
     }
 
+    /// Screen centre: `distance` along the tilted gaze line from the head, plus the height offset.
     var position: SIMD3<Float> {
-        [0, Float(height), -Float(distance)]
+        let t = Float(tilt * .pi / 180)
+        let yawQ = simd_quatf(angle: Float(yaw * .pi / 180), axis: [0, 1, 0])
+        let ahead = yawQ.act(SIMD3<Float>(0, 0, -Float(distance) * cos(t)))
+        return SIMD3<Float>(headPosition.x, headPosition.y, headPosition.z) + ahead + SIMD3<Float>(0, Float(distance) * sin(t) + Float(height), 0)
     }
 }
 #endif
