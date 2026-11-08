@@ -12,7 +12,8 @@ struct SettingsView: View {
     @State private var showAddShare = false
     @State private var showYouTubeSignIn = false
     @AppStorage("diag.uploadURL") private var diagUploadURL = "http://192.168.0.191:8799/log"
-    @State private var diagTail = ""
+    @AppStorage("diag.live") private var diagLive = false
+    @State private var diagShow = false
     @State private var diagStatus: String?
     @State private var diagBusy = false
 
@@ -203,31 +204,47 @@ struct SettingsView: View {
             TextField("Log receiver, e.g. http://192.168.0.191:8799/log", text: $diagUploadURL)
                 .textInputAutocapitalization(.never).keyboardType(.URL).autocorrectionDisabled()
             #endif
-            HStack {
-                Button {
-                    diagBusy = true
-                    Task {
-                        defer { diagBusy = false }
-                        guard let url = URL(string: diagUploadURL) else { diagStatus = "Bad receiver address"; return }
-                        do { diagStatus = "Sent: " + (try await DiagLog.shared.upload(to: url)) }
-                        catch { diagStatus = "Send failed: \(error.localizedDescription)" }
-                    }
-                } label: {
-                    if diagBusy { ProgressView() } else { Label("Send log to computer", systemImage: "paperplane") }
+            // One button per row: in a Form, several plain buttons in one row all fire on a
+            // single tap (which is how "Send log" used to clear the log before sending it).
+            Button {
+                diagBusy = true
+                Task {
+                    defer { diagBusy = false }
+                    guard let url = URL(string: diagUploadURL) else { diagStatus = "Bad receiver address"; return }
+                    do { diagStatus = "Sent: " + (try await DiagLog.shared.upload(to: url)) }
+                    catch { diagStatus = "Send failed: \(error.localizedDescription)" }
                 }
-                .disabled(diagBusy)
-                Button("Show log") { diagTail = DiagLog.shared.tail(80) }
-                Button("Clear", role: .destructive) { DiagLog.shared.clear(); diagTail = "" }
+            } label: {
+                if diagBusy { ProgressView() } else { Label("Send log to computer", systemImage: "paperplane") }
             }
-            if let diagStatus { Text(diagStatus).font(.footnote).foregroundStyle(.secondary) }
-            if !diagTail.isEmpty {
-                ScrollView {
-                    Text(diagTail).font(.system(size: 11, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading)
-                        #if !os(tvOS)
-                        .textSelection(.enabled)
-                        #endif
+            .disabled(diagBusy)
+            Toggle("Stream log live to computer", isOn: $diagLive)
+                .onChange(of: diagLive, initial: true) { _, on in
+                    DiagLog.shared.setLive(url: on ? URL(string: diagUploadURL) : nil)
                 }
-                .frame(height: 260)
+            Toggle("Show log", isOn: $diagShow)
+            if let diagStatus { Text(diagStatus).font(.footnote).foregroundStyle(.secondary) }
+            if diagShow {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("\(DiagLog.shared.lineCount) lines · stream \(DiagLog.shared.liveStatus)")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                Text(DiagLog.shared.tail(120))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    #if !os(tvOS)
+                                    .textSelection(.enabled)
+                                    #endif
+                                Color.clear.frame(height: 1).id("end")
+                            }
+                            .onAppear { proxy.scrollTo("end") }
+                        }
+                        .frame(height: 320)
+                    }
+                }
+                Button("Clear log", role: .destructive) { DiagLog.shared.clear() }
             }
         } header: {
             Label("Diagnostics", systemImage: "waveform.path.ecg")

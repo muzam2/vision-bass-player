@@ -2,6 +2,9 @@ import Foundation
 import SwiftUI
 import Combine
 import KSPlayer
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Owns the one running playback: KSPlayer's coordinator (player layer, subtitle model, time
 /// model) and the `FFmpegSession` (bass pipeline, progress, cinema-screen frame sink).
@@ -19,10 +22,17 @@ final class PlaybackController: ObservableObject {
     /// True while the player window has been dismissed in favour of the cinema screen; the
     /// player view's disappearance must not end playback then.
     var detachedForImmersive = false
-    /// Set by the cinema's Stop button: the space closes, the window reopens, then ends playback
-    /// and closes itself (so the user lands back on the library instead of in an empty void).
-    var stopAfterCinema = false
     private var sessionSink: AnyCancellable?
+    #if os(visionOS)
+    /// The UIKit scene of the player window (reported by `WindowSceneProbe`). SwiftUI's
+    /// onDisappear is not delivered when the user closes a window with its close button, but
+    /// the scene does disconnect — that is what ends playback then.
+    weak var windowScene: UIWindowScene? {
+        didSet { if windowScene !== oldValue, windowScene != nil { DiagLog.log("player window scene attached", "playback") } }
+    }
+    private var pausedForBackground = false
+    private var sceneObservers: [NSObjectProtocol] = []
+    #endif
 
     var isActive: Bool { item != nil }
 
@@ -31,7 +41,48 @@ final class PlaybackController: ObservableObject {
         coordinator.onStateChanged = { [weak self] layer, state in
             Task { @MainActor in self?.handle(state: state, layer: layer) }
         }
+        #if os(visionOS)
+        let nc = NotificationCenter.default
+        sceneObservers = [
+            nc.addObserver(forName: UIScene.didDisconnectNotification, object: nil, queue: .main) { [weak self] n in
+                MainActor.assumeIsolated { self?.sceneDisconnected(n.object as? UIWindowScene) }
+            },
+            nc.addObserver(forName: UIScene.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] n in
+                MainActor.assumeIsolated { self?.sceneBackgrounded(n.object as? UIWindowScene) }
+            },
+            nc.addObserver(forName: UIScene.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] n in
+                MainActor.assumeIsolated { self?.sceneForegrounded(n.object as? UIWindowScene) }
+            },
+        ]
+        #endif
     }
+
+    #if os(visionOS)
+    private func sceneDisconnected(_ scene: UIWindowScene?) {
+        guard let scene, scene === windowScene else { return }
+        windowScene = nil
+        if detachedForImmersive {
+            DiagLog.log("player window scene gone (cinema has the picture)", "playback")
+        } else if isActive {
+            DiagLog.log("player window closed → ending playback", "playback")
+            end()
+        }
+    }
+
+    private func sceneBackgrounded(_ scene: UIWindowScene?) {
+        guard let scene, scene === windowScene, !detachedForImmersive, state.isPlaying else { return }
+        pausedForBackground = true
+        coordinator.playerLayer?.pause()
+        DiagLog.log("player window in background → paused", "playback")
+    }
+
+    private func sceneForegrounded(_ scene: UIWindowScene?) {
+        guard let scene, scene === windowScene, pausedForBackground else { return }
+        pausedForBackground = false
+        coordinator.playerLayer?.play()
+        DiagLog.log("player window back → resumed", "playback")
+    }
+    #endif
 
     /// Start (or keep) playback of `item`. Called whenever a player view appears; the same item
     /// re-appearing after the window was reopened just gets the running session back.
@@ -67,6 +118,9 @@ final class PlaybackController: ObservableObject {
         url = nil
         state = .initialized
         detachedForImmersive = false
+        #if os(visionOS)
+        pausedForBackground = false
+        #endif
     }
 
     func togglePlayPause() {

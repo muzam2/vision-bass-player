@@ -3,7 +3,9 @@
 
   GET  /<file>   serves files from --dir (e.g. a freshly built .ipa to download in Safari)
   POST /log      stores the body as logs/<device>-<timestamp>.log (Bass Player → Settings →
-                 Diagnostics → "Send log to computer")
+                 Diagnostics → "Send log to computer"); with header "X-Log-Mode: append" (the
+                 app's "Stream log live" toggle) the body is appended to logs/live-<device>.log,
+                 which you can `tail -f` while the headset is in use.
 
 Run:  python3 tools/diag_receiver.py --bind 192.168.0.191 --port 8799 --dir ~/Downloads/ipa-serve
 """
@@ -15,6 +17,8 @@ import re
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    last_launch: dict = {}
+
     def do_POST(self):
         if self.path.rstrip("/") != "/log":
             self.send_error(404)
@@ -24,10 +28,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         device = re.sub(r"[^A-Za-z0-9._-]+", "_", self.headers.get("X-Device-Name", "device"))[:40]
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         os.makedirs(self.log_dir, exist_ok=True)
-        path = os.path.join(self.log_dir, f"{device}-{stamp}.log")
-        with open(path, "wb") as f:
-            f.write(body)
-        reply = f"saved {len(body)} bytes as {os.path.basename(path)}".encode()
+        if self.headers.get("X-Log-Mode") == "append":
+            path = os.path.join(self.log_dir, f"live-{device}.log")
+            launch = self.headers.get("X-Launch", "?")
+            with open(path, "ab") as f:
+                if Handler.last_launch.get(device) != launch:
+                    Handler.last_launch[device] = launch
+                    f.write(f"\n===== stream from launch {launch} at {stamp} =====\n".encode())
+                f.write(body)
+            reply = f"appended {len(body)} bytes".encode()
+        else:
+            path = os.path.join(self.log_dir, f"{device}-{stamp}.log")
+            with open(path, "wb") as f:
+                f.write(body)
+            reply = f"saved {len(body)} bytes as {os.path.basename(path)}".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(reply)))

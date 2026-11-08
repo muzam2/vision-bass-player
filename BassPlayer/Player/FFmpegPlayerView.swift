@@ -250,7 +250,6 @@ struct FFmpegPlayerView: View {
     @EnvironmentObject private var bassLink: BassLink
     @EnvironmentObject private var library: LibraryStore
     @AppStorage("bass.leadMs") private var leadMs: Int = 0
-    @Environment(\.dismiss) private var dismissWindow
     #if os(visionOS)
     @EnvironmentObject private var immersive: ImmersiveScreenModel
     #endif
@@ -273,14 +272,10 @@ struct FFmpegPlayerView: View {
                 Color.black
             }
         }
+        #if os(visionOS)
+        .background(WindowSceneProbe { scene in if let scene { playback.windowScene = scene } })
+        #endif
         .onAppear {
-            if playback.stopAfterCinema {
-                playback.stopAfterCinema = false
-                playback.end()
-                DiagLog.log("stop (deferred from cinema) → closing player window", "player")
-                dismissWindow()
-                return
-            }
             if bassLink.state == .off { bassLink.start() }
             let session = playback.begin(item: item, url: url, library: library, leadMs: leadMs)
             session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive)
@@ -356,3 +351,27 @@ final class ImmersiveScreenBridge {
     /// video component, which renders stereo natively.
     var avPlayer: AVPlayer?
 }
+
+#if os(visionOS)
+/// Reports the UIKit window scene a SwiftUI view ends up in (nil when it leaves a window).
+struct WindowSceneProbe: UIViewRepresentable {
+    var onChange: (UIWindowScene?) -> Void
+
+    func makeUIView(context: Context) -> ProbeView {
+        let v = ProbeView()
+        v.isUserInteractionEnabled = false
+        v.onChange = onChange
+        return v
+    }
+
+    func updateUIView(_ v: ProbeView, context: Context) { v.onChange = onChange }
+
+    final class ProbeView: UIView {
+        var onChange: ((UIWindowScene?) -> Void)?
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            onChange?(window?.windowScene)
+        }
+    }
+}
+#endif
