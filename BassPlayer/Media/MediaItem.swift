@@ -27,12 +27,17 @@ struct MediaItem: Identifiable, Hashable {
     let audioChannels: Int?
     let videoRange: String?        // "SDR", "HDR10", "HLG", "Dolby Vision"...
     let isEpisode: Bool
+    let width: Int?
+    let height: Int?
+    /// Detected 3D packing (nil = 2D as far as we can tell). User overrides live in LibraryStore.
+    let stereo: StereoFormat?
 
     var formatBadge: String {
         var parts: [String] = []
         if let c = container { parts.append(c.uppercased()) }
         if let v = videoCodec { parts.append(v.uppercased()) }
         if let r = videoRange, r.uppercased() != "SDR" { parts.append(r) }
+        if let st = stereo { parts.append(st.label.replacingOccurrences(of: "3D · ", with: "3D ")) }
         if let a = audioCodec {
             var s = a.uppercased()
             if let ch = audioChannels { s += " \(channelLabel(ch))" }

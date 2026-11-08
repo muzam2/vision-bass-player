@@ -33,6 +33,15 @@ public final class MetalPlayView: UIView, VideoOutput {
     private var isDovi: Bool = false
     /// Last frame handed to the renderer (lets hosts read per-frame Dolby Vision metadata).
     public private(set) var currentFrame: VideoVTBFrame?
+    /// Visible portion of the frame (unit rect, origin top-left). Used to show one eye of a
+    /// side-by-side / top-bottom 3D frame on a flat display. Pair with `KSOptions.customizeDar`.
+    public var contentsCrop = CGRect(x: 0, y: 0, width: 1, height: 1) {
+        didSet {
+            guard contentsCrop != oldValue else { return }
+            displayView.displayLayer.contentsRect = contentsCrop
+            metalView.metalLayer.contentsRect = contentsCrop
+        }
+    }
     private var formatDescription: CMFormatDescription? {
         didSet {
             options.updateVideo(refreshRate: fps, isDovi: isDovi, formatDescription: formatDescription)
@@ -232,6 +241,7 @@ extension MetalPlayView {
                 displayView.removeFromSuperview()
                 displayView = AVSampleBufferDisplayView()
                 displayView.frame = frame
+                displayView.displayLayer.contentsRect = contentsCrop
                 addSubview(displayView)
             }
             formatDescription = pixelBuffer.formatDescription

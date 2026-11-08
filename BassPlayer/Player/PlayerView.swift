@@ -11,7 +11,7 @@ struct PlayerView: View {
     var body: some View {
         Group {
             if let url = library.url(for: item) {
-                switch library.backend {
+                switch library.effectiveBackend(for: item) {
                 case .ffmpeg:
                     FFmpegPlayerView(item: item, url: url)
                 case .avplayer:
@@ -26,10 +26,32 @@ struct PlayerView: View {
         #if os(visionOS)
         .toolbar {
             ToolbarItem(placement: .bottomOrnament) {
-                ImmersiveScreenToggle()
+                HStack(spacing: 16) {
+                    ImmersiveScreenToggle()
+                    stereoPicker
+                }
             }
         }
+        #else
+        .toolbar {
+            ToolbarItem(placement: .automatic) { stereoPicker }
+        }
         #endif
+    }
+
+    /// 3D packing override. "Auto" shows what was detected.
+    private var stereoPicker: some View {
+        let detected = item.stereo?.label ?? "2D"
+        return Picker(selection: Binding(
+            get: { library.stereoOverride(for: item) },
+            set: { library.setStereoOverride($0, for: item) }
+        )) {
+            Text("Auto (\(detected))").tag(StereoFormat.auto)
+            ForEach(StereoFormat.allCases.filter { $0 != .auto }) { Text($0.label).tag($0) }
+        } label: {
+            Label("3D", systemImage: "view.3d")
+        }
+        .pickerStyle(.menu)
     }
 }
 
@@ -65,8 +87,14 @@ struct AVPlayerBackendView: View {
         .onAppear {
             if bassLink.state == .off { bassLink.start() }
             controller.load(url: url)
+            ImmersiveScreenBridge.shared.frameSource = nil
+            ImmersiveScreenBridge.shared.stereoFormat = .mono
+            ImmersiveScreenBridge.shared.avPlayer = controller.player
         }
-        .onDisappear { controller.stop() }
+        .onDisappear {
+            controller.stop()
+            ImmersiveScreenBridge.shared.avPlayer = nil
+        }
     }
 }
 
