@@ -29,6 +29,7 @@ final class ImmersiveScreenModel: ObservableObject {
     @Published var hdr: Bool { didSet { d.set(hdr, forKey: "imm.hdr") } }
 
     init() {
+        let d = UserDefaults.standard
         func num(_ k: String, _ def: Double) -> Double { d.object(forKey: k) == nil ? def : d.double(forKey: k) }
         width = num("imm.width", 4.0)
         distance = num("imm.distance", 3.0)
