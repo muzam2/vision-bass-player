@@ -28,7 +28,7 @@ struct MediaItem: Identifiable, Hashable, Codable {
     var directURL: URL?
     /// URL that AVPlayer can handle (may be a server-side remux/transcode). Falls back to directURL.
     var avPlayerURL: URL?
-    let container: String?
+    var container: String?
     let videoCodec: String?
     let audioCodec: String?
     let audioChannels: Int?

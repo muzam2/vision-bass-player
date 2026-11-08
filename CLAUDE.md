@@ -49,7 +49,14 @@ Apple ID. Nothing has run on hardware yet.
 - FFmpegKit already links **libsmbclient**: `smb://user:pass@host/share/file` plays and
   `NetworkDirectory.list` (avio_open_dir) browses. No NFS. ISOs don't play.
 - YouTube: `InnerTubeClient.Client.playbackOrder` is the thing to update from yt-dlp when
-  playback breaks. Stream URLs are tied to the client's User-Agent (`options.userAgent`).
+  playback breaks (`_base.py` clients, `_video.py` `_DEFAULT_JSLESS_CLIENTS`). VISIONOS first,
+  IOS fallback; every player call sends a visitor id (`VisitorID`, scraped from the home page),
+  without which YouTube bot-checks. FFmpeg gets a local one-variant master
+  (`HLSVariantPicker`, SDR only, `protocol_whitelist` set in `FFmpegSession.configure`).
+- FFmpegKit 6.1.4 is stock FFmpeg 6.1 (no patches): it rejects init segments with both
+  `mdcv` + `SmDm` (YouTube HDR; fixed in 7.1) and loses video after any seek in fMP4 HLS
+  (`mov_read_packet` doesn't reset its fragment index on HLS seek; fixed in 8.1). YouTube
+  resume is disabled for that reason. FFmpegKit 9.x has the fixes but drops libsmbclient.
 - `MediaItem` is `Codable` (recents); new fields need defaults so the memberwise init stays
   compatible with the four source clients.
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and

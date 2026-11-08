@@ -105,20 +105,35 @@ final class FFmpegSession: ObservableObject {
         extractor.onPacket = { [weak bassLink] packet in bassLink?.send(packet) }
     }
 
+    /// Open-time options. Must run before the view is built: KSPlayer creates its player layer
+    /// (and starts opening the URL) in makeUIView, which can precede onAppear.
+    func configure(for item: MediaItem) {
+        if let ua = item.userAgent { options.userAgent = ua }    // YouTube URLs are tied to the requesting client
+        if item.source == .youtube {
+            // YouTube plays from a local single-variant master (HLSVariantPicker) whose
+            // playlists and segments are https: a file-opened HLS is limited to local protocols
+            // unless whitelisted.
+            options.formatContextOptions["protocol_whitelist"] = "file,http,https,tcp,tls,crypto,data"
+        }
+    }
+
     func start(coordinator: KSVideoPlayer.Coordinator, leadMs: Int, item: MediaItem? = nil, library: LibraryStore? = nil) {
         self.coordinator = coordinator
         self.item = item
         self.library = library
         tap.leadMs = leadMs
         options.videoDelay = Double(leadMs) / 1000
-        if let ua = item?.userAgent { options.userAgent = ua }    // YouTube URLs are tied to the requesting client
         sponsorSkipper = SponsorSkipper()
         finished = false
         reportedStart = false
         sleepFired = false
         if let item, let library {
             library.noteStarted(item)
-            if library.resumePlayback, let pos = library.savedPosition(for: item), pos > 30 {
+            // FFmpeg 6.1 loses all video after a seek in fMP4 HLS (stale fragment index in the
+            // mov demuxer; fixed upstream in 8.1), so a YouTube resume would open on a black
+            // screen. Start from the beginning until FFmpegKit is rebuilt with that fix.
+            let canSeekAtOpen = item.source != .youtube
+            if canSeekAtOpen, library.resumePlayback, let pos = library.savedPosition(for: item), pos > 30 {
                 options.startPlayTime = pos        // KSPlayer seeks here once the file opens
             }
         }
@@ -248,7 +263,11 @@ struct FFmpegPlayerView: View {
         self.item = item
         self.url = url
         self.onFinished = onFinished
-        _session = StateObject(wrappedValue: FFmpegSession(bassLink: BassLinkHolder.shared))
+        _session = StateObject(wrappedValue: {
+            let session = FFmpegSession(bassLink: BassLinkHolder.shared)
+            session.configure(for: item)
+            return session
+        }())
     }
 
     var body: some View {

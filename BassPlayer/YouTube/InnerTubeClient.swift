@@ -5,7 +5,11 @@ import Foundation
 ///
 /// YouTube changes which clients hand out un-ciphered URLs every few months, so `player`
 /// tries a list of client identities in order and uses the first that works. When this breaks,
-/// update `Client.playbackOrder` from yt-dlp's `youtube/_base.py` (INNERTUBE_CLIENTS).
+/// update `Client.playbackOrder` from yt-dlp's `youtube/_base.py` (INNERTUBE_CLIENTS) and
+/// `_video.py` (`_DEFAULT_JSLESS_CLIENTS` is the list that works without a JS runtime, as here).
+///
+/// Every player request carries a visitor id (`VisitorID`); without one YouTube answers
+/// "Sign in to confirm you're not a bot".
 ///
 /// Ad-free by construction: the player endpoint returns the media streams only.
 struct InnerTubeClient {
@@ -21,25 +25,25 @@ struct InnerTubeClient {
         var extra: [String: Any] = [:]
         var thirdPartyEmbed = false
 
-        /// Order of preference for the `player` call. iOS gives an HLS manifest (all qualities,
-        /// plays in both backends); ANDROID_VR gives plain progressive/adaptive URLs; TV embedded
-        /// handles age-restricted videos; WEB is last because it usually needs a PO token now.
-        static let playbackOrder: [Client] = [ios, androidVR, tvEmbedded, web]
+        /// Order of preference for the `player` call (state as of 2026-11, checked against
+        /// yt-dlp 2026-10-21 and live responses):
+        /// - VISIONOS: yt-dlp's only JS-less default. HLS up to 2160p60 incl. HDR, full-length
+        ///   segments without a PO token. Not available for "made for kids" videos.
+        /// - IOS: HLS for some videos only; when it has none, its adaptive URLs 403 after ~1 MB
+        ///   (PO token enforced), so it is only a fallback.
+        /// Dropped: ANDROID_VR (403 on every format since 2026-08), TVHTML5_SIMPLY_EMBEDDED_PLAYER
+        /// ("no longer supported"), WEB (needs a PO token).
+        static let playbackOrder: [Client] = [visionOS, ios]
+
+        static let visionOS = Client(
+            name: "VISIONOS", version: "1.02", id: 101,
+            userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+            extra: ["deviceMake": "Apple", "deviceModel": "RealityDevice17,1", "osName": "visionOS", "osVersion": "26.5.23O471"])
 
         static let ios = Client(
             name: "IOS", version: "20.10.38", id: 5,
             userAgent: "com.google.ios.youtube/20.10.38 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
             extra: ["deviceMake": "Apple", "deviceModel": "iPhone16,2", "osName": "iPhone", "osVersion": "18.3.2.22D82"])
-
-        static let androidVR = Client(
-            name: "ANDROID_VR", version: "1.62.27", id: 28,
-            userAgent: "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
-            extra: ["deviceMake": "Oculus", "deviceModel": "Quest 3", "osName": "Android", "osVersion": "12L", "androidSdkVersion": 32])
-
-        static let tvEmbedded = Client(
-            name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER", version: "2.0", id: 85,
-            userAgent: "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
-            thirdPartyEmbed: true)
 
         static let web = Client(
             name: "WEB", version: "2.20250312.04.00", id: 1,
@@ -66,8 +70,13 @@ struct InnerTubeClient {
         let author: String?
         let lengthSeconds: Int?
         let thumbnailURL: URL?
-        /// HLS master playlist (preferred for the FFmpeg backend: adaptive, all qualities).
+        /// HLS master playlist as YouTube serves it (every variant; what AVPlayer gets).
         let hlsURL: URL?
+        /// Local single-variant master (one SDR video variant + its audio) for FFmpeg; see
+        /// `HLSVariantPicker`. Nil when the master couldn't be fetched or had nothing usable.
+        var ffmpegURL: URL? = nil
+        /// e.g. "2160p60 VP9", for the status chip.
+        var variantLabel: String? = nil
         /// Best muxed progressive MP4 (video+audio in one file; what AVPlayer + the tap want).
         let progressiveURL: URL?
         let progressiveLabel: String?
@@ -89,7 +98,7 @@ struct InnerTubeClient {
 
     // MARK: - Requests
 
-    private func request(_ path: String, client: Client, body: [String: Any]) throws -> URLRequest {
+    private func request(_ path: String, client: Client, body: [String: Any], visitorData: String? = nil) throws -> URLRequest {
         var comps = URLComponents(url: Self.endpoint.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         comps.queryItems = [.init(name: "prettyPrint", value: "false")]
         var req = URLRequest(url: comps.url!)
@@ -103,6 +112,10 @@ struct InnerTubeClient {
 
         var clientCtx: [String: Any] = ["clientName": client.name, "clientVersion": client.version, "hl": "en", "gl": "GB"]
         for (k, v) in client.extra { clientCtx[k] = v }
+        if let visitorData {
+            clientCtx["visitorData"] = visitorData
+            req.setValue(visitorData, forHTTPHeaderField: "X-Goog-Visitor-Id")
+        }
         var context: [String: Any] = ["client": clientCtx]
         if client.thirdPartyEmbed {
             context["thirdParty"] = ["embedUrl": "https://www.youtube.com/"]
@@ -150,22 +163,44 @@ struct InnerTubeClient {
 
     // MARK: - Player
 
-    func streams(videoId: String) async throws -> Streams {
+    /// Stream URLs for a video. `maxHeight` caps the variant picked for FFmpeg.
+    func streams(videoId: String, maxHeight: Int = 2160) async throws -> Streams {
         var lastError: Swift.Error = Error.noStreams
-        for client in Client.playbackOrder {
-            do {
-                let req = try request("player", client: client, body: [
-                    "videoId": videoId,
-                    "contentCheckOk": true,
-                    "racyCheckOk": true,
-                ])
-                let json = try await send(req)
-                if let s = try Self.parseStreams(json, client: client) { return s }
-            } catch {
-                lastError = error
+        // One retry with a fresh visitor id if every client got the bot check.
+        for attempt in 0..<2 {
+            let visitor = await VisitorID.shared.get(refresh: attempt > 0)
+            var botChecked = false
+            for client in Client.playbackOrder {
+                do {
+                    let req = try request("player", client: client, body: [
+                        "videoId": videoId,
+                        "contentCheckOk": true,
+                        "racyCheckOk": true,
+                        "playbackContext": ["contentPlaybackContext": ["html5Preference": "HTML5_PREF_WANTS"]],
+                    ], visitorData: visitor)
+                    let json = try await send(req)
+                    if Self.isBotCheck(json) { botChecked = true; continue }
+                    guard var s = try Self.parseStreams(json, client: client) else { continue }
+                    if let hls = s.hlsURL,
+                       let picked = await HLSVariantPicker.localMaster(for: hls, videoId: videoId, userAgent: client.userAgent, maxHeight: maxHeight) {
+                        s.ffmpegURL = picked.url
+                        s.variantLabel = picked.label
+                    }
+                    return s
+                } catch {
+                    lastError = error
+                }
             }
+            if !botChecked { break }
+            lastError = Error.unplayable("YouTube asked to confirm this isn't a bot. Try again in a minute.")
         }
         throw lastError
+    }
+
+    /// "Sign in to confirm you're not a bot" — LOGIN_REQUIRED without an age gate.
+    private static func isBotCheck(_ json: [String: Any]) -> Bool {
+        guard let p = json["playabilityStatus"] as? [String: Any], p["status"] as? String == "LOGIN_REQUIRED" else { return false }
+        return (p["reason"] as? String ?? "").localizedCaseInsensitiveContains("bot")
     }
 
     private static func parseStreams(_ json: [String: Any], client: Client) throws -> Streams? {
