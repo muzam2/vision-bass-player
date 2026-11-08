@@ -22,11 +22,16 @@ struct BassPlayerApp: App {
         let px = PlexClient()
         let yt = YouTubeClient()
         let ns = NASClient()
+        let lib = LibraryStore(jellyfin: jf, plex: px, youtube: yt, nas: ns)
         _jellyfin = StateObject(wrappedValue: jf)
         _plex = StateObject(wrappedValue: px)
         _youtube = StateObject(wrappedValue: yt)
         _nas = StateObject(wrappedValue: ns)
-        _library = StateObject(wrappedValue: LibraryStore(jellyfin: jf, plex: px, youtube: yt, nas: ns))
+        _library = StateObject(wrappedValue: lib)
+
+        if DemoData.isEnabled {
+            DemoData.apply(library: lib, jellyfin: jf, plex: px, youtube: yt)
+        }
 
         FFmpegConfig.apply()
 
@@ -40,19 +45,22 @@ struct BassPlayerApp: App {
     var body: some Scene {
         #if os(visionOS)
         WindowGroup {
-            ContentView()
-                .environmentObject(library)
-                .environmentObject(jellyfin)
-                .environmentObject(plex)
-                .environmentObject(youtube)
-                .environmentObject(nas)
-                .environmentObject(bassLink)
+            RootView()
+                .modifier(AppEnvironment(library: library, jellyfin: jellyfin, plex: plex, youtube: youtube, nas: nas, bassLink: bassLink))
                 .environmentObject(immersive)
                 .onChange(of: immersive.darkRoom, initial: true) { _, dark in
                     immersionStyle = dark ? .full : .mixed
                 }
         }
-        .defaultSize(width: 1100, height: 700)
+        .defaultSize(width: 1280, height: 820)
+
+        // The player lives in its own window so the library stays usable beside it.
+        WindowGroup(id: PlayerWindow.id, for: MediaItem.self) { $item in
+            PlayerScreen(item: item)
+                .modifier(AppEnvironment(library: library, jellyfin: jellyfin, plex: plex, youtube: youtube, nas: nas, bassLink: bassLink))
+                .environmentObject(immersive)
+        }
+        .defaultSize(width: 1600, height: 900)
 
         ImmersiveSpace(id: ImmersiveScreenSpace.id) {
             ImmersiveScreenView()
@@ -61,14 +69,29 @@ struct BassPlayerApp: App {
         .immersionStyle(selection: $immersionStyle, in: .mixed, .full)
         #else
         WindowGroup {
-            ContentView()
-                .environmentObject(library)
-                .environmentObject(jellyfin)
-                .environmentObject(plex)
-                .environmentObject(youtube)
-                .environmentObject(nas)
-                .environmentObject(bassLink)
+            RootView()
+                .modifier(AppEnvironment(library: library, jellyfin: jellyfin, plex: plex, youtube: youtube, nas: nas, bassLink: bassLink))
         }
         #endif
+    }
+}
+
+/// Injects every shared model once, for both windows.
+private struct AppEnvironment: ViewModifier {
+    let library: LibraryStore
+    let jellyfin: JellyfinClient
+    let plex: PlexClient
+    let youtube: YouTubeClient
+    let nas: NASClient
+    let bassLink: BassLink
+
+    func body(content: Content) -> some View {
+        content
+            .environmentObject(library)
+            .environmentObject(jellyfin)
+            .environmentObject(plex)
+            .environmentObject(youtube)
+            .environmentObject(nas)
+            .environmentObject(bassLink)
     }
 }

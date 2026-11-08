@@ -42,8 +42,16 @@ final class PlexClient: ObservableObject, MediaServerClient {
         }
     }
 
-    var isSignedIn: Bool { !token.isEmpty }
-    var hasServer: Bool { !serverURL.isEmpty }
+    var isSignedIn: Bool { demoMode || !token.isEmpty }
+    var hasServer: Bool { demoMode || !serverURL.isEmpty }
+
+    /// Simulator screenshots: show sample items without plex.tv (see DemoData).
+    private(set) var demoMode = false
+    func enableDemo(items: [MediaItem], serverName: String) {
+        demoMode = true
+        self.serverName = serverName
+        self.items = items
+    }
 
     private var plexHeaders: [String: String] {
         [
@@ -217,7 +225,7 @@ final class PlexClient: ObservableObject, MediaServerClient {
     }
 
     func loadLibrary(rediscoverOnNetworkError: Bool) async {
-        guard isSignedIn, let base = URL(string: serverURL) else { return }
+        guard isSignedIn, !demoMode, let base = URL(string: serverURL) else { return }
         isBusy = true; defer { isBusy = false }
         errorMessage = nil
         do {
