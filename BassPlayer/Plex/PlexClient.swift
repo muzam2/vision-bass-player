@@ -237,7 +237,10 @@ final class PlexClient: ObservableObject, MediaServerClient {
             audioCodec: media.audioCodec,
             audioChannels: media.audioChannels,
             videoRange: range,
-            isEpisode: m.type == "episode"
+            isEpisode: m.type == "episode",
+            width: media.width,
+            height: media.height,
+            stereo: StereoFormat.detect(name: m.title, path: part.file, width: media.width, height: media.height, codecTag: nil)
         )
     }
 }
@@ -303,10 +306,13 @@ private struct PlexMetadata: Decodable {
         let videoCodec: String?
         let audioCodec: String?
         let audioChannels: Int?
+        let width: Int?
+        let height: Int?
         let Part: [Part]?
     }
     struct Part: Decodable {
         let key: String
+        let file: String?
         let container: String?
         let Stream: [Stream]?
     }
