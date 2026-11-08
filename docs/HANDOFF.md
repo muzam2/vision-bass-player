@@ -48,7 +48,8 @@ original session, so IPAs and firmware are **Actions artifacts** until someone p
 project.yml                     XcodeGen spec: BassPlayer (visionOS 2) + BassPlayerTV (tvOS 18), same sources, KSPlayer from Vendor/
 Vendor/KSPlayer                 KSPlayer GPLv3 source, vendored + patched (see §3). UPSTREAM_COMMIT = base commit
 Vendor/FFmpegKit                Local FFmpegKit 6.1.4 package: shims + generated Package.swift → release zips (see §3)
-Vendor/FFmpegKit-patches        Upstream FFmpeg fixes backported into Libavformat
+Vendor/FFmpegKit-patches        Upstream FFmpeg fixes backported into Libavformat (6.1.4 era; retired by FFmpegKit 9)
+Vendor/AMSMB2                   libsmb2 + Swift wrapper (4.0.3, LGPL-2.1), vendored only to make the product static
 BassPlayer/App                  App entry (main window, player window on visionOS, ImmersiveSpace), AVAudioSession, FFmpegConfig.apply(); DemoData (BASSPLAYER_DEMO=1 sample content for simulator screenshots)
 BassPlayer/Media                MediaItem (server-agnostic, Codable), MediaSource, StereoFormat, ScreenProjection, LibraryStore (settings, overrides, recents, progress)
 BassPlayer/Jellyfin             Password auth, movies+episodes, direct/transcode URLs, external subs, resume, progress reporting
@@ -163,6 +164,12 @@ One libsmb2 context per in-flight request (small per-share pool), one chunk in f
 back-pressure, `Connection: close` per request (FFmpeg reconnects on seek, AVPlayer makes
 parallel ranged requests). This removes the only reason to keep libsmbclient in FFmpeg, which
 is the prerequisite for FFmpegKit 9 (below). KSPlayer's `NetworkDirectory` patch is now unused.
+**Gotcha found the hard way:** the remote AMSMB2 package is a *dynamic* SwiftPM product and
+the xcodegen-generated project did not embed it (no `Frameworks/AMSMB2.framework` in the IPA
+while the binary loads `@rpath/AMSMB2.framework/AMSMB2`), i.e. a dyld crash at launch. It is
+vendored under `Vendor/AMSMB2` with `type: .dynamic` removed in both manifests, and build.yml
+now fails when any `@rpath/*.framework` the binary references is missing from `Frameworks/`.
+FFmpegKit's own xcframeworks are dynamic too (they are embedded fine, hence the ~20 MB IPA).
 
 ### FFmpegKit 9.0.2 (plan, started 2026-11-08)
 Facts checked: kingslay/FFmpegKit's latest tag is 9.0.2 = FFmpeg 9.0.2 (lavu 61.1, lavf 63);
