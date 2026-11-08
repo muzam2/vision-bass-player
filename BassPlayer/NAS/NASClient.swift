@@ -96,7 +96,7 @@ final class NASClient: ObservableObject {
         case .webdav: url = WebDAVLister(share: share, password: password(for: share)).fileURL(path: entry.path)
         }
         let title = (entry.name as NSString).deletingPathExtension
-        return MediaItem(
+        var mi = MediaItem(
             id: "nas:\(share.id.uuidString):\(entry.path)", source: .nas, title: title,
             subtitle: "\(share.name) · \(ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))",
             overview: nil, runtimeMinutes: nil, posterURL: nil,
@@ -106,6 +106,9 @@ final class NASClient: ObservableObject {
             stereo: StereoFormat.detect(name: entry.name, path: entry.path, width: nil, height: nil, codecTag: nil),
             needsResolve: false, youtubeId: nil, userAgent: nil
         )
+        mi.projection = ScreenProjection.detect(name: entry.name, path: entry.path)
+        if mi.projection != nil, mi.stereo == nil { mi.stereo = ScreenProjection.detectStereoForVR(name: entry.name, path: entry.path) }
+        return mi
     }
 
     // MARK: - URLs

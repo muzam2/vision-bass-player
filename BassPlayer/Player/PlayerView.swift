@@ -4,6 +4,8 @@ import AVKit
 /// Picks the backend for an item: FFmpeg (KSPlayer) by default, AVPlayer as fallback.
 struct PlayerView: View {
     let item: MediaItem
+    /// Called with the next item when playback ends and autoplay is on.
+    var onPlayNext: ((MediaItem) -> Void)? = nil
 
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var bassLink: BassLink
@@ -15,7 +17,9 @@ struct PlayerView: View {
             if let resolved, let url = library.url(for: resolved) {
                 switch library.effectiveBackend(for: resolved) {
                 case .ffmpeg:
-                    FFmpegPlayerView(item: resolved, url: url)
+                    FFmpegPlayerView(item: resolved, url: url) {
+                        if library.autoplayNext, let next = library.next(after: item) { onPlayNext?(next) }
+                    }
                 case .avplayer:
                     AVPlayerBackendView(item: resolved, url: url)
                 }
@@ -40,6 +44,7 @@ struct PlayerView: View {
                 HStack(spacing: 16) {
                     ImmersiveScreenToggle()
                     stereoPicker
+                    projectionPicker
                 }
             }
         }
@@ -48,6 +53,19 @@ struct PlayerView: View {
             ToolbarItem(placement: .automatic) { stereoPicker }
         }
         #endif
+    }
+
+    /// Flat / VR180 / VR360 for the cinema screen.
+    private var projectionPicker: some View {
+        Picker(selection: Binding(
+            get: { library.projectionOverride(for: item) ?? library.effectiveProjection(for: item) },
+            set: { library.setProjectionOverride($0 == (item.projection ?? .flat) ? nil : $0, for: item) }
+        )) {
+            ForEach(ScreenProjection.allCases) { Text($0.label).tag($0) }
+        } label: {
+            Label("Projection", systemImage: "globe")
+        }
+        .pickerStyle(.menu)
     }
 
     /// 3D packing override. "Auto" shows what was detected.
