@@ -66,7 +66,7 @@ docs/SETUP-GUIDE.md             End-user step-by-step (hardware, flashing, sidel
 
 ### Persisted settings
 Backend, show episodes, resume, autoplay next, Jellyfin creds, Plex token/server/server-token,
-NAS shares (+Keychain passwords), YouTube SponsorBlock, receiver extra delay (0–400 ms, sent
+NAS shares (+Keychain passwords), YouTube SponsorBlock + max quality (`yt.maxHeight`) + visitor id (`yt.visitorData`), receiver extra delay (0–400 ms, sent
 to firmware), bass lead (0–300 ms, FFmpeg only, `bass.leadMs`), mute, per-item stereo and
 projection overrides (`stereo.<id>`, `proj.<id>`), positions (`pos.<id>`), recents, immersive
 width / distance / height (absolute metres above floor) / tilt / yaw / curve / full-immersion /
@@ -112,8 +112,17 @@ Ordered by likelihood of needing a fix.
 6. **Inverted 3D depth** on some rips (right-eye-first): add a left/right swap toggle (swap
    the two eye rects in `StereoFormat`).
 7. **YouTube stops playing** — client identities out of date. Update `Client.playbackOrder`
-   in `InnerTubeClient.swift` from yt-dlp `youtube/_base.py` (INNERTUBE_CLIENTS). HLS from the
-   iOS client may start needing a PO token. Resume via `startPlayTime` on HLS is untested.
+   in `InnerTubeClient.swift` from yt-dlp `youtube/_base.py` (INNERTUBE_CLIENTS) and
+   `_video.py` (`_DEFAULT_JSLESS_CLIENTS`). State checked 2026-11-08 from the owner's home IP:
+   VISIONOS + visitor id → HLS to 2160p60 incl. HDR, every segment fetchable without a PO
+   token; IOS has HLS only for some videos (otherwise adaptive URLs 403 after ~1 MB);
+   ANDROID_VR bot-checked, TV embedded retired, WEB unplayable. Without a visitor id
+   VISIONOS gets "Sign in to confirm you're not a bot". "Made for kids" videos don't play on
+   VISIONOS (falls back to IOS).
+   **FFmpeg 6.1 limits (until FFmpegKit is rebuilt with backports):** HDR variants fail to open
+   (duplicate `mdcv`/`SmDm`), so `HLSVariantPicker` takes SDR only; any seek in YouTube fMP4
+   HLS returns no video, so resume is off for YouTube and the seek bar won't work there.
+   Verified on desktop FFmpeg 6.1.1 with the same streams; not yet on hardware.
 8. **SMB against SMB3-only NAS** — libsmbclient should negotiate; options go through
    `NetworkDirectory.list(options:)`. Guest access with empty username on Windows untested.
 9. **Plex connection choice** prefers `local && !relay`; remote-only users get a relay (slow).

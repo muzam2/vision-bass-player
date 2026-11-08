@@ -200,7 +200,12 @@ struct SettingsView: View {
 
             Section("YouTube") {
                 Toggle("SponsorBlock (skip sponsors, intros, outros)", isOn: $youtube.sponsorBlockEnabled)
-                Text("Streams come straight from YouTube's player API, so there are no ads. Search or paste a link in the library's search box.")
+                Picker("Max quality", selection: $youtube.maxHeight) {
+                    ForEach(YouTubeClient.maxHeightChoices, id: \.self) { h in
+                        Text(h == 2160 ? "4K (2160p)" : "\(h)p").tag(h)
+                    }
+                }
+                Text("Streams come straight from YouTube's player API, so there are no ads. Search or paste a link in the library's search box. HDR versions and seeking inside a YouTube video aren't available yet.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
