@@ -53,16 +53,28 @@ jobs:
         uses: actions/cache@v4
         with:
           path: SourcePackages
-          key: spm-${{ matrix.suffix }}-${{ hashFiles('project.yml', 'Vendor/KSPlayer/Package.swift') }}
+          key: spm-${{ matrix.suffix }}-${{ hashFiles('project.yml', 'Vendor/KSPlayer/Package.swift', 'Vendor/FFmpegKit/Package.swift') }}
           restore-keys: spm-${{ matrix.suffix }}-
 
       - name: Resolve Swift packages
         run: |
-          xcodebuild -resolvePackageDependencies \
-            -project BassPlayer.xcodeproj \
-            -scheme "${{ matrix.scheme }}" \
-            -clonedSourcePackagesDirPath SourcePackages \
-            -skipMacroValidation | tail -n 20
+          # SwiftPM sometimes fails extracting many binary targets at once ("... already exists
+          # in file system" in its artifact cache); a second pass picks up the cached zips.
+          set -o pipefail
+          for attempt in 1 2 3; do
+            if xcodebuild -resolvePackageDependencies \
+                 -project BassPlayer.xcodeproj \
+                 -scheme "${{ matrix.scheme }}" \
+                 -clonedSourcePackagesDirPath SourcePackages \
+                 -skipMacroValidation > resolve.log 2>&1; then
+              tail -n 30 resolve.log
+              exit 0
+            fi
+            echo "resolve attempt $attempt failed:"
+            grep -E "error|failed" resolve.log | cut -c1-300 | head -5
+          done
+          tail -n 40 resolve.log
+          exit 1
 
       - name: Build ${{ matrix.name }} (unsigned)
         run: |
