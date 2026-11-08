@@ -200,6 +200,15 @@ Ordered by likelihood of needing a fix.
    picker preferred DEFAULT=YES, which YouTube sets on a dub (Japanese); now original →
    device language → DEFAULT → first, and every rendition is kept (preferred first) so the
    audio menu can switch; KSPlayer discards unselected streams so only one is downloaded.
+   Fifth pass: the screen ignored where the user was looking (recentre fired 300 ms after
+   tracking started, before a device anchor existed, and only used yaw). Placement is now the
+   gaze line: `recentre` sets yaw *and* tilt (pitch) from the head pose, `height` is an offset
+   from that line, `ImmersiveScreenModel.position` puts the screen `distance` along it, the
+   HUD follows the same line, dragging moves the screen on a sphere around the viewer; the
+   initial recentre retries until the anchor is tracked. Height/Tilt sliders are on the cinema
+   panel (second row). `openWindow(id:)` on the value-less library WindowGroup opens a new
+   instance each call — three callers left three library windows — so `MainWindowTracker`
+   opens one only when no library scene is connected.
 2b. **Subtitles / audio tracks (2026-11-08).** KSPlayer's stock view hid its subtitle menu in a
    scene ornament that collided with the app's; visionOS now uses the app's own chrome
    (`Player/PlayerChrome.swift`: transport, scrubber, audio/subtitle/speed menus, 3D +
