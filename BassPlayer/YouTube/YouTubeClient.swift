@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 /// YouTube as a library source: search, trending, pasted links. Streams are fetched lazily when
 /// an item is played (`resolve`), and SponsorBlock segments ride along for the player to skip.
@@ -23,10 +24,121 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     @Published private(set) var lastQuery = ""
     private var searchTask: Task<Void, Never>?
 
+    /// Optional Google account (feeds only; playback stays anonymous).
+    let account = YouTubeAccount()
+    private var cancellables = Set<AnyCancellable>()
+
+    /// Which list `items` currently shows.
+    enum Feed: Hashable {
+        case search, home, subscriptions, history, watchLater, liked, playlists
+        case playlist(id: String, title: String)
+
+        var label: String {
+            switch self {
+            case .search: return "Search"
+            case .home: return "Home"
+            case .subscriptions: return "Subscriptions"
+            case .history: return "History"
+            case .watchLater: return "Watch later"
+            case .liked: return "Liked"
+            case .playlists: return "Playlists"
+            case .playlist(_, let title): return title
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .search: return "magnifyingglass"
+            case .home: return "house"
+            case .subscriptions: return "rectangle.stack.badge.person.crop"
+            case .history: return "clock"
+            case .watchLater: return "bookmark"
+            case .liked: return "hand.thumbsup"
+            case .playlists, .playlist: return "music.note.list"
+            }
+        }
+
+        var browseId: String? {
+            switch self {
+            case .search: return nil
+            case .home: return "FEwhat_to_watch"
+            case .subscriptions: return "FEsubscriptions"
+            case .history: return "FEhistory"
+            case .watchLater: return "VLWL"
+            case .liked: return "VLLL"
+            case .playlists: return "FElibrary"
+            case .playlist(let id, _): return id.hasPrefix("VL") ? id : "VL" + id
+            }
+        }
+
+        /// Tabs offered once signed in.
+        static let accountFeeds: [Feed] = [.home, .subscriptions, .history, .watchLater, .liked, .playlists]
+    }
+
+    @Published private(set) var feed: Feed = .search
+    @Published private(set) var playlists: [InnerTubeClient.Playlist] = []
+    @Published private(set) var canLoadMore = false
+    private var continuation: String?
+    private var feedGeneration = 0
+
     init() {
         sponsorBlockEnabled = defaults.object(forKey: "yt.sponsorblock") as? Bool ?? true
         maxHeight = defaults.object(forKey: "yt.maxHeight") as? Int ?? 2160
         preferHDR = defaults.object(forKey: "yt.preferHDR") as? Bool ?? true
+        account.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+    }
+
+    // MARK: - Account feeds
+
+    /// Load a feed or playlist (first page). Search results are replaced.
+    func load(feed newFeed: Feed) async {
+        guard !demoMode else { return }
+        guard let browseId = newFeed.browseId else { feed = .search; return }
+        feedGeneration += 1
+        let generation = feedGeneration
+        feed = newFeed
+        isBusy = true; defer { if generation == feedGeneration { isBusy = false } }
+        errorMessage = nil
+        items = []
+        playlists = []
+        continuation = nil
+        canLoadMore = false
+        do {
+            let page = try await api.browse(browseId, auth: account.authHeaders())
+            guard generation == feedGeneration else { return }
+            items = page.videos.map(mediaItem)
+            playlists = newFeed == .playlists ? page.playlists : []
+            continuation = page.continuation
+            canLoadMore = continuation != nil && newFeed != .playlists
+            if items.isEmpty && playlists.isEmpty {
+                errorMessage = account.isSignedIn ? "YouTube: nothing in \(newFeed.label) yet." : "YouTube: sign in to see \(newFeed.label)."
+            }
+        } catch {
+            guard generation == feedGeneration else { return }
+            errorMessage = "YouTube: \(error.localizedDescription)"
+        }
+    }
+
+    /// Next page of the current feed.
+    func loadMore() async {
+        guard let browseId = feed.browseId, let token = continuation, !isBusy else { return }
+        let generation = feedGeneration
+        isBusy = true; defer { if generation == feedGeneration { isBusy = false } }
+        do {
+            let page = try await api.browse(browseId, continuation: token, auth: account.authHeaders())
+            guard generation == feedGeneration else { return }
+            let known = Set(items.map(\.id))
+            items.append(contentsOf: page.videos.map(mediaItem).filter { !known.contains($0.id) })
+            continuation = page.continuation
+            canLoadMore = continuation != nil
+        } catch {
+            errorMessage = "YouTube: \(error.localizedDescription)"
+        }
+    }
+
+    func signOutAccount() async {
+        await account.signOut()
+        if feed != .search { items = []; playlists = []; feed = .search }
     }
 
     /// No account needed.
@@ -46,6 +158,7 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     /// recent searches instead. That is not an error.
     func loadLibrary() async {
         guard !demoMode else { return }
+        if feed != .search { await load(feed: feed); return }
         if !lastQuery.isEmpty { await search(lastQuery); return }
         if !query.isEmpty { await search(query); return }
         errorMessage = nil
@@ -65,6 +178,10 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     func search(_ text: String) async {
         let q = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { await loadLibrary(); return }
+        feedGeneration += 1
+        feed = .search
+        playlists = []
+        canLoadMore = false
         isBusy = true; defer { isBusy = false }
         errorMessage = nil
         do {

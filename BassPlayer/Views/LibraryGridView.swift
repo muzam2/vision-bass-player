@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Poster grid for a media server (Jellyfin or Plex) with always-available search,
-/// a movies/TV filter and a Continue Watching row. Plex lists series as single cards that
-/// open a season/episode page (`ShowEpisodesView`); Jellyfin still lists episodes.
+/// a movies/TV filter and a Continue Watching row. Series are single cards that open a
+/// season/episode page (`ShowEpisodesView`).
 struct LibraryGridView: View {
     let source: MediaSource
     @EnvironmentObject private var library: LibraryStore
@@ -87,8 +87,8 @@ struct LibraryGridView: View {
             }
             .overlay(alignment: .bottom) { ErrorBanner(text: library.error(for: source)) }
             .task(id: source) {
-                // Plex series are single cards, so "All" stays tidy there.
-                filter = (source == .plex || library.showEpisodes) ? .all : .movies
+                // Series are single cards, so "All" stays tidy.
+                filter = .all
                 if library.isSignedIn(source) && library.items(for: source).isEmpty { await library.refresh(source) }
             }
         }
@@ -234,7 +234,7 @@ struct ShowEpisodesView: View {
         loading = true
         defer { loading = false }
         do {
-            episodes = try await library.plex.episodes(of: show, refresh: refresh)
+            episodes = try await library.episodes(of: show, refresh: refresh)
             error = episodes.isEmpty ? "No playable episodes in this series." : nil
         } catch {
             self.error = "Couldn't load episodes: \(error.localizedDescription)"

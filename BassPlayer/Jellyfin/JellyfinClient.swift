@@ -17,6 +17,9 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
     @Published private(set) var items: [MediaItem] = []
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
+    /// Episodes fetched per series (`showKey` = Jellyfin series id).
+    @Published private(set) var episodesByShow: [String: [MediaItem]] = [:]
+    private var loadGeneration = 0
 
     init() {
         serverURL = defaults.string(forKey: "jf.server") ?? ""
@@ -71,7 +74,8 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
         return req
     }
 
-    private func send<T: Decodable>(_ req: URLRequest, as: T.Type) async throws -> T {
+    /// Nonisolated so large JSON pages decode off the main thread.
+    nonisolated private func send<T: Decodable & Sendable>(_ req: URLRequest, as: T.Type) async throws -> T {
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw JellyfinError.badResponse }
         guard (200..<300).contains(http.statusCode) else {
@@ -105,23 +109,99 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
 
     // MARK: - Library
 
+    static let pageSize = 500
+    private static let itemFields = "MediaSources,Overview,ProductionYear,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber,Path,Video3DFormat,UserData"
+
+    /// Series come as one card each (episodes load when a series is opened); movies arrive in
+    /// pages of 500 and are shown as they land. Fetching every episode of every show in one
+    /// request, as before, meant minutes of spinner on a large library.
     func loadLibrary() async {
         guard isSignedIn, !demoMode else { return }
-        isBusy = true; defer { isBusy = false }
+        loadGeneration += 1
+        let generation = loadGeneration
+        isBusy = true
+        defer { if generation == loadGeneration { isBusy = false } }
         errorMessage = nil
+        let progressive = items.isEmpty
         do {
-            let req = try request("Users/\(storedUserId)/Items", query: [
-                .init(name: "IncludeItemTypes", value: "Movie,Episode"),
+            var all: [MediaItem] = []
+            func publish() {
+                guard generation == loadGeneration else { return }
+                items = all.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            }
+            // Series first (small), then movies page by page.
+            let seriesReq = try request("Users/\(storedUserId)/Items", query: [
+                .init(name: "IncludeItemTypes", value: "Series"),
                 .init(name: "Recursive", value: "true"),
                 .init(name: "SortBy", value: "SortName"),
                 .init(name: "SortOrder", value: "Ascending"),
-                .init(name: "Fields", value: "MediaSources,MediaStreams,Overview,ProductionYear,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber,Path,Video3DFormat,UserData"),
+                .init(name: "Fields", value: "Overview,ProductionYear,ChildCount,RecursiveItemCount,UserData"),
             ])
-            let page = try await send(req, as: ItemsPage.self)
-            items = page.Items.compactMap { mediaItem(from: $0) }
+            let series = try await send(seriesReq, as: ItemsPage.self)
+            guard generation == loadGeneration else { return }
+            all.append(contentsOf: series.Items.compactMap { showItem(from: $0) })
+            if progressive { publish() }
+
+            var start = 0
+            while true {
+                try Task.checkCancellation()
+                let req = try request("Users/\(storedUserId)/Items", query: [
+                    .init(name: "IncludeItemTypes", value: "Movie"),
+                    .init(name: "Recursive", value: "true"),
+                    .init(name: "SortBy", value: "SortName"),
+                    .init(name: "SortOrder", value: "Ascending"),
+                    .init(name: "StartIndex", value: String(start)),
+                    .init(name: "Limit", value: String(Self.pageSize)),
+                    .init(name: "Fields", value: Self.itemFields),
+                ])
+                let page = try await send(req, as: ItemsPage.self)
+                guard generation == loadGeneration else { return }
+                all.append(contentsOf: page.Items.compactMap { mediaItem(from: $0) })
+                if progressive { publish() }
+                start += page.Items.count
+                let total = page.TotalRecordCount ?? start
+                if page.Items.isEmpty || start >= total { break }
+            }
+            publish()
+        } catch is CancellationError {
         } catch {
             errorMessage = "Jellyfin: could not load library: \(error.localizedDescription)"
         }
+    }
+
+    private func showItem(from item: JellyfinItem) -> MediaItem? {
+        guard let base = baseURL, let token = accessToken else { return nil }
+        var poster = URLComponents(url: base.appendingPathComponent("Items/\(item.Id)/Images/Primary"), resolvingAgainstBaseURL: false)!
+        poster.queryItems = [.init(name: "maxHeight", value: "450"), .init(name: "quality", value: "90"), .init(name: "api_key", value: token)]
+        let count = (item.RecursiveItemCount ?? item.ChildCount).map { "\($0) episode\($0 == 1 ? "" : "s")" }
+        var mi = MediaItem(
+            id: "jellyfin:show:\(item.Id)", source: .jellyfin, title: item.Name,
+            subtitle: [item.ProductionYear.map(String.init), count].compactMap { $0 }.joined(separator: " · "),
+            overview: item.Overview, runtimeMinutes: nil, posterURL: poster.url,
+            directURL: nil, avPlayerURL: nil, container: nil, videoCodec: nil, audioCodec: nil,
+            audioChannels: nil, videoRange: nil, isEpisode: false, width: nil, height: nil, stereo: nil)
+        mi.showKey = item.Id
+        return mi
+    }
+
+    /// Every episode of a series in season/episode order (cached; `refresh` refetches).
+    func episodes(showKey key: String, refresh: Bool = false) async throws -> [MediaItem] {
+        if !refresh, let cached = episodesByShow[key] { return cached }
+        let req = try request("Shows/\(key)/Episodes", query: [
+            .init(name: "userId", value: storedUserId),
+            .init(name: "Fields", value: Self.itemFields),
+        ])
+        let page = try await send(req, as: ItemsPage.self)
+        let eps = page.Items.compactMap { mediaItem(from: $0) }
+            .sorted { ($0.season ?? 0, $0.episodeNumber ?? 0) < ($1.season ?? 0, $1.episodeNumber ?? 0) }
+        episodesByShow[key] = eps
+        return eps
+    }
+
+    func nextEpisode(after item: MediaItem) -> MediaItem? {
+        guard let key = item.parentShowKey, let eps = episodesByShow[key],
+              let i = eps.firstIndex(where: { $0.id == item.id }), i + 1 < eps.count else { return nil }
+        return eps[i + 1]
     }
 
     private func mediaItem(from item: JellyfinItem) -> MediaItem? {
@@ -206,6 +286,11 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
         mi.projection = ScreenProjection.detect(name: name, path: path)
         if mi.projection != nil, mi.stereo == nil { mi.stereo = ScreenProjection.detectStereoForVR(name: name, path: path) }
         mi.subtitleURLs = subs
+        if item.Type == "Episode" {
+            mi.parentShowKey = item.SeriesId
+            mi.season = item.ParentIndexNumber
+            mi.episodeNumber = item.IndexNumber
+        }
         if let ticks = item.UserData?.PlaybackPositionTicks, ticks > 0 { mi.serverResumeSeconds = Double(ticks) / 10_000_000 }
         return mi
     }
@@ -229,7 +314,7 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
 
 // MARK: - Wire models
 
-struct JellyfinItem: Decodable {
+struct JellyfinItem: Decodable, Sendable {
     let Id: String
     let Name: String
     let `Type`: String?
@@ -238,6 +323,9 @@ struct JellyfinItem: Decodable {
     let Container: String?
     let RunTimeTicks: Int64?
     let SeriesName: String?
+    let SeriesId: String?
+    let ChildCount: Int?
+    let RecursiveItemCount: Int?
     let ParentIndexNumber: Int?
     let IndexNumber: Int?
     let Path: String?
@@ -245,19 +333,19 @@ struct JellyfinItem: Decodable {
     let UserData: UserData?
     let MediaSources: [MediaSource]?
 
-    struct UserData: Decodable {
+    struct UserData: Decodable, Sendable {
         let PlaybackPositionTicks: Int64?
         let Played: Bool?
     }
 
-    struct MediaSource: Decodable {
+    struct MediaSource: Decodable, Sendable {
         let Id: String?
         let Container: String?
         let Path: String?
         let MediaStreams: [MediaStream]?
     }
 
-    struct MediaStream: Decodable {
+    struct MediaStream: Decodable, Sendable {
         let `Type`: String?
         let Codec: String?
         let Channels: Int?
@@ -273,11 +361,11 @@ struct JellyfinItem: Decodable {
     }
 }
 
-private struct ItemsPage: Decodable { let Items: [JellyfinItem] }
-private struct AuthResult: Decodable {
+private struct ItemsPage: Decodable, Sendable { let Items: [JellyfinItem]; let TotalRecordCount: Int? }
+private struct AuthResult: Decodable, Sendable {
     let AccessToken: String
     let User: User
-    struct User: Decodable { let Id: String; let Name: String? }
+    struct User: Decodable, Sendable { let Id: String; let Name: String? }
 }
 
 enum JellyfinError: LocalizedError {

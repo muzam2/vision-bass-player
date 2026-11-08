@@ -13,6 +13,8 @@ final class ImmersiveScreenModel: ObservableObject {
     @Published var aspect: Double = 16.0 / 9.0
     /// Bumped by the UI to ask the view to recentre on the current head pose.
     @Published var recentreRequest = 0
+    /// Bumped when the player goes away while the screen is open (RootView dismisses the space).
+    @Published var closeRequest = 0
 
     /// Screen width in metres. Height follows the video aspect ratio.
     @Published var width: Double { didSet { d.set(width, forKey: "imm.width") } }

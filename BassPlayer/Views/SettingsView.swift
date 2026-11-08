@@ -10,6 +10,11 @@ struct SettingsView: View {
     @AppStorage("bass.leadMs") private var leadMs: Int = 0
     @State private var jfPassword = ""
     @State private var showAddShare = false
+    @State private var showYouTubeSignIn = false
+    @AppStorage("diag.uploadURL") private var diagUploadURL = "http://192.168.0.191:8799/log"
+    @State private var diagTail = ""
+    @State private var diagStatus: String?
+    @State private var diagBusy = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +33,9 @@ struct SettingsView: View {
             #endif
             .navigationTitle("Settings")
             .sheet(isPresented: $showAddShare) { NASShareEditor() }
+            #if canImport(WebKit)
+            .sheet(isPresented: $showYouTubeSignIn) { YouTubeSignInView() }
+            #endif
         }
     }
 
@@ -119,8 +127,19 @@ struct SettingsView: View {
             }
             Toggle("HDR when available", isOn: $youtube.preferHDR)
             Toggle("SponsorBlock (skip sponsors, intros, outros)", isOn: $youtube.sponsorBlockEnabled)
+            #if canImport(WebKit)
+            StatusRow(connected: youtube.account.isSignedIn, text: youtube.account.isSignedIn ? "Google account signed in" : "No account")
+            if youtube.account.isSignedIn {
+                Button("Sign out of YouTube", role: .destructive) { Task { await youtube.signOutAccount() } }
+            } else {
+                Button("Sign in to YouTube") { showYouTubeSignIn = true }
+            }
+            Text("Signing in lists your Home, Subscriptions, History and playlists. Streams still come straight from YouTube's player API, anonymously, so there are no ads and nothing about playback touches the account.")
+                .font(.footnote).foregroundStyle(.secondary)
+            #else
             Text("No account. Streams come straight from YouTube's player API, so there are no ads.")
                 .font(.footnote).foregroundStyle(.secondary)
+            #endif
         } header: {
             Label("YouTube", systemImage: AppTab.youtube.systemImage)
         }
@@ -180,8 +199,37 @@ struct SettingsView: View {
             LabeledContent("Packets dropped (link busy)", value: "\(bassLink.packetsDropped)")
             LabeledContent("Receiver buffer", value: "\(bassLink.receiverBufferFill) samples")
             LabeledContent("Receiver underruns", value: "\(bassLink.receiverUnderruns)")
+            #if !os(tvOS)
+            TextField("Log receiver, e.g. http://192.168.0.191:8799/log", text: $diagUploadURL)
+                .textInputAutocapitalization(.never).keyboardType(.URL).autocorrectionDisabled()
+            #endif
+            HStack {
+                Button {
+                    diagBusy = true
+                    Task {
+                        defer { diagBusy = false }
+                        guard let url = URL(string: diagUploadURL) else { diagStatus = "Bad receiver address"; return }
+                        do { diagStatus = "Sent: " + (try await DiagLog.shared.upload(to: url)) }
+                        catch { diagStatus = "Send failed: \(error.localizedDescription)" }
+                    }
+                } label: {
+                    if diagBusy { ProgressView() } else { Label("Send log to computer", systemImage: "paperplane") }
+                }
+                .disabled(diagBusy)
+                Button("Show log") { diagTail = DiagLog.shared.tail(80) }
+                Button("Clear", role: .destructive) { DiagLog.shared.clear(); diagTail = "" }
+            }
+            if let diagStatus { Text(diagStatus).font(.footnote).foregroundStyle(.secondary) }
+            if !diagTail.isEmpty {
+                ScrollView {
+                    Text(diagTail).font(.system(size: 11, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                }
+                .frame(height: 260)
+            }
         } header: {
             Label("Diagnostics", systemImage: "waveform.path.ecg")
+        } footer: {
+            Text("The log holds the app's and the player's recent messages (no account details). \"Send\" posts it to a computer on your network running tools/diag_receiver.py.")
         }
     }
 

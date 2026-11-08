@@ -73,9 +73,6 @@ targets:
         excludes:
           - "Info*.plist"
           - "**/*.usda"
-      # Hand-written shader-graph material for the stereo cinema screen (copied, not compiled).
-      - path: BassPlayer/Immersive/StereoScreen.usda
-        buildPhase: resources
     dependencies:
       - package: KSPlayer
         product: KSPlayer

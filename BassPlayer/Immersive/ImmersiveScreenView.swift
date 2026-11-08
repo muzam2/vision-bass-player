@@ -4,17 +4,16 @@ import RealityKit
 import AVFoundation
 import ARKit
 
-/// The cinema screen in an ImmersiveSpace. Video frames are pulled from whichever player is
-/// active via `ImmersiveScreenBridge`. Drag to move, pinch to resize, two-hand rotate to tilt.
+/// The cinema screen in an ImmersiveSpace. Drag to move, pinch to resize, two-hand rotate to tilt.
 ///
-/// Three rendering modes:
-///  - 2D: one texture on an unlit material.
-///  - Packed 3D (SBS/TAB): two textures on a shader-graph material whose Camera Index Switch
-///    shows the left texture to the left eye and the right to the right (StereoScreen.usda).
-///  - MV-HEVC: RealityKit's own `VideoPlayerComponent` on the AVPlayer, which renders stereo natively.
+/// Rendering: the active player pushes every decoded frame through `ImmersiveScreenBridge`
+/// into an `ImmersiveFrameFeed`, whose `AVSampleBufferVideoRenderer` backs a RealityKit
+/// `VideoMaterial` on the screen mesh (flat / curved / VR sphere). Side-by-side and over-under
+/// 3D is declared on the frames themselves (Apple Projected Media Profile view packing), so the
+/// system renders one eye per lens. MV-HEVC via the AVPlayer backend uses RealityKit's own
+/// `VideoPlayerComponent`.
 struct ImmersiveScreenView: View {
     @EnvironmentObject private var model: ImmersiveScreenModel
-    @State private var feeder = ScreenTextureFeeder()
     @State private var screen = ModelEntity()
     @State private var videoEntity = Entity()
     @State private var root = Entity()
@@ -26,21 +25,19 @@ struct ImmersiveScreenView: View {
 
     /// Mutable bookkeeping shared with the RealityKit update closure.
     final class ScreenState {
+        var feed: ImmersiveFrameFeed?
+        var material: VideoMaterial?
         var lastMeshKey = ""
         var lastDomeDim: Double = -1
         var lastProjection: ScreenProjection = .flat
         var arSession: ARKitSession?
         var worldTracking: WorldTrackingProvider?
-        var stereoMaterial: ShaderGraphMaterial?
-        var stereoMaterialFailed = false
-        var boundGeneration = -1
-        var boundStereo = false
         var avPlayerBound: AVPlayer?
+        var lastStatusLog = Date.distantPast
     }
 
     var body: some View {
         RealityView { content in
-            feeder.hdr = model.hdr
             // Black dome around the viewer. Radius is far beyond the visible/rendered area so
             // there is no horizon, seam or edge fall-off anywhere in either lens, whatever the
             // immersion style. Negative X scale turns the sphere inside-out so we see its inner face.
@@ -50,10 +47,19 @@ struct ImmersiveScreenView: View {
             root.addChild(screen)
             root.addChild(videoEntity)
             content.add(root)
+
+            if let feed = ImmersiveFrameFeed() {
+                state.feed = feed
+                state.material = VideoMaterial(videoRenderer: feed.renderer)
+                DiagLog.log("video material created", "immersive")
+            } else {
+                DiagLog.log("no Metal device; cinema screen cannot render", "immersive")
+            }
             applyMesh(force: true)
             applyTransform()
             screen.components.set(InputTargetComponent())
             screen.generateCollisionShapes(recursive: false)
+            bindBridge()
 
             // Head tracking for recentre; the device anchor needs no user permission.
             Task { @MainActor in
@@ -66,17 +72,7 @@ struct ImmersiveScreenView: View {
                     try? await Task.sleep(for: .milliseconds(300))
                     recentre()
                 } catch {
-                    print("ImmersiveScreen: world tracking unavailable (\(error))")
-                }
-            }
-
-            // Load the stereo shader graph once (falls back to mono if the USD can't be loaded).
-            Task { @MainActor in
-                do {
-                    state.stereoMaterial = try await ShaderGraphMaterial(named: "/Root/StereoScreen", from: "StereoScreen.usda", in: Bundle.main)
-                } catch {
-                    print("ImmersiveScreen: stereo material unavailable (\(error)); packed 3D will show the left eye only")
-                    state.stereoMaterialFailed = true
+                    DiagLog.log("world tracking unavailable (\(error))", "immersive")
                 }
             }
 
@@ -93,8 +89,26 @@ struct ImmersiveScreenView: View {
         .gesture(dragGesture)
         .simultaneousGesture(magnifyGesture)
         .simultaneousGesture(rotateGesture)
-        .onAppear { model.isOpen = true }
-        .onDisappear { model.isOpen = false }
+        .onAppear {
+            model.isOpen = true
+            DiagLog.log("cinema screen opened", "immersive")
+        }
+        .onDisappear {
+            model.isOpen = false
+            ImmersiveScreenBridge.shared.pushFrame = nil
+            state.feed?.flush()
+            DiagLog.log("cinema screen closed (pushed \(state.feed?.pushed ?? 0), dropped \(state.feed?.dropped ?? 0))", "immersive")
+        }
+    }
+
+    /// Route the player's frames into the feed.
+    private func bindBridge() {
+        guard let feed = state.feed else { return }
+        ImmersiveScreenBridge.shared.pushFrame = { pixelBuffer, time, doviTexture in
+            MainActor.assumeIsolated {
+                feed.push(pixelBuffer: pixelBuffer, time: time, doviTexture: doviTexture)
+            }
+        }
     }
 
     // MARK: - Per-frame
@@ -112,6 +126,7 @@ struct ImmersiveScreenView: View {
                 state.avPlayerBound = player
                 screen.isEnabled = false
                 videoEntity.isEnabled = true
+                DiagLog.log("AVPlayer video component bound", "immersive")
             }
             // VideoPlayerComponent renders 1 m tall; scale to the configured screen size.
             let h = Float(model.screenHeight)
@@ -124,41 +139,26 @@ struct ImmersiveScreenView: View {
             screen.isEnabled = true
         }
 
-        let stereo = bridge.stereoFormat
+        guard let feed = state.feed else { return }
+        if feed.stereo != bridge.stereoFormat { feed.stereo = bridge.stereoFormat }
+        if feed.projection != bridge.projection { feed.projection = bridge.projection }
         if bridge.projection != state.lastProjection {
             state.lastProjection = bridge.projection
             applyMesh(force: true)
             applyTransform()
         }
-        let b = Float(model.brightness), c = Float(model.contrast), sat = Float(model.saturation), ev = Float(model.hdrBoost)
-        if feeder.brightness != b || feeder.contrast != c || feeder.saturation != sat || feeder.exposure != ev {
-            feeder.brightness = b; feeder.contrast = c; feeder.saturation = sat; feeder.exposure = ev
-            feeder.dirty = true
-        }
-        feeder.tick(frameSource: bridge.frameSource, stereo: stereo)
 
         // Follow the eye aspect once we know the frame size.
-        let (w, h) = feeder.sourceSize
+        let (w, h) = feed.frameSize
         if w > 0, h > 0 {
-            let a = stereo.displayAspect(frameWidth: Double(w), frameHeight: Double(h))
+            let a = bridge.stereoFormat.displayAspect(frameWidth: Double(w), frameHeight: Double(h))
             if abs(a - model.aspect) > 0.01 { model.aspect = a }
         }
 
-        // (Re)bind textures when they change or the stereo mode flips.
-        let wantStereo = stereo.isPacked && state.stereoMaterial != nil
-        if feeder.textureGeneration != state.boundGeneration || wantStereo != state.boundStereo {
-            guard let left = feeder.leftTexture else { return }
-            if wantStereo, var mat = state.stereoMaterial, let right = feeder.rightTexture {
-                try? mat.setParameter(name: "leftImage", value: .textureResource(left))
-                try? mat.setParameter(name: "rightImage", value: .textureResource(right))
-                screen.model?.materials = [mat]
-            } else {
-                var m = UnlitMaterial()
-                m.color = .init(tint: .white, texture: .init(left))
-                screen.model?.materials = [m]
-            }
-            state.boundGeneration = feeder.textureGeneration
-            state.boundStereo = wantStereo
+        let now = Date()
+        if now.timeIntervalSince(state.lastStatusLog) > 10 {
+            state.lastStatusLog = now
+            DiagLog.log("status: pushed \(feed.pushed) dropped \(feed.dropped) frame \(w)x\(h) renderer \(feed.renderer.status.rawValue) ready \(feed.renderer.isReadyForMoreMediaData) src \(bridge.pushFrame == nil ? "unbound" : "bound")", "immersive")
         }
     }
 
@@ -179,8 +179,10 @@ struct ImmersiveScreenView: View {
         case .vr360:
             mesh = ScreenMesh.makeVR(radius: 20, fullSphere: true, flipV: model.flipV)
         }
+        let material: any Material
+        if let m = state.material { material = m } else { material = UnlitMaterial(color: .black) }
         if screen.model == nil {
-            screen.model = ModelComponent(mesh: mesh, materials: [UnlitMaterial(color: .black)])
+            screen.model = ModelComponent(mesh: mesh, materials: [material])
         } else {
             screen.model?.mesh = mesh
         }
@@ -262,38 +264,35 @@ struct ImmersiveScreenView: View {
     }
 }
 
-/// Button + settings popover shown in the player on visionOS.
+/// Open / close button for the cinema screen (used by the player chrome).
 struct ImmersiveScreenToggle: View {
     @EnvironmentObject private var model: ImmersiveScreenModel
     @Environment(\.openImmersiveSpace) private var openSpace
     @Environment(\.dismissImmersiveSpace) private var dismissSpace
-    @State private var showSettings = false
+    var compact = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button {
-                Task {
-                    if model.isOpen {
-                        await dismissSpace()
-                    } else {
-                        _ = await openSpace(id: ImmersiveScreenSpace.id)
-                    }
+        Button {
+            Task {
+                if model.isOpen {
+                    await dismissSpace()
+                } else {
+                    let result = await openSpace(id: ImmersiveScreenSpace.id)
+                    DiagLog.log("openImmersiveSpace → \(result)", "immersive")
                 }
-            } label: {
+            }
+        } label: {
+            if compact {
+                Image(systemName: model.isOpen ? "rectangle.inset.filled.on.rectangle" : "rectangle.on.rectangle")
+            } else {
                 Label(model.isOpen ? "Close cinema screen" : "Cinema screen", systemImage: "rectangle.inset.filled.on.rectangle")
-            }
-            Button {
-                showSettings.toggle()
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-            }
-            .popover(isPresented: $showSettings) {
-                ImmersiveScreenSettings().frame(width: 380)
             }
         }
     }
 }
 
+/// Screen placement, picture and room controls. Shown inline on the player's remote panel
+/// (while the cinema screen is open) and in a sheet from the player controls.
 struct ImmersiveScreenSettings: View {
     @EnvironmentObject private var model: ImmersiveScreenModel
 
@@ -311,13 +310,9 @@ struct ImmersiveScreenSettings: View {
                 }
             }
             Section("Picture") {
-                LabeledSlider("Brightness", value: $model.brightness, range: -0.3...0.3, unit: "")
-                LabeledSlider("Contrast", value: $model.contrast, range: 0.6...1.4, unit: "")
-                LabeledSlider("Saturation", value: $model.saturation, range: 0...1.6, unit: "")
-                LabeledSlider("HDR boost", value: $model.hdrBoost, range: -2...2, unit: " EV")
-                Button("Reset picture") { model.resetPicture() }.disabled(model.pictureIsNeutral)
-                Toggle("HDR output", isOn: $model.hdr)
                 Toggle("Flip vertically", isOn: $model.flipV)
+                Text("Brightness, contrast and saturation controls return once the native cinema path is confirmed on the headset.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Room") {
                 Toggle("Full immersion (hide passthrough)", isOn: $model.darkRoom)
@@ -325,7 +320,7 @@ struct ImmersiveScreenSettings: View {
                     .disabled(model.darkRoom)
             }
         }
-        .padding()
+        .formStyle(.grouped)
     }
 }
 

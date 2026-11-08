@@ -1,14 +1,18 @@
 import SwiftUI
 
-/// YouTube: a search box that is always there, results as a thumbnail grid, and recent
-/// searches while the list is empty. There is no account and no feed; YouTube retired the
-/// anonymous Trending page, so search (or a pasted link) is the way in.
+/// YouTube: a search box that is always there, results as a thumbnail grid, and — once signed
+/// in — the account feeds (Home, Subscriptions, History, Watch later, Liked, Playlists) as tabs.
+/// Signed out, the empty state shows recent searches; YouTube retired the anonymous Trending
+/// page and its anonymous Home is empty, so there is no feed without an account.
 struct YouTubeView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var youtube: YouTubeClient
     @State private var query = ""
     @State private var recentSearches: [String] = RecentSearches.load()
+    @State private var showSignIn = false
     @FocusState private var searchFocused: Bool
+
+    private var signedIn: Bool { youtube.account.isSignedIn }
 
     var body: some View {
         NavigationStack {
@@ -16,18 +20,33 @@ struct YouTubeView: View {
                 searchBar
                     .padding(.horizontal, Metrics.pagePadding)
                     .padding(.top, 8)
-                    .padding(.bottom, 16)
+                if signedIn {
+                    feedTabs
+                        .padding(.horizontal, Metrics.pagePadding)
+                        .padding(.top, 12)
+                }
                 content
+                    .padding(.top, 16)
             }
             .navigationTitle("YouTube")
             .task {
                 if let q = ProcessInfo.processInfo.environment["BASSPLAYER_E2E_YT_QUERY"], !q.isEmpty, youtube.items.isEmpty {
                     query = q
                     submit(q)
+                } else if signedIn, youtube.items.isEmpty, youtube.feed == .search, youtube.lastQuery.isEmpty {
+                    await youtube.load(feed: .home)
                 }
             }
+            .onChange(of: signedIn) { _, now in
+                if now, youtube.items.isEmpty { Task { await youtube.load(feed: .home) } }
+            }
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    #if canImport(WebKit)
+                    if !signedIn {
+                        Button { showSignIn = true } label: { Label("Sign in", systemImage: "person.crop.circle.badge.plus") }
+                    }
+                    #endif
                     Menu {
                         Picker("Max quality", selection: $youtube.maxHeight) {
                             ForEach(YouTubeClient.maxHeightChoices, id: \.self) { h in
@@ -36,6 +55,11 @@ struct YouTubeView: View {
                         }
                         Toggle("HDR when available", isOn: $youtube.preferHDR)
                         Toggle("SponsorBlock", isOn: $youtube.sponsorBlockEnabled)
+                        if signedIn {
+                            Divider()
+                            Button("Refresh") { Task { await youtube.loadLibrary() } }
+                            Button("Sign out of YouTube", role: .destructive) { Task { await youtube.signOutAccount() } }
+                        }
                     } label: {
                         Label("Playback options", systemImage: "slider.horizontal.3")
                     }
@@ -47,8 +71,13 @@ struct YouTubeView: View {
                     ErrorBanner(text: e)
                 }
             }
+            #if canImport(WebKit)
+            .sheet(isPresented: $showSignIn) { YouTubeSignInView() }
+            #endif
         }
     }
+
+    // MARK: - Search bar + feed tabs
 
     private var searchBar: some View {
         HStack(spacing: 12) {
@@ -85,34 +114,139 @@ struct YouTubeView: View {
         .background(.regularMaterial, in: Capsule())
     }
 
+    private var feedTabs: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 10) {
+                ForEach(YouTubeClient.Feed.accountFeeds, id: \.self) { f in
+                    let selected = isCurrent(f)
+                    Button {
+                        Task { await youtube.load(feed: f) }
+                    } label: {
+                        Label(f.label, systemImage: f.systemImage)
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(selected ? .accentColor : .secondary)
+                }
+                if case .playlist(_, let title) = youtube.feed {
+                    Label(title, systemImage: "music.note.list")
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(.regularMaterial, in: Capsule())
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private func isCurrent(_ f: YouTubeClient.Feed) -> Bool {
+        if case .playlist = youtube.feed { return f == .playlists }
+        return youtube.feed == f
+    }
+
+    // MARK: - Content
+
     @ViewBuilder
     private var content: some View {
-        if youtube.isBusy && youtube.items.isEmpty {
+        if youtube.isBusy && youtube.items.isEmpty && youtube.playlists.isEmpty {
             Spacer()
-            ProgressView("Searching…")
+            ProgressView(youtube.feed == .search ? "Searching…" : "Loading \(youtube.feed.label)…")
             Spacer()
+        } else if youtube.feed == .playlists {
+            playlistGrid
         } else if youtube.items.isEmpty {
             emptyState
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionHeader(title: youtube.lastQuery.isEmpty ? "Results" : "Results for “\(youtube.lastQuery)”",
-                                  detail: "\(youtube.items.count)")
+                    SectionHeader(title: resultsTitle, detail: "\(youtube.items.count)")
                     LazyVGrid(columns: Metrics.videoColumns, alignment: .leading, spacing: Metrics.spacing) {
                         ForEach(youtube.items) { item in
                             CardButton { library.play(item) } label: { VideoCard(item: item) }
                         }
                     }
+                    if youtube.canLoadMore {
+                        HStack {
+                            Spacer()
+                            Button {
+                                Task { await youtube.loadMore() }
+                            } label: {
+                                if youtube.isBusy { ProgressView() } else { Label("Load more", systemImage: "arrow.down.circle") }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(youtube.isBusy)
+                            Spacer()
+                        }
+                        .padding(.top, 8)
+                    }
                 }
                 .padding(.horizontal, Metrics.pagePadding)
                 .padding(.bottom, Metrics.pagePadding)
             }
+            .refreshable { await youtube.loadLibrary() }
+        }
+    }
+
+    private var resultsTitle: String {
+        switch youtube.feed {
+        case .search: return youtube.lastQuery.isEmpty ? "Results" : "Results for “\(youtube.lastQuery)”"
+        default: return youtube.feed.label
+        }
+    }
+
+    private var playlistGrid: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(title: "Playlists", detail: "\(youtube.playlists.count)")
+                if youtube.playlists.isEmpty {
+                    Text("No playlists found on this account.").foregroundStyle(.secondary)
+                }
+                LazyVGrid(columns: Metrics.videoColumns, alignment: .leading, spacing: Metrics.spacing) {
+                    ForEach(youtube.playlists) { p in
+                        CardButton {
+                            Task { await youtube.load(feed: .playlist(id: p.id, title: p.title)) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Artwork(url: p.thumbnailURL, title: p.title, aspect: 16 / 9)
+                                    .overlay(alignment: .bottomTrailing) {
+                                        if let c = p.countText {
+                                            Label(c, systemImage: "music.note.list")
+                                                .font(.caption2.weight(.semibold))
+                                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                                .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 5))
+                                                .foregroundStyle(.white)
+                                                .padding(8)
+                                        }
+                                    }
+                                Text(p.title).font(.headline).lineLimit(2).multilineTextAlignment(.leading)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, Metrics.pagePadding)
+            .padding(.bottom, Metrics.pagePadding)
         }
     }
 
     private var emptyState: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
+                #if canImport(WebKit)
+                if !signedIn {
+                    HStack(spacing: 16) {
+                        Image(systemName: "person.crop.circle.badge.plus").font(.largeTitle).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Sign in for your Home, Subscriptions, History and playlists").font(.headline)
+                            Text("Google's own sign-in page opens here. Playback stays ad-free and anonymous; the account is only used to list your feeds.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Sign in") { showSignIn = true }.buttonStyle(.borderedProminent)
+                    }
+                    .padding(18)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                #endif
                 if !recentSearches.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
@@ -139,7 +273,7 @@ struct YouTubeView: View {
                         }
                     }
                 }
-                if recentSearches.isEmpty && recent.isEmpty {
+                if recentSearches.isEmpty && recent.isEmpty && youtube.feed == .search {
                     ContentUnavailableView {
                         Label("Search YouTube", systemImage: "play.tv")
                     } description: {

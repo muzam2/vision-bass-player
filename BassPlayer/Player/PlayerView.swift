@@ -35,52 +35,62 @@ struct PlayerView: View {
         .task(id: item.id) {
             resolved = nil
             resolveError = nil
-            do { resolved = try await library.resolve(item) } catch { resolveError = error.localizedDescription }
+            DiagLog.log("open \(item.source.rawValue) · \(item.title) · \(item.container ?? "?")/\(item.videoCodec ?? "?") \(item.width ?? 0)x\(item.height ?? 0) \(item.videoRange ?? "") stereo=\(item.stereo?.rawValue ?? "-")", "player")
+            do { resolved = try await library.resolve(item) } catch {
+                resolveError = error.localizedDescription
+                DiagLog.log("resolve failed: \(error.localizedDescription)", "player")
+            }
         }
         .navigationTitle(item.title)
         #if os(visionOS)
-        .toolbar {
-            ToolbarItem(placement: .bottomOrnament) {
-                HStack(spacing: 16) {
-                    ImmersiveScreenToggle()
-                    stereoPicker
-                    projectionPicker
-                }
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)   // the player chrome carries its own title + controls
         #else
         .toolbar {
-            ToolbarItem(placement: .automatic) { stereoPicker }
+            ToolbarItem(placement: .automatic) { StereoPickerMenu(item: item) }
         }
         #endif
     }
+}
 
-    /// Flat / VR180 / VR360 for the cinema screen.
-    private var projectionPicker: some View {
-        Picker(selection: Binding(
-            get: { library.projectionOverride(for: item) ?? library.effectiveProjection(for: item) },
-            set: { library.setProjectionOverride($0 == (item.projection ?? .flat) ? nil : $0, for: item) }
-        )) {
-            ForEach(ScreenProjection.allCases) { Text($0.label).tag($0) }
+/// Flat / VR180 / VR360 for the cinema screen.
+struct ProjectionPickerMenu: View {
+    let item: MediaItem
+    @EnvironmentObject private var library: LibraryStore
+
+    var body: some View {
+        Menu {
+            Picker("Projection", selection: Binding(
+                get: { library.projectionOverride(for: item) ?? library.effectiveProjection(for: item) },
+                set: { library.setProjectionOverride($0 == (item.projection ?? .flat) ? nil : $0, for: item) }
+            )) {
+                ForEach(ScreenProjection.allCases) { Text($0.label).tag($0) }
+            }
         } label: {
-            Label("Projection", systemImage: "globe")
+            Image(systemName: library.effectiveProjection(for: item) == .flat ? "globe" : "globe.badge.chevron.backward")
         }
-        .pickerStyle(.menu)
+        .help("Projection")
     }
+}
 
-    /// 3D packing override. "Auto" shows what was detected.
-    private var stereoPicker: some View {
+/// 3D packing override. "Auto" shows what was detected.
+struct StereoPickerMenu: View {
+    let item: MediaItem
+    @EnvironmentObject private var library: LibraryStore
+
+    var body: some View {
         let detected = item.stereo?.label ?? "2D"
-        return Picker(selection: Binding(
-            get: { library.stereoOverride(for: item) },
-            set: { library.setStereoOverride($0, for: item) }
-        )) {
-            Text("Auto (\(detected))").tag(StereoFormat.auto)
-            ForEach(StereoFormat.allCases.filter { $0 != .auto }) { Text($0.label).tag($0) }
+        Menu {
+            Picker("3D", selection: Binding(
+                get: { library.stereoOverride(for: item) },
+                set: { library.setStereoOverride($0, for: item) }
+            )) {
+                Text("Auto (\(detected))").tag(StereoFormat.auto)
+                ForEach(StereoFormat.allCases.filter { $0 != .auto }) { Text($0.label).tag($0) }
+            }
         } label: {
-            Label("3D", systemImage: "view.3d")
+            Image(systemName: library.effectiveStereo(for: item).isPacked || library.effectiveStereo(for: item) == .mvHEVC ? "view.3d" : "view.2d")
         }
-        .pickerStyle(.menu)
+        .help("3D format")
     }
 }
 
@@ -106,6 +116,9 @@ struct AVPlayerBackendView: View {
             HStack(spacing: 16) {
                 Text(item.title).font(.headline)
                 Spacer()
+                #if os(visionOS)
+                ImmersiveScreenToggle()
+                #endif
                 Label(controller.tapInstalled ? "Bass tap on" : "Bass tap off",
                       systemImage: controller.tapInstalled ? "waveform" : "waveform.slash")
                     .foregroundStyle(controller.tapInstalled ? .green : .secondary)
@@ -116,7 +129,7 @@ struct AVPlayerBackendView: View {
         .onAppear {
             if bassLink.state == .off { bassLink.start() }
             controller.load(url: url)
-            ImmersiveScreenBridge.shared.frameSource = nil
+            ImmersiveScreenBridge.shared.pushFrame = nil
             ImmersiveScreenBridge.shared.stereoFormat = .mono
             ImmersiveScreenBridge.shared.avPlayer = controller.player
         }
