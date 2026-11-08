@@ -49,6 +49,7 @@ struct YouTubeView: View {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Search YouTube, or paste a link", text: $query)
                 .textFieldStyle(.plain)
+                .accessibilityIdentifier("youtubeSearch")
                 .focused($searchFocused)
                 .submitLabel(.search)
                 .onSubmit { submit(query) }

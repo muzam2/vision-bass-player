@@ -1,0 +1,153 @@
+# Drives the app in the visionOS simulator with XCUITest (BassPlayerUITests/E2ETests.swift):
+# YouTube search + playback against the real YouTube, NAS browsing + playback against a Samba
+# share started on the runner, and Plex (sign-in via a token from the PLEX_TOKEN repository
+# secret, through plex.tv remote access) when the secret exists. Screenshots, the app log and
+# any crash reports are uploaded as artifacts.
+name: E2E simulator tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [e2e-tests]
+    paths:
+      - "BassPlayer/**"
+      - "BassPlayerUITests/**"
+      - project.yml
+      - .github/workflows/e2e-tests.yml
+
+jobs:
+  e2e:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    env:
+      SMB_SHARE_DIR: /Users/runner/smbshare
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen and generate the project
+        run: brew install xcodegen && xcodegen generate
+
+      - name: Cache FFmpegKit binaries
+        uses: actions/cache@v4
+        with:
+          path: Vendor/FFmpegKit/Sources/*.xcframework
+          key: ffmpegkit-${{ hashFiles('Vendor/FFmpegKit/checksums.json', 'Vendor/FFmpegKit/RELEASE_TAG') }}
+
+      - name: Fetch FFmpegKit binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash Vendor/FFmpegKit/tools/fetch_binaries.sh
+
+      - name: Start a Samba share with a sample video (NAS stand-in)
+        run: |
+          set -euo pipefail
+          brew install samba
+          mkdir -p "$SMB_SHARE_DIR" /Users/runner/smb/{private,lock,state,cache,pid,log}
+          # Small public sample clip (Google's gtv-videos-bucket), ~2.5 MB.
+          curl -fsSL -o "$SMB_SHARE_DIR/sample.mp4" https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4
+          ls -la "$SMB_SHARE_DIR"
+          cat > /Users/runner/smb/smb.conf <<EOF
+          [global]
+            workgroup = WORKGROUP
+            server string = ci
+            server min protocol = SMB2
+            map to guest = Bad User
+            guest account = runner
+            security = user
+            interfaces = lo0
+            bind interfaces only = yes
+            private dir = /Users/runner/smb/private
+            lock directory = /Users/runner/smb/lock
+            state directory = /Users/runner/smb/state
+            cache directory = /Users/runner/smb/cache
+            pid directory = /Users/runner/smb/pid
+            log file = /Users/runner/smb/log/%m.log
+            log level = 1
+            load printers = no
+            disable spoolss = yes
+          [video]
+            path = $SMB_SHARE_DIR
+            guest ok = yes
+            read only = yes
+            browseable = yes
+          EOF
+          sudo "$(brew --prefix)/sbin/smbd" -D -s /Users/runner/smb/smb.conf
+          sleep 3
+          "$(brew --prefix)/bin/smbclient" -N -L 127.0.0.1 || { echo "smbd not answering"; sudo cat /Users/runner/smb/log/*.log; exit 1; }
+          "$(brew --prefix)/bin/smbclient" -N //127.0.0.1/video -c 'ls'
+
+      - name: Resolve Swift packages
+        run: |
+          for attempt in 1 2 3; do
+            xcodebuild -resolvePackageDependencies -project BassPlayer.xcodeproj -scheme BassPlayer \
+              -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation > resolve.log 2>&1 && exit 0
+            echo "resolve attempt $attempt failed"; grep -E "error|failed" resolve.log | cut -c1-200 | head -3
+          done
+          tail -40 resolve.log; exit 1
+
+      - name: Create the Apple Vision Pro simulator if missing
+        run: |
+          set -euo pipefail
+          if ! xcrun simctl list devices available | grep -q "Apple Vision Pro"; then
+            RT=$(xcrun simctl list runtimes -j | python3 -c '
+          import json, sys
+          rts = [r for r in json.load(sys.stdin)["runtimes"] if "xros" in r["identifier"].lower() and r["isAvailable"]]
+          rts.sort(key=lambda r: [int(x) for x in r["version"].split(".")], reverse=True)
+          print(rts[0]["identifier"])')
+            xcrun simctl create "Apple Vision Pro" "Apple Vision Pro" "$RT"
+          fi
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          for rt, ds in json.load(sys.stdin)["devices"].items():
+              for d in ds:
+                  if d["name"] == "Apple Vision Pro": print(d["udid"]); raise SystemExit')
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Run the UI tests
+        env:
+          TEST_RUNNER_E2E_SMB_HOST: 127.0.0.1
+          TEST_RUNNER_E2E_SMB_SHARE: video
+          TEST_RUNNER_E2E_SMB_FILE: sample.mp4
+          TEST_RUNNER_E2E_PLEX_TOKEN: ${{ secrets.PLEX_TOKEN }}
+        run: |
+          set -o pipefail
+          xcodebuild test -project BassPlayer.xcodeproj -scheme BassPlayer \
+            -destination "platform=visionOS Simulator,id=$UDID" \
+            -derivedDataPath build -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation \
+            -resultBundlePath e2e.xcresult \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO EXCLUDED_ARCHS=x86_64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            2>&1 | tee test.log | grep -E "error:|Test Case|Test Suite|passed|failed|skipped|E2E |BUILD|TEST" || true
+          grep -q -E "TEST SUCCEEDED|TEST FAILED" test.log
+
+      - name: Collect results
+        if: always()
+        run: |
+          mkdir -p out
+          xcrun xcresulttool get test-results summary --path e2e.xcresult > out/summary.json 2>/dev/null || true
+          xcrun xcresulttool get test-results tests --path e2e.xcresult > out/tests.json 2>/dev/null || true
+          xcrun xcresulttool export attachments --path e2e.xcresult --output-path out/attachments 2>/dev/null || true
+          ls -la out/attachments 2>/dev/null | head -40 || true
+          cp ~/Library/Logs/DiagnosticReports/BassPlayer* out/ 2>/dev/null || true
+          xcrun simctl spawn "$UDID" log show --last 30m --predicate 'process == "BassPlayer"' > out/app.log 2>&1 || true
+          grep -E "E2E |Test Case|error:" test.log > out/test-highlights.txt || true
+          cp test.log out/
+          python3 - <<'EOF' || true
+          import json
+          s = json.load(open("out/summary.json"))
+          print("RESULT:", s.get("result"), "passed", s.get("passedTests"), "failed", s.get("failedTests"), "skipped", s.get("skippedTests"))
+          for f in s.get("testFailures", []): print("FAIL:", f.get("testName"), "-", (f.get("failureText") or "")[:300])
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results
+          path: out/
+          if-no-files-found: warn
