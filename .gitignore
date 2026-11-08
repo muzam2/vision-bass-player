@@ -1,0 +1,14 @@
+# Xcode / generated
+BassPlayer.xcodeproj/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+Payload/
+*.ipa
+build.log
+# PlatformIO
+firmware/**/.pio/
+firmware/**/.vscode/
+# macOS
+.DS_Store
