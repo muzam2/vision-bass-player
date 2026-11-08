@@ -2,7 +2,7 @@ name: BassPlayer
 options:
   bundleIdPrefix: com.muzam2
   deploymentTarget:
-    visionOS: "2.0"
+    visionOS: "26.0"   # Scene.restorationBehavior needs 26; the owner's device runs 27
     tvOS: "18.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
