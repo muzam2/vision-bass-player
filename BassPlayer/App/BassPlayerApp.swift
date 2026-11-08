@@ -71,6 +71,7 @@ struct BassPlayerApp: App {
 
         ImmersiveSpace(id: ImmersiveScreenSpace.id) {
             ImmersiveScreenView()
+                .modifier(AppEnvironment(library: library, jellyfin: jellyfin, plex: plex, youtube: youtube, nas: nas, bassLink: bassLink))
                 .environmentObject(immersive)
         }
         .immersionStyle(selection: $immersionStyle, in: .mixed, .full)

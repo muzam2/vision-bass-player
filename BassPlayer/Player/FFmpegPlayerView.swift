@@ -240,7 +240,8 @@ final class FFmpegSession: ObservableObject {
     }
 }
 
-/// SwiftUI player using KSPlayer's full-featured view (controls, subtitles, track picker).
+/// Player view for one item. Playback itself belongs to `LibraryStore.playback` so it survives
+/// this view (the cinema screen dismisses the player window while the film keeps going).
 struct FFmpegPlayerView: View {
     let item: MediaItem
     let url: URL
@@ -248,12 +249,12 @@ struct FFmpegPlayerView: View {
 
     @EnvironmentObject private var bassLink: BassLink
     @EnvironmentObject private var library: LibraryStore
-    @StateObject private var coordinator = KSVideoPlayer.Coordinator()
-    @StateObject private var session: FFmpegSession
     @AppStorage("bass.leadMs") private var leadMs: Int = 0
     #if os(visionOS)
     @EnvironmentObject private var immersive: ImmersiveScreenModel
     #endif
+
+    private var playback: PlaybackController { library.playback }
 
     private var immersiveStereoActive: Bool {
         #if os(visionOS)
@@ -263,57 +264,56 @@ struct FFmpegPlayerView: View {
         #endif
     }
 
-    init(item: MediaItem, url: URL, onFinished: (() -> Void)? = nil) {
-        self.item = item
-        self.url = url
-        self.onFinished = onFinished
-        _session = StateObject(wrappedValue: {
-            let session = FFmpegSession(bassLink: BassLinkHolder.shared)
-            session.configure(for: item)
-            return session
-        }())
-    }
-
     var body: some View {
-        playerView
-            .onAppear {
-                if bassLink.state == .off { bassLink.start() }
-                session.start(coordinator: coordinator, leadMs: leadMs, item: item, library: library)
-                session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive)
-                ImmersiveScreenBridge.shared.projection = library.effectiveProjection(for: item)
-                if item.source == .youtube {
-                    Task { session.setSponsorSegments(await library.youtube.sponsorSegments(for: item)) }
-                }
-                ImmersiveScreenBridge.shared.avPlayer = nil
+        Group {
+            if let session = playback.session, playback.item?.id == item.id {
+                playerView(session: session)
+            } else {
+                Color.black
             }
-            .onDisappear {
-                session.stop()
-                ImmersiveScreenBridge.shared.stereoFormat = .mono
-                ImmersiveScreenBridge.shared.projection = .flat
-                #if os(visionOS)
-                // The window closed while the cinema screen was up: take the screen down too.
-                if immersive.isOpen { immersive.closeRequest += 1 }
-                #endif
+        }
+        .onAppear {
+            if bassLink.state == .off { bassLink.start() }
+            let session = playback.begin(item: item, url: url, library: library, leadMs: leadMs)
+            session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive)
+            ImmersiveScreenBridge.shared.projection = library.effectiveProjection(for: item)
+            if item.source == .youtube {
+                Task { session.setSponsorSegments(await library.youtube.sponsorSegments(for: item)) }
             }
-            .onChange(of: leadMs) { _, new in session.setLead(ms: new) }
-            .onChange(of: library.effectiveStereo(for: item)) { _, new in session.setStereo(new, immersiveStereo: immersiveStereoActive) }
-            .onChange(of: immersiveStereoActive) { _, _ in session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive) }
-            .onChange(of: library.effectiveProjection(for: item)) { _, new in ImmersiveScreenBridge.shared.projection = new }
-            .onChange(of: session.finished) { _, done in if done { onFinished?() } }
+            ImmersiveScreenBridge.shared.avPlayer = nil
+        }
+        .onDisappear {
+            if playback.detachedForImmersive {
+                DiagLog.log("player window dismissed for the cinema screen; playback continues", "player")
+                return
+            }
+            playback.end()
+            ImmersiveScreenBridge.shared.stereoFormat = .mono
+            ImmersiveScreenBridge.shared.projection = .flat
+            #if os(visionOS)
+            // The window was closed while the cinema screen was up: take the screen down too.
+            if immersive.isOpen { immersive.closeRequest += 1 }
+            #endif
+        }
+        .onChange(of: leadMs) { _, new in playback.session?.setLead(ms: new) }
+        .onChange(of: library.effectiveStereo(for: item)) { _, new in playback.session?.setStereo(new, immersiveStereo: immersiveStereoActive) }
+        .onChange(of: immersiveStereoActive) { _, _ in playback.session?.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive) }
+        .onChange(of: library.effectiveProjection(for: item)) { _, new in ImmersiveScreenBridge.shared.projection = new }
+        .onChange(of: playback.session?.finished ?? false) { _, done in if done { onFinished?() } }
     }
 
     @ViewBuilder
-    private var playerView: some View {
+    private func playerView(session: FFmpegSession) -> some View {
         #if os(visionOS)
-        FFmpegPlayerChrome(item: item, url: url, coordinator: coordinator, session: session, options: session.options)
+        FFmpegPlayerChrome(item: item, url: url, playback: playback, session: session)
         #else
-        KSVideoPlayerView(coordinator: coordinator, url: url, options: session.options, title: item.title,
+        KSVideoPlayerView(coordinator: playback.coordinator, url: url, options: session.options, title: item.title,
                           subtitleDataSouce: item.subtitleURLs.isEmpty ? nil : URLSubtitleDataSouce(urls: item.subtitleURLs))
-            .overlay(alignment: .topTrailing) { statusChip.padding(12) }
+            .overlay(alignment: .topTrailing) { statusChip(session).padding(12) }
         #endif
     }
 
-    private var statusChip: some View {
+    private func statusChip(_ session: FFmpegSession) -> some View {
         HStack(spacing: 8) {
             Image(systemName: session.tapInstalled ? "waveform" : "waveform.slash")
             Text(session.tapInstalled ? "Bass tap · \(session.audioFormat)" : "Bass tap off")
@@ -328,7 +328,6 @@ struct FFmpegPlayerView: View {
         .background(.regularMaterial, in: Capsule())
         .foregroundStyle(session.tapInstalled ? .green : .secondary)
         .allowsHitTesting(false)
-        // One accessibility element whose label is the whole chip text (read by the UI tests).
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("statusChip")
     }
