@@ -78,11 +78,20 @@ Apple ID and keeps the signature refreshed.
 
 ## Receiver
 
-Parts: ESP32 dev board, PCM5102A I²S DAC board, 3.5 mm→RCA cable, USB power.
+Two supported boards, one firmware:
 
-Wiring and jumper settings are in `firmware/esp32-bass-receiver/src/main.cpp`. Flash with
-PlatformIO: `cd firmware/esp32-bass-receiver && pio run -t upload`. The board advertises as
-**BassSub**; the app connects automatically when you open a film.
+| Board | PlatformIO env | Notes |
+|---|---|---|
+| **ESP32-A1S Audio Kit** (ES8388) | `esp32-a1s` | Nothing to wire; 3.5 mm jack is line out. Power via micro-USB (5 V) or the JST battery connector. |
+| Generic ESP32 + PCM5102A board | `esp32dev` | Wiring and jumpers in `src/main.cpp`. |
+
+Flash: `cd firmware/esp32-bass-receiver && pio run -e esp32-a1s -t upload` (or `-e esp32dev`).
+CI also builds both and uploads `firmware-<env>` artifacts (`firmware.bin` + bootloader +
+partitions) you can flash with `esptool` or the web flasher. The board advertises as **BassSub**;
+the app connects automatically when you open a film.
+
+Power the ESP32 from a clean 5 V supply (official Raspberry Pi micro-USB PSU or an Apple USB-C
+brick); cheap chargers can put a whine into the line out. Both apps talk to the same receiver.
 
 If the sub hums, power the ESP32 and the sub from the same socket strip or put a ground-loop
 isolator on the RCA lead.
