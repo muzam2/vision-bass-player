@@ -50,6 +50,14 @@ struct MediaItem: Identifiable, Hashable, Codable {
     var subtitleURLs: [URL] = []
     /// Server-side resume position in seconds, if the server knows one.
     var serverResumeSeconds: Double? = nil
+    /// Set on a TV series (not playable): the server key whose episodes are fetched on demand.
+    var showKey: String? = nil
+    /// Episodes: the series' server key, season and episode numbers.
+    var parentShowKey: String? = nil
+    var season: Int? = nil
+    var episodeNumber: Int? = nil
+
+    var isShow: Bool { showKey != nil }
 
     var formatBadge: String {
         var parts: [String] = []
