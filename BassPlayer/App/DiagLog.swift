@@ -28,7 +28,12 @@ final class DiagLog: LogHandler, @unchecked Sendable {
     private var livePending: [String] = []
     private var liveTimer: DispatchSourceTimer?
     private var liveInFlight = false
-    private(set) var liveStatus = "off"
+    private var _liveStatus = "off"
+    /// "off", "starting", "streaming (hh:mm:ss)" or "retrying (…)"; safe from any thread.
+    var liveStatus: String {
+        lock.lock(); defer { lock.unlock() }
+        return _liveStatus
+    }
 
     private init() {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
@@ -141,7 +146,7 @@ final class DiagLog: LogHandler, @unchecked Sendable {
         livePending = url == nil ? [] : lines
         liveTimer?.cancel()
         liveTimer = nil
-        liveStatus = url == nil ? "off" : "starting"
+        _liveStatus = url == nil ? "off" : "starting"
         lock.unlock()
         guard let url else { return }
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
@@ -169,9 +174,9 @@ final class DiagLog: LogHandler, @unchecked Sendable {
                 // Put the batch back (in front of anything newer) and try again next tick.
                 self.livePending.insert(contentsOf: batch, at: 0)
                 if self.livePending.count > 2000 { self.livePending.removeFirst(self.livePending.count - 2000) }
-                self.liveStatus = "retrying (\(error?.localizedDescription ?? "HTTP \(code)"))"
+                self._liveStatus = "retrying (\(error?.localizedDescription ?? "HTTP \(code)"))"
             } else {
-                self.liveStatus = "streaming (\(self.formatter.string(from: Date())))"
+                self._liveStatus = "streaming (\(self.formatter.string(from: Date())))"
             }
             self.lock.unlock()
         }
