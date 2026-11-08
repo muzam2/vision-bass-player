@@ -27,6 +27,7 @@ receiver, so one sub serves the headset and the TV.
 | `BassPlayer/Audio` | `BassExtractor` (LPF → 1 kHz Int16 packets), `BassEngineTap` (AVAudioEngine tap + lead delay), `BassTapProcessor` (MTAudioProcessingTap glue for AVPlayer) |
 | `BassPlayer/Immersive` | RealityKit cinema screen (visionOS only) |
 | `docs/SETUP-GUIDE.md` | Step-by-step hardware, install and tuning guide |
+| `docs/HANDOFF.md`, `CLAUDE.md` | Handoff for the next Claude Code session: state, risks, next steps |
 | `BassPlayer/BLE` | `BassLink` CoreBluetooth central |
 | `BassPlayer/Views` | Library, settings, status ornament |
 | `firmware/esp32-bass-receiver` | PlatformIO project for the ESP32 receiver |
