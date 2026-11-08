@@ -14,6 +14,7 @@ enum PlayerBackend: String, CaseIterable, Identifiable {
 final class LibraryStore: ObservableObject {
     let jellyfin: JellyfinClient
     let plex: PlexClient
+    let youtube: YouTubeClient
     private let defaults = UserDefaults.standard
     private var cancellables = Set<AnyCancellable>()
 
@@ -22,28 +23,46 @@ final class LibraryStore: ObservableObject {
     @Published var searchText = ""
     @Published var showEpisodes: Bool { didSet { defaults.set(showEpisodes, forKey: "lib.showEpisodes") } }
 
-    init(jellyfin: JellyfinClient, plex: PlexClient) {
+    init(jellyfin: JellyfinClient, plex: PlexClient, youtube: YouTubeClient) {
         self.jellyfin = jellyfin
         self.plex = plex
+        self.youtube = youtube
         selectedSource = MediaSource(rawValue: defaults.string(forKey: "lib.source") ?? "") ?? .jellyfin
         backend = PlayerBackend(rawValue: defaults.string(forKey: "lib.backend") ?? "") ?? .ffmpeg
         showEpisodes = defaults.object(forKey: "lib.showEpisodes") as? Bool ?? false
         // Re-publish when either client changes so views depending on `items` refresh.
         jellyfin.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         plex.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        youtube.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
     }
 
     var currentIsSignedIn: Bool {
         switch selectedSource {
         case .jellyfin: return jellyfin.isSignedIn
         case .plex: return plex.isSignedIn && plex.hasServer
+        case .youtube: return true
         }
     }
 
-    var currentIsBusy: Bool { selectedSource == .jellyfin ? jellyfin.isBusy : plex.isBusy }
-    var currentError: String? { selectedSource == .jellyfin ? jellyfin.errorMessage : plex.errorMessage }
+    var currentIsBusy: Bool {
+        switch selectedSource {
+        case .jellyfin: return jellyfin.isBusy
+        case .plex: return plex.isBusy
+        case .youtube: return youtube.isBusy
+        }
+    }
+
+    var currentError: String? {
+        switch selectedSource {
+        case .jellyfin: return jellyfin.errorMessage
+        case .plex: return plex.errorMessage
+        case .youtube: return youtube.errorMessage
+        }
+    }
 
     var items: [MediaItem] {
+        // YouTube's list is already the search result; local filtering applies to the servers.
+        if selectedSource == .youtube { return youtube.items }
         let all = selectedSource == .jellyfin ? jellyfin.items : plex.items
         return all.filter { item in
             (showEpisodes || !item.isEpisode) &&
@@ -55,6 +74,16 @@ final class LibraryStore: ObservableObject {
         switch selectedSource {
         case .jellyfin: await jellyfin.loadLibrary()
         case .plex: await plex.loadLibrary()
+        case .youtube: await youtube.loadLibrary()
+        }
+    }
+
+    /// Fetch anything the item needs just before playback (YouTube stream URLs expire).
+    func resolve(_ item: MediaItem) async throws -> MediaItem {
+        guard item.needsResolve else { return item }
+        switch item.source {
+        case .youtube: return try await youtube.resolve(item)
+        default: return item
         }
     }
 

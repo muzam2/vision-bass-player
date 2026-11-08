@@ -7,20 +7,31 @@ struct PlayerView: View {
 
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var bassLink: BassLink
+    @State private var resolved: MediaItem?
+    @State private var resolveError: String?
 
     var body: some View {
         Group {
-            if let url = library.url(for: item) {
-                switch library.effectiveBackend(for: item) {
+            if let resolved, let url = library.url(for: resolved) {
+                switch library.effectiveBackend(for: resolved) {
                 case .ffmpeg:
-                    FFmpegPlayerView(item: item, url: url)
+                    FFmpegPlayerView(item: resolved, url: url)
                 case .avplayer:
-                    AVPlayerBackendView(item: item, url: url)
+                    AVPlayerBackendView(item: resolved, url: url)
                 }
-            } else {
+            } else if let err = resolveError {
+                ContentUnavailableView("Can't play this", systemImage: "exclamationmark.triangle", description: Text(err))
+            } else if resolved != nil {
                 ContentUnavailableView("No stream URL", systemImage: "exclamationmark.triangle",
                                        description: Text("The server did not provide a playable file for this item."))
+            } else {
+                ProgressView("Fetching stream…")
             }
+        }
+        .task(id: item.id) {
+            resolved = nil
+            resolveError = nil
+            do { resolved = try await library.resolve(item) } catch { resolveError = error.localizedDescription }
         }
         .navigationTitle(item.title)
         #if os(visionOS)
