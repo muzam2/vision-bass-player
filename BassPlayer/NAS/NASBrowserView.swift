@@ -3,15 +3,20 @@ import SwiftUI
 /// Shares → folders → files. Selecting a video file hands a `MediaItem` to the player.
 struct NASBrowserView: View {
     @EnvironmentObject private var nas: NASClient
-    @Binding var selectedItem: MediaItem?
     @State private var showAdd = false
 
     var body: some View {
         NavigationStack {
             Group {
                 if nas.shares.isEmpty {
-                    ContentUnavailableView("No shares yet", systemImage: "externaldrive.badge.plus",
-                                           description: Text("Add your NAS (SMB or WebDAV) to browse and play files directly."))
+                    ContentUnavailableView {
+                        Label("No shares yet", systemImage: "externaldrive.badge.plus")
+                    } description: {
+                        Text("Add your NAS (SMB or WebDAV) to browse and play files directly. Enter just the host to see all its shares.")
+                    } actions: {
+                        Button { showAdd = true } label: { Label("Add share", systemImage: "plus") }
+                            .buttonStyle(.borderedProminent)
+                    }
                 } else {
                     List {
                         ForEach(nas.shares) { share in
@@ -30,8 +35,9 @@ struct NASBrowserView: View {
                     }
                 }
             }
+            .navigationTitle("NAS")
             .navigationDestination(for: NASLocation.self) { loc in
-                NASFolderView(location: loc, selectedItem: $selectedItem)
+                NASFolderView(location: loc)
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -50,8 +56,8 @@ struct NASLocation: Hashable {
 
 struct NASFolderView: View {
     let location: NASLocation
-    @Binding var selectedItem: MediaItem?
     @EnvironmentObject private var nas: NASClient
+    @EnvironmentObject private var library: LibraryStore
     @State private var entries: [NASEntry] = []
     @State private var loading = true
     @State private var error: String?
@@ -73,7 +79,7 @@ struct NASFolderView: View {
                             }
                         } else {
                             Button {
-                                selectedItem = nas.mediaItem(share: location.share, entry: e)
+                                library.play(nas.mediaItem(share: location.share, entry: e))
                             } label: {
                                 HStack {
                                     Label(e.name, systemImage: "film")

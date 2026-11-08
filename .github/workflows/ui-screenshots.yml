@@ -1,0 +1,137 @@
+# Builds the app for the visionOS and tvOS simulators, launches it with demo data on each
+# screen and uploads screenshots, so UI work can be checked without a headset.
+# Needs the FFmpegKit release to carry simulator slices (ffmpegkit-6.1.4-bp2 or later).
+name: UI screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ui-redesign]
+    paths:
+      - "BassPlayer/**"
+      - project.yml
+      - .github/workflows/ui-screenshots.yml
+
+jobs:
+  shots:
+    name: ${{ matrix.name }}
+    runs-on: xcode-27
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: visionOS
+            scheme: BassPlayer
+            destination: "generic/platform=visionOS Simulator"
+            device: "Apple Vision Pro"
+            runtime: xrOS            # CoreSimulator still calls visionOS "xrOS" in runtime identifiers
+            app: BassPlayer.app
+            bundle: com.muzam2.bassplayer
+            suffix: visionos
+          - name: tvOS
+            scheme: BassPlayerTV
+            destination: "generic/platform=tvOS Simulator"
+            device: "Apple TV 4K (3rd generation)"
+            runtime: tvOS
+            app: BassPlayerTV.app
+            bundle: com.muzam2.bassplayer.tv
+            suffix: tvos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen and generate the project
+        run: brew install xcodegen && xcodegen generate
+
+      - name: Cache FFmpegKit binaries
+        uses: actions/cache@v4
+        with:
+          path: Vendor/FFmpegKit/Sources/*.xcframework
+          key: ffmpegkit-${{ hashFiles('Vendor/FFmpegKit/checksums.json', 'Vendor/FFmpegKit/RELEASE_TAG') }}
+
+      - name: Fetch FFmpegKit binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash Vendor/FFmpegKit/tools/fetch_binaries.sh
+
+      - name: Resolve Swift packages
+        run: |
+          for attempt in 1 2 3; do
+            xcodebuild -resolvePackageDependencies -project BassPlayer.xcodeproj -scheme "${{ matrix.scheme }}" \
+              -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation > resolve.log 2>&1 && exit 0
+            echo "resolve attempt $attempt failed"; grep -E "error|failed" resolve.log | cut -c1-200 | head -3
+          done
+          tail -40 resolve.log; exit 1
+
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project BassPlayer.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Debug \
+            -destination "${{ matrix.destination }}" -derivedDataPath build \
+            -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO EXCLUDED_ARCHS=x86_64 \
+            build 2>&1 | tee build.log | grep -E "error:|BUILD" || true
+          # ARCHS=arm64: FFmpegKit's visionOS-simulator slice is Apple-silicon only; the runner is too.
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Boot the simulator and take screenshots
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products -name "${{ matrix.app }}" -type d | head -n1)
+          test -n "$APP"
+          pick() {
+            xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          want, runtime = sys.argv[1], sys.argv[2]
+          picks = [(rt, d) for rt, ds in data.items() if runtime in rt for d in ds if d["name"] == want]
+          picks.sort(key=lambda p: p[0], reverse=True)   # newest runtime first
+          print(picks[0][1]["udid"] if picks else "")
+          ' "${{ matrix.device }}" "${{ matrix.runtime }}"
+          }
+          UDID=$(pick)
+          if [ -z "$UDID" ]; then
+            # The image has the runtime but not always a pre-made device: create one.
+            RT=$(xcrun simctl list runtimes -j | python3 -c '
+          import json, sys
+          rts = [r for r in json.load(sys.stdin)["runtimes"] if sys.argv[1].lower() in r["identifier"].lower() and r["isAvailable"]]
+          rts.sort(key=lambda r: [int(x) for x in r["version"].split(".")], reverse=True)
+          print(rts[0]["identifier"] if rts else "")
+          ' "${{ matrix.runtime }}")
+            test -n "$RT" || { xcrun simctl list runtimes; echo "no ${{ matrix.runtime }} runtime"; exit 1; }
+            echo "creating ${{ matrix.device }} on $RT"
+            xcrun simctl create "${{ matrix.device }}" "${{ matrix.device }}" "$RT"
+            UDID=$(pick)
+          fi
+          test -n "$UDID" || { xcrun simctl list devices available; echo "no ${{ matrix.device }} simulator"; exit 1; }
+          echo "simulator $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$APP"
+          mkdir -p shots
+          for screen in home jellyfin plex youtube nas settings; do
+            SIMCTL_CHILD_BASSPLAYER_DEMO=1 SIMCTL_CHILD_BASSPLAYER_SCREEN=$screen \
+              xcrun simctl launch --terminate-running-process "$UDID" "${{ matrix.bundle }}"
+            sleep 10
+            xcrun simctl io "$UDID" screenshot "shots/${{ matrix.suffix }}-$screen.png"
+          done
+          ls -la shots
+
+      - name: Collect the app's own log on failure
+        if: failure()
+        run: xcrun simctl spawn booted log show --last 3m --predicate 'process == "BassPlayer" || process == "BassPlayerTV"' > app.log 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-${{ matrix.suffix }}
+          path: |
+            shots/*.png
+            build.log
+            app.log
+          if-no-files-found: warn

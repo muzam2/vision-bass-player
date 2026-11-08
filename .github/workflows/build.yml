@@ -13,7 +13,9 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.name }}
-    runs-on: macos-15
+    # xcode-27 image: Xcode 27.x with the visionOS 27 / tvOS 27 SDKs, matching the owner's
+    # devices (macos-15 stops at Xcode 26.3 / visionOS 26.2).
+    runs-on: xcode-27
     timeout-minutes: 45
     strategy:
       fail-fast: false
