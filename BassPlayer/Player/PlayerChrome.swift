@@ -120,7 +120,7 @@ struct TransportBar: View {
                 if playback.state == .buffering { ProgressView().controlSize(.small) }
                 Spacer()
                 AudioTrackMenu(playback: playback)
-                SubtitleMenu(model: playback.coordinator.subtitleModel, coordinator: playback.coordinator)
+                SubtitleMenu(model: playback.coordinator.subtitleModel, coordinator: playback.coordinator, externalURLs: item.subtitleURLs)
                 speedMenu
                 Divider().frame(height: 24)
                 StereoPickerMenu(item: item)
@@ -212,12 +212,54 @@ private struct AudioTrackMenu: View {
         .help("Audio track")
     }
 
-    private func label(_ t: MediaPlayerTrack) -> String {
-        var s = t.name
-        if let lang = t.languageCode, !s.localizedCaseInsensitiveContains(lang) {
-            s += " · \(Locale.current.localizedString(forLanguageCode: lang) ?? lang)"
+    private func label(_ t: MediaPlayerTrack) -> String { TrackLabel.audio(t) }
+}
+
+/// Short, single-line track names for menus (KSPlayer's own are codec dumps that wrap).
+enum TrackLabel {
+    static func audio(_ t: MediaPlayerTrack) -> String {
+        var parts: [String] = []
+        let lang = t.languageCode.flatMap { Locale.current.localizedString(forLanguageCode: $0) ?? ($0 == "und" ? nil : $0) }
+        if let lang { parts.append(lang.capitalized) }
+        if let ff = t as? FFmpegAssetTrack {
+            let title = ff.name.trimmingCharacters(in: .whitespaces)
+            if !title.isEmpty, title.lowercased() != (t.languageCode ?? "").lowercased(), title.lowercased() != ff.codecName.lowercased() {
+                parts.append(String(title.prefix(28)))
+            }
+            var tech = codecName(ff.codecName)
+            if let ch = ff.audioDescriptor?.audioFormat.channelCount { tech += " " + channels(Int(ch)) }
+            parts.append(tech)
+        } else if !t.name.isEmpty {
+            parts.append(String(t.name.prefix(40)))
         }
-        return s
+        if parts.isEmpty { parts.append("Track \(t.trackID)") }
+        return parts.joined(separator: " · ")
+    }
+
+    static func codecName(_ raw: String) -> String {
+        let base = raw.split(separator: " ").first.map(String.init) ?? raw
+        switch base.lowercased() {
+        case "eac3": return "E-AC-3"
+        case "ac3": return "AC-3"
+        case "truehd": return "TrueHD"
+        case "dts": return raw.lowercased().contains("hd ma") ? "DTS-HD MA" : (raw.lowercased().contains("hd") ? "DTS-HD" : "DTS")
+        case "aac": return "AAC"
+        case "flac": return "FLAC"
+        case "opus": return "Opus"
+        case "mp3": return "MP3"
+        case "pcm_s16le", "pcm_s24le": return "PCM"
+        default: return base.uppercased()
+        }
+    }
+
+    static func channels(_ n: Int) -> String {
+        switch n {
+        case 1: return "mono"
+        case 2: return "stereo"
+        case 6: return "5.1"
+        case 8: return "7.1"
+        default: return "\(n)ch"
+        }
     }
 }
 
@@ -225,26 +267,50 @@ private struct AudioTrackMenu: View {
 private struct SubtitleMenu: View {
     @ObservedObject var model: SubtitleModel
     let coordinator: KSVideoPlayer.Coordinator
+    var externalURLs: [URL] = []
 
     var body: some View {
         Menu {
             Button { select(nil) } label: {
                 if model.selectedSubtitleInfo == nil { Label("Off", systemImage: "checkmark") } else { Text("Off") }
             }
-            if model.subtitleInfos.isEmpty { Text("No subtitles in this file") }
+            if model.subtitleInfos.isEmpty { Text("No subtitles found") }
             ForEach(model.subtitleInfos, id: \.subtitleID) { info in
                 Button { select(info) } label: {
                     if model.selectedSubtitleInfo?.subtitleID == info.subtitleID {
-                        Label(info.name, systemImage: "checkmark")
+                        Label(name(info), systemImage: "checkmark")
                     } else {
-                        Text(info.name)
+                        Text(name(info))
                     }
                 }
             }
+            Divider()
+            Button { rescan() } label: { Label("Rescan tracks", systemImage: "arrow.clockwise") }
         } label: {
             Image(systemName: model.selectedSubtitleInfo == nil ? "captions.bubble" : "captions.bubble.fill")
         }
         .help("Subtitles")
+    }
+
+    private func name(_ info: any SubtitleInfo) -> String {
+        if let t = info as? FFmpegAssetTrack {
+            var parts: [String] = []
+            if let lang = t.languageCode.flatMap({ Locale.current.localizedString(forLanguageCode: $0) }) { parts.append(lang.capitalized) }
+            let title = t.name.trimmingCharacters(in: .whitespaces)
+            if !title.isEmpty, title.lowercased() != (t.languageCode ?? "").lowercased() { parts.append(String(title.prefix(28))) }
+            parts.append(t.isImageSubtitle ? "image" : TrackLabel.codecName(t.codecName).lowercased())
+            return parts.joined(separator: " · ")
+        }
+        return String(info.name.prefix(40))
+    }
+
+    /// Re-collect embedded tracks from the player and the server's external files.
+    private func rescan() {
+        let before = model.subtitleInfos.count
+        if let ds = coordinator.playerLayer?.player.subtitleDataSouce { model.addSubtitle(dataSouce: ds) }
+        if !externalURLs.isEmpty { model.addSubtitle(dataSouce: URLSubtitleDataSouce(urls: externalURLs)) }
+        let embedded = coordinator.playerLayer?.player.tracks(mediaType: .subtitle).count ?? 0
+        DiagLog.log("subtitle rescan: \(before) → \(model.subtitleInfos.count) (player reports \(embedded) subtitle tracks, \(externalURLs.count) external)", "player")
     }
 
     private func select(_ info: (any SubtitleInfo)?) {
