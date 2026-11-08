@@ -2,9 +2,15 @@ import Foundation
 
 /// Which media server an item came from.
 enum MediaSource: String, CaseIterable, Identifiable, Codable {
-    case jellyfin, plex
+    case jellyfin, plex, youtube
     var id: String { rawValue }
-    var label: String { self == .jellyfin ? "Jellyfin" : "Plex" }
+    var label: String {
+        switch self {
+        case .jellyfin: return "Jellyfin"
+        case .plex: return "Plex"
+        case .youtube: return "YouTube"
+        }
+    }
 }
 
 /// Server-agnostic description of something playable. Both clients map into this so the
@@ -18,9 +24,9 @@ struct MediaItem: Identifiable, Hashable {
     let runtimeMinutes: Int?
     let posterURL: URL?
     /// Direct-play URL of the original file (FFmpeg backend).
-    let directURL: URL?
+    var directURL: URL?
     /// URL that AVPlayer can handle (may be a server-side remux/transcode). Falls back to directURL.
-    let avPlayerURL: URL?
+    var avPlayerURL: URL?
     let container: String?
     let videoCodec: String?
     let audioCodec: String?
@@ -31,6 +37,12 @@ struct MediaItem: Identifiable, Hashable {
     let height: Int?
     /// Detected 3D packing (nil = 2D as far as we can tell). User overrides live in LibraryStore.
     let stereo: StereoFormat?
+    /// Stream URLs must be fetched just before playback (YouTube links expire after ~6 h).
+    var needsResolve = false
+    /// YouTube video id, when this item came from YouTube (drives resolution + SponsorBlock).
+    var youtubeId: String? = nil
+    /// User-Agent the stream URLs were issued for; the player must send the same one.
+    var userAgent: String? = nil
 
     var formatBadge: String {
         var parts: [String] = []

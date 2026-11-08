@@ -194,6 +194,30 @@ The audio and the bass link are unaffected by the screen; it only changes where 
 
 ---
 
+## 10b. 3D films
+
+Nothing to set up. The library badge shows what was detected (e.g. "3D Half SBS"). If a 3D
+rip isn't detected, or detected wrongly, use the **3D** menu in the player to pick the packing.
+
+- On the **flat window** and on **Apple TV** you see one eye, correctly proportioned.
+- On the Vision Pro **cinema screen** you get real 3D. If depth looks inverted (things pop the
+  wrong way), the file is probably right-eye-first: pick the other half/full variant and tell
+  me; a left/right swap toggle is a one-line addition.
+- **Apple spatial videos / MV-HEVC** (iPhone 15 Pro+, Vision Pro recordings, Apple TV+ 3D)
+  play 3D on the cinema screen too, via Apple's own pipeline.
+- **Blu-ray 3D ISOs / MVC MKVs** play as 2D. Convert them to half-SBS once (MakeMKV + a
+  SBS encode) if you want them in 3D.
+
+## 10c. YouTube
+
+Pick **YouTube** in the library's source switch. Trending loads by default; the search box
+searches, and a pasted link or video id plays directly. Streams are fetched from YouTube's
+player API at play time, so there are no ads; SponsorBlock skips sponsor segments (Settings →
+YouTube to turn off). The sub works exactly as with films.
+
+If YouTube suddenly stops playing ("no playable streams"), YouTube changed something on their
+side; the fix is updating the client identities in `InnerTubeClient.swift` from yt-dlp.
+
 ## 11. Troubleshooting
 
 | Problem | Check |

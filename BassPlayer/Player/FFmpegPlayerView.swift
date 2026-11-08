@@ -62,6 +62,8 @@ final class FFmpegSession: ObservableObject {
     private weak var coordinator: KSVideoPlayer.Coordinator?
     private var pollTimer: Timer?
     private let bassLink: BassLink
+    private var sponsorSkipper = SponsorSkipper()
+    @Published private(set) var sponsorSkips = 0
 
     private lazy var doviRenderer = DoviFrameRenderer()
     private var lastFrameId: ObjectIdentifier?
@@ -94,10 +96,12 @@ final class FFmpegSession: ObservableObject {
         extractor.onPacket = { [weak bassLink] packet in bassLink?.send(packet) }
     }
 
-    func start(coordinator: KSVideoPlayer.Coordinator, leadMs: Int) {
+    func start(coordinator: KSVideoPlayer.Coordinator, leadMs: Int, item: MediaItem? = nil) {
         self.coordinator = coordinator
         tap.leadMs = leadMs
         options.videoDelay = Double(leadMs) / 1000
+        if let ua = item?.userAgent { options.userAgent = ua }    // YouTube URLs are tied to the requesting client
+        sponsorSkipper = SponsorSkipper()
         pollTimer?.invalidate()
         // KSVideoPlayerView owns the state callbacks, so we poll briefly until the engine exists.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -124,6 +128,10 @@ final class FFmpegSession: ObservableObject {
         view.contentsCrop = options.cropToOneEye ? options.stereo.leftEyeRect : CGRect(x: 0, y: 0, width: 1, height: 1)
     }
 
+    func setSponsorSegments(_ segments: [SponsorBlockClient.Segment]) {
+        sponsorSkipper.segments = segments
+    }
+
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
@@ -135,6 +143,12 @@ final class FFmpegSession: ObservableObject {
         guard let layer = coordinator?.playerLayer else { return }
         let player = layer.player
         backendName = player is KSMEPlayer ? "FFmpeg" : "AVPlayer"
+        // SponsorBlock: jump over marked segments.
+        if !sponsorSkipper.segments.isEmpty, layer.state == .bufferFinished || layer.state == .readyToPlay,
+           let target = sponsorSkipper.skipTarget(at: player.currentPlaybackTime) {
+            sponsorSkips += 1
+            layer.seek(time: target, autoPlay: true) { _ in }
+        }
         guard let me = player as? KSMEPlayer else { return }
         guard layer.state == .readyToPlay || layer.state == .bufferFinished || layer.state == .buffering || layer.state == .paused else { return }
         applyCrop()
@@ -182,8 +196,11 @@ struct FFmpegPlayerView: View {
             .overlay(alignment: .topTrailing) { statusChip.padding(12) }
             .onAppear {
                 if bassLink.state == .off { bassLink.start() }
-                session.start(coordinator: coordinator, leadMs: leadMs)
+                session.start(coordinator: coordinator, leadMs: leadMs, item: item)
                 session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive)
+                if item.source == .youtube {
+                    Task { session.setSponsorSegments(await library.youtube.sponsorSegments(for: item)) }
+                }
                 ImmersiveScreenBridge.shared.frameSource = { [weak session] in session?.currentScreenFrame }
                 ImmersiveScreenBridge.shared.avPlayer = nil
             }
@@ -204,6 +221,7 @@ struct FFmpegPlayerView: View {
             Text("·")
             Text(session.backendName)
             if let dv = session.doviStatus { Text("·"); Text(dv) }
+            if session.sponsorSkips > 0 { Text("·"); Text("Skipped \(session.sponsorSkips)") }
         }
         .font(.caption)
         .padding(.horizontal, 10)
