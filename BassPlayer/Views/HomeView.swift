@@ -22,7 +22,7 @@ struct HomeView: View {
                     if !library.continueWatching.isEmpty {
                         continueWatching
                     }
-                    if !library.recents.isEmpty {
+                    if !recentlyPlayedItems.isEmpty {
                         recentlyPlayed
                     }
                     sources
@@ -55,12 +55,18 @@ struct HomeView: View {
         }
     }
 
+    /// Recents that aren't already in the Continue Watching row.
+    private var recentlyPlayedItems: [MediaItem] {
+        let continuing = Set(library.continueWatching.map(\.id))
+        return library.recents.filter { !continuing.contains($0.id) }
+    }
+
     private var recentlyPlayed: some View {
         VStack(alignment: .leading, spacing: 14) {
             SectionHeader(title: "Recently played")
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: Metrics.spacing) {
-                    ForEach(library.recents.prefix(12)) { item in
+                    ForEach(recentlyPlayedItems.prefix(12)) { item in
                         CardButton { library.play(item) } label: {
                             PosterCard(item: item, progress: library.progress(for: item))
                                 .frame(width: Metrics.posterMin)
