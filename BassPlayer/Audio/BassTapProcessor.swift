@@ -39,7 +39,7 @@ final class BassTapProcessor {
             }
         )
 
-        var tapRef: Unmanaged<MTAudioProcessingTap>?
+        var tapRef: MTAudioProcessingTap?
         let err = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks, kMTAudioProcessingTapCreationFlag_PostEffects, &tapRef)
         guard err == noErr, let tap = tapRef else {
             print("BassTapProcessor: MTAudioProcessingTapCreate failed (\(err))")
@@ -47,7 +47,7 @@ final class BassTapProcessor {
         }
 
         let params = AVMutableAudioMixInputParameters(track: audioTrack)
-        params.audioTapProcessor = tap.takeRetainedValue()
+        params.audioTapProcessor = tap
         let mix = AVMutableAudioMix()
         mix.inputParameters = [params]
         return mix
