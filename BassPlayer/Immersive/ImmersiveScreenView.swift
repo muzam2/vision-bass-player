@@ -4,7 +4,10 @@ import RealityKit
 import AVFoundation
 import ARKit
 
-/// The cinema screen in an ImmersiveSpace. Drag to move, pinch to resize, two-hand rotate to tilt.
+/// The cinema: a black void with a very large screen and nothing else. While it is open the
+/// player window is dismissed (playback lives in `LibraryStore.playback`, not in the window);
+/// a floating glass control panel under the screen appears on tap and fades while playing;
+/// subtitles float just below the picture. Leaving the cinema brings the window back.
 ///
 /// Rendering: the active player pushes every decoded frame through `ImmersiveScreenBridge`
 /// into an `ImmersiveFrameFeed`, whose `AVSampleBufferVideoRenderer` backs a RealityKit
@@ -14,14 +17,20 @@ import ARKit
 /// `VideoPlayerComponent`.
 struct ImmersiveScreenView: View {
     @EnvironmentObject private var model: ImmersiveScreenModel
+    @EnvironmentObject private var library: LibraryStore
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     @State private var screen = ModelEntity()
     @State private var videoEntity = Entity()
     @State private var root = Entity()
     @State private var dome = ModelEntity()
+    @State private var tapCatcher = ModelEntity()
     @State private var state = ScreenState()
     @State private var dragStart: SIMD3<Float>?
     @State private var scaleStart: Double?
     @State private var tiltStart: Double?
+    @State private var showControls = true
+    @State private var hideTask: Task<Void, Never>?
 
     /// Mutable bookkeeping shared with the RealityKit update closure.
     final class ScreenState {
@@ -34,10 +43,17 @@ struct ImmersiveScreenView: View {
         var worldTracking: WorldTrackingProvider?
         var avPlayerBound: AVPlayer?
         var lastStatusLog = Date.distantPast
+        var controls: Entity?
+        var subtitles: Entity?
     }
 
+    private static let controlsID = "controls"
+    private static let subtitlesID = "subtitles"
+    /// SwiftUI points per metre for RealityView attachments at scale 1.
+    private static let pointsPerMetre: Float = 1360
+
     var body: some View {
-        RealityView { content in
+        RealityView { content, attachments in
             // Black dome around the viewer. Radius is far beyond the visible/rendered area so
             // there is no horizon, seam or edge fall-off anywhere in either lens, whatever the
             // immersion style. Negative X scale turns the sphere inside-out so we see its inner face.
@@ -46,6 +62,11 @@ struct ImmersiveScreenView: View {
             content.add(dome)
             root.addChild(screen)
             root.addChild(videoEntity)
+            // Invisible wall behind the screen so a tap anywhere around it toggles the controls.
+            tapCatcher.components.set(InputTargetComponent())
+            tapCatcher.components.set(CollisionComponent(shapes: [.generateBox(width: 60, height: 40, depth: 0.05)]))
+            tapCatcher.position = [0, 0, -1.5]
+            root.addChild(tapCatcher)
             content.add(root)
 
             if let feed = ImmersiveFrameFeed() {
@@ -60,6 +81,16 @@ struct ImmersiveScreenView: View {
             screen.components.set(InputTargetComponent())
             screen.generateCollisionShapes(recursive: false)
             bindBridge()
+
+            if let controls = attachments.entity(for: Self.controlsID) {
+                state.controls = controls
+                root.addChild(controls)
+            }
+            if let subs = attachments.entity(for: Self.subtitlesID) {
+                state.subtitles = subs
+                root.addChild(subs)
+            }
+            placeAttachments()
 
             // Head tracking for recentre; the device anchor needs no user permission.
             Task { @MainActor in
@@ -79,25 +110,52 @@ struct ImmersiveScreenView: View {
             _ = content.subscribe(to: SceneEvents.Update.self) { _ in
                 MainActor.assumeIsolated { frameTick() }
             }
-        } update: { _ in
+        } update: { _, _ in
             applyMesh(force: false)
             applyTransform()
             applyDome()
+            placeAttachments()
             screen.generateCollisionShapes(recursive: false)
+            state.controls?.isEnabled = showControls
+        } attachments: {
+            Attachment(id: Self.controlsID) {
+                ImmersiveControlPanel(onInteract: { scheduleHide() })
+            }
+            Attachment(id: Self.subtitlesID) {
+                SubtitleOverlay(model: library.playback.coordinator.subtitleModel, fontSize: 44)
+                    .frame(width: 1800, height: 360, alignment: .bottom)
+            }
         }
         .onChange(of: model.recentreRequest) { _, _ in recentre() }
-        .gesture(dragGesture)
+        .onChange(of: library.playback.state) { _, s in
+            if s == .bufferFinished { scheduleHide() } else { showControls = true }
+        }
+        .gesture(tapGesture)
+        .simultaneousGesture(dragGesture)
         .simultaneousGesture(magnifyGesture)
         .simultaneousGesture(rotateGesture)
         .onAppear {
             model.isOpen = true
-            DiagLog.log("cinema screen opened", "immersive")
+            showControls = true
+            scheduleHide()
+            // The picture lives here now: close the player window, keep the film running.
+            if library.playback.isActive {
+                library.playback.detachedForImmersive = true
+                dismissWindow(id: PlayerWindow.id)
+            }
+            DiagLog.log("cinema screen opened (playback active: \(library.playback.isActive))", "immersive")
         }
         .onDisappear {
             model.isOpen = false
             ImmersiveScreenBridge.shared.pushFrame = nil
             state.feed?.flush()
-            DiagLog.log("cinema screen closed (pushed \(state.feed?.pushed ?? 0), dropped \(state.feed?.dropped ?? 0))", "immersive")
+            let playback = library.playback
+            let wasDetached = playback.detachedForImmersive
+            playback.detachedForImmersive = false
+            if wasDetached, let item = playback.item {
+                openWindow(id: PlayerWindow.id, value: item)
+            }
+            DiagLog.log("cinema screen closed (pushed \(state.feed?.pushed ?? 0), dropped \(state.feed?.dropped ?? 0), reopen window: \(wasDetached && playback.item != nil))", "immersive")
         }
     }
 
@@ -108,6 +166,16 @@ struct ImmersiveScreenView: View {
             MainActor.assumeIsolated {
                 feed.push(pixelBuffer: pixelBuffer, time: time, doviTexture: doviTexture)
             }
+        }
+    }
+
+    private func scheduleHide() {
+        showControls = true
+        hideTask?.cancel()
+        hideTask = Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            if library.playback.state == .bufferFinished { showControls = false }
         }
     }
 
@@ -202,6 +270,24 @@ struct ImmersiveScreenView: View {
         }
     }
 
+    /// Control panel under the screen's bottom edge, subtitles just inside it; both scale with
+    /// distance so they read the same whatever the screen size.
+    private func placeAttachments() {
+        let vr = ImmersiveScreenBridge.shared.projection.isImmersiveVideo
+        let halfH = vr ? 0.9 : Float(model.screenHeight) / 2
+        let s = max(0.8, Float(model.distance) / 2.2)
+        if let c = state.controls {
+            c.scale = SIMD3<Float>(repeating: s)
+            c.position = [0, -halfH - 0.32 * s, vr ? -Float(model.distance) + 0.3 : 0.25]
+            c.orientation = simd_quatf(angle: -0.25, axis: [1, 0, 0])
+        }
+        if let subs = state.subtitles {
+            let k = vr ? s : Float(model.width) * 0.8 / (1800 / Self.pointsPerMetre)
+            subs.scale = SIMD3<Float>(repeating: k)
+            subs.position = [0, -halfH + (360 / Self.pointsPerMetre) * k / 2 + 0.05 * k, vr ? -Float(model.distance) + 0.2 : 0.03]
+        }
+    }
+
     /// Dome opacity follows "room dim" so passthrough can show through in mixed immersion.
     private func applyDome() {
         guard model.roomDim != state.lastDomeDim else { return }
@@ -222,6 +308,14 @@ struct ImmersiveScreenView: View {
     }
 
     // MARK: - Gestures
+
+    private var tapGesture: some Gesture {
+        SpatialTapGesture()
+            .targetedToAnyEntity()
+            .onEnded { _ in
+                if showControls { showControls = false; hideTask?.cancel() } else { scheduleHide() }
+            }
+    }
 
     private var dragGesture: some Gesture {
         DragGesture()
@@ -245,7 +339,7 @@ struct ImmersiveScreenView: View {
             .onChanged { value in
                 if scaleStart == nil { scaleStart = model.width }
                 guard let s = scaleStart else { return }
-                model.width = min(12, max(1, s * Double(value.magnification)))
+                model.width = min(14, max(1, s * Double(value.magnification)))
             }
             .onEnded { _ in scaleStart = nil }
     }
@@ -261,6 +355,57 @@ struct ImmersiveScreenView: View {
                 model.tilt = max(-60, min(60, t - sign * angle))
             }
             .onEnded { _ in tiltStart = nil }
+    }
+}
+
+/// The floating panel under the cinema screen: transport + menus, screen size / distance,
+/// recentre, exit, stop.
+struct ImmersiveControlPanel: View {
+    var onInteract: () -> Void = {}
+    @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var model: ImmersiveScreenModel
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+
+    var body: some View {
+        VStack(spacing: 14) {
+            if let item = library.playback.item, let session = library.playback.session {
+                HStack(spacing: 14) {
+                    Text(item.title).font(.title3.weight(.semibold)).lineLimit(1)
+                    Spacer()
+                    BassStatusChip(session: session)
+                    StopButton {
+                        DiagLog.log("stop pressed (cinema)", "player")
+                        library.playback.end()
+                        Task { await dismissImmersiveSpace() }
+                    }
+                }
+                TransportBar(item: item, playback: library.playback, session: session)
+            } else {
+                Text("Nothing playing").font(.title3).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 18) {
+                Label("Size", systemImage: "arrow.up.left.and.arrow.down.right").font(.callout)
+                Slider(value: $model.width, in: 1...14).frame(width: 220)
+                Label("Distance", systemImage: "arrow.left.and.right").font(.callout)
+                Slider(value: $model.distance, in: 1...10).frame(width: 220)
+                Button("Recentre") { model.recentreRequest += 1 }
+                Button("Reset") { model.reset() }
+                Spacer()
+                Button {
+                    Task { await dismissImmersiveSpace() }
+                } label: {
+                    Label("Exit cinema", systemImage: "rectangle.on.rectangle")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .font(.callout)
+        }
+        .padding(24)
+        .frame(width: 1240)
+        .glassBackgroundEffect()
+        .onTapGesture { onInteract() }
+        .onChange(of: model.width) { _, _ in onInteract() }
+        .onChange(of: model.distance) { _, _ in onInteract() }
     }
 }
 
@@ -285,21 +430,21 @@ struct ImmersiveScreenToggle: View {
             if compact {
                 Image(systemName: model.isOpen ? "rectangle.inset.filled.on.rectangle" : "rectangle.on.rectangle")
             } else {
-                Label(model.isOpen ? "Close cinema screen" : "Cinema screen", systemImage: "rectangle.inset.filled.on.rectangle")
+                Label(model.isOpen ? "Exit cinema" : "Cinema", systemImage: "rectangle.inset.filled.on.rectangle")
             }
         }
+        .help(model.isOpen ? "Exit cinema" : "Cinema screen")
     }
 }
 
-/// Screen placement, picture and room controls. Shown inline on the player's remote panel
-/// (while the cinema screen is open) and in a sheet from the player controls.
+/// Screen placement, picture and room controls (sheet from the player window).
 struct ImmersiveScreenSettings: View {
     @EnvironmentObject private var model: ImmersiveScreenModel
 
     var body: some View {
         Form {
             Section("Screen") {
-                LabeledSlider("Width", value: $model.width, range: 1...12, unit: "m")
+                LabeledSlider("Width", value: $model.width, range: 1...14, unit: "m")
                 LabeledSlider("Distance", value: $model.distance, range: 1...10, unit: "m")
                 LabeledSlider("Height", value: $model.height, range: -2...3, unit: "m")
                 LabeledSlider("Tilt", value: $model.tilt, range: -60...60, unit: "°")
@@ -311,8 +456,6 @@ struct ImmersiveScreenSettings: View {
             }
             Section("Picture") {
                 Toggle("Flip vertically", isOn: $model.flipV)
-                Text("Brightness, contrast and saturation controls return once the native cinema path is confirmed on the headset.")
-                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Room") {
                 Toggle("Full immersion (hide passthrough)", isOn: $model.darkRoom)

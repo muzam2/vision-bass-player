@@ -44,7 +44,9 @@ extension KSVideoPlayer: UIViewRepresentable {
 
     // iOS tvOS真机先调用onDisappear在调用dismantleUIView，但是模拟器就反过来了。
     public static func dismantleUIView(_: UIViewType, coordinator: Coordinator) {
-        coordinator.resetPlayer()
+        if !coordinator.keepsPlayerWhenViewGoesAway {
+            coordinator.resetPlayer()
+        }
     }
     #else
     public typealias NSViewType = UIView
@@ -116,6 +118,9 @@ extension KSVideoPlayer: UIViewRepresentable {
 
         public var subtitleModel = SubtitleModel()
         public var timemodel = ControllerTimeModel()
+        /// Bass Player patch: when true, removing the SwiftUI view does not reset the player, so
+        /// playback can continue while its window is closed (the immersive cinema screen shows it).
+        public var keepsPlayerWhenViewGoesAway = false
         // 在SplitView模式下，第二次进入会先调用makeUIView。然后在调用之前的dismantleUIView.所以如果进入的是同一个View的话，就会导致playerLayer被清空了。最准确的方式是在onDisappear清空playerLayer
         public var playerLayer: KSPlayerLayer? {
             didSet {

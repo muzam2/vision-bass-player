@@ -149,7 +149,14 @@ Ordered by likelihood of needing a fix.
 1. **Dolby Vision P5 colours wrong** — sign of offsets, limited-vs-full range, matrix
    orientation in `doviToPQ`. Compare with the Apple TV app on the same film. Reference:
    libplacebo `src/shaders/colorspace.c` (`pl_shader_dovi_reshape`, DOLBYVISION branch).
-2. **Cinema screen (rewritten 2026-11-08, untested on hardware).** First on-device attempt
+2. **Cinema screen (rewritten 2026-11-08, untested on hardware).** Design target (owner's
+   words + screenshots of Plexi/Skybox/Moon): a black void, a very large screen (~85° of view by
+   default), subtitles along the picture's bottom edge, a floating glass control panel under the
+   screen that appears on tap and fades while playing, and **no app window**. Playback therefore
+   lives in `LibraryStore.playback` (`PlaybackController`: KSPlayer coordinator + FFmpegSession);
+   the cinema dismisses the player window on appear (`detachedForImmersive`, and KSPlayer's
+   `Coordinator.keepsPlayerWhenViewGoesAway` patch keeps the player alive without its view) and
+   reopens it on exit. Stop ends playback and closes everything. First on-device attempt
    showed the black dome with a magenta box (RealityKit's failed-material colour) and the
    settings popover did nothing. Now: native `AVSampleBufferVideoRenderer` + `VideoMaterial`
    path (§2 data flow 6), the player window becomes a remote (controls + screen settings

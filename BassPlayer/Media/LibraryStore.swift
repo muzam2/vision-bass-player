@@ -63,6 +63,9 @@ final class LibraryStore: ObservableObject {
     let plex: PlexClient
     let youtube: YouTubeClient
     let nas: NASClient
+    /// The one running playback (player + bass pipeline), shared by the player window and the
+    /// cinema screen so the window can close while the film keeps playing.
+    let playback = PlaybackController()
     private let defaults = UserDefaults.standard
     private var cancellables = Set<AnyCancellable>()
 
@@ -98,6 +101,7 @@ final class LibraryStore: ObservableObject {
         plex.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         youtube.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         nas.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        playback.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
     }
 
     // MARK: - Per-source state

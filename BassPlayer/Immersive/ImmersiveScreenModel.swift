@@ -42,15 +42,27 @@ final class ImmersiveScreenModel: ObservableObject {
     /// Where the user's head is (set by recentre); VR spheres are centred here.
     @Published var headPosition: SIMD3<Float> = [0, 1.4, 0]
 
+    /// Cinema defaults: a screen spanning ~85° of view, like the "giant screen" modes of the
+    /// commercial players, in a black void.
+    static let defaultWidth = 6.5
+    static let defaultDistance = 3.5
+    static let defaultCurve = 0.25
+
     init() {
         let d = UserDefaults.standard
+        // Layout v2 (2026-11-08): the first version's 4 m screen was a TV, not a cinema; values
+        // saved by the broken settings popover are discarded once.
+        if d.integer(forKey: "imm.layoutVersion") < 2 {
+            for k in ["imm.width", "imm.distance", "imm.height", "imm.tilt", "imm.yaw", "imm.curve"] { d.removeObject(forKey: k) }
+            d.set(2, forKey: "imm.layoutVersion")
+        }
         func num(_ k: String, _ def: Double) -> Double { d.object(forKey: k) == nil ? def : d.double(forKey: k) }
-        width = num("imm.width", 4.0)
-        distance = num("imm.distance", 3.0)
+        width = num("imm.width", Self.defaultWidth)
+        distance = num("imm.distance", Self.defaultDistance)
         height = num("imm.height", 1.5)        // metres above the floor (immersive-space origin)
         tilt = num("imm.tilt", 0)
         yaw = num("imm.yaw", 0)
-        curvature = num("imm.curve", 0.3)
+        curvature = num("imm.curve", Self.defaultCurve)
         darkRoom = d.object(forKey: "imm.dark") == nil ? true : d.bool(forKey: "imm.dark")
         flipV = d.bool(forKey: "imm.flipV")
         hdr = d.object(forKey: "imm.hdr") == nil ? true : d.bool(forKey: "imm.hdr")
@@ -68,7 +80,8 @@ final class ImmersiveScreenModel: ObservableObject {
     var screenHeight: Double { width / aspect }
 
     func reset() {
-        width = 4; distance = 3; height = max(1.0, Double(headPosition.y) + 0.1); tilt = 0; yaw = 0; curvature = 0.3
+        width = Self.defaultWidth; distance = Self.defaultDistance
+        height = max(1.0, Double(headPosition.y) + 0.1); tilt = 0; yaw = 0; curvature = Self.defaultCurve
     }
 
     /// Put the screen straight ahead of the given head pose at the current distance.
