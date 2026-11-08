@@ -24,14 +24,28 @@ enum FFmpegConfig {
 
     /// Per-item options. HDR10 / HLG / Dolby Vision are passed through to the display
     /// (`destinationDynamicRange = nil` lets KSPlayer pick the best mode the screen supports).
-    static func makeOptions() -> KSOptions {
-        let o = KSOptions()
+    static func makeOptions() -> BassPlayerOptions {
+        let o = BassPlayerOptions()
         o.destinationDynamicRange = nil
         o.autoDeInterlace = true
         o.autoSelectEmbedSubtitle = true
         o.userAgent = "BassPlayer/0.2"
         o.videoAdaptable = false
         return o
+    }
+}
+
+/// KSOptions with 3D awareness: when one eye of a packed frame is shown on a flat display,
+/// report the un-squeezed aspect so the picture isn't stretched.
+final class BassPlayerOptions: KSOptions {
+    /// Stereo packing of the current file, and whether the flat view should crop to one eye.
+    var stereo: StereoFormat = .mono
+    var cropToOneEye = false
+
+    override func customizeDar(sar: CGSize, par: CGSize) -> CGSize? {
+        guard cropToOneEye, stereo.isPacked, par.width > 0, par.height > 0 else { return nil }
+        let aspect = stereo.displayAspect(frameWidth: Double(par.width), frameHeight: Double(par.height))
+        return CGSize(width: aspect * 1000, height: 1000)
     }
 }
 
@@ -96,6 +110,20 @@ final class FFmpegSession: ObservableObject {
         options.videoDelay = Double(ms) / 1000
     }
 
+    /// Apply the 3D mode. `immersiveStereo` = the cinema screen is showing both eyes, so the
+    /// decoder must deliver the whole packed frame and the flat view keeps the squeezed picture.
+    func setStereo(_ format: StereoFormat, immersiveStereo: Bool) {
+        options.stereo = format
+        options.cropToOneEye = format.isPacked && !immersiveStereo
+        applyCrop()
+        ImmersiveScreenBridge.shared.stereoFormat = format
+    }
+
+    private func applyCrop() {
+        guard let me = coordinator?.playerLayer?.player as? KSMEPlayer, let view = me.videoOutput as? MetalPlayView else { return }
+        view.contentsCrop = options.cropToOneEye ? options.stereo.leftEyeRect : CGRect(x: 0, y: 0, width: 1, height: 1)
+    }
+
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
@@ -109,6 +137,7 @@ final class FFmpegSession: ObservableObject {
         backendName = player is KSMEPlayer ? "FFmpeg" : "AVPlayer"
         guard let me = player as? KSMEPlayer else { return }
         guard layer.state == .readyToPlay || layer.state == .bufferFinished || layer.state == .buffering || layer.state == .paused else { return }
+        applyCrop()
         tap.attach(to: me.audioOutput)
         if let engine = (me.audioOutput as? AudioEnginePlayer)?.engine {
             let f = engine.mainMixerNode.outputFormat(forBus: 0)
@@ -130,6 +159,17 @@ struct FFmpegPlayerView: View {
     @StateObject private var coordinator = KSVideoPlayer.Coordinator()
     @StateObject private var session: FFmpegSession
     @AppStorage("bass.leadMs") private var leadMs: Int = 0
+    #if os(visionOS)
+    @EnvironmentObject private var immersive: ImmersiveScreenModel
+    #endif
+
+    private var immersiveStereoActive: Bool {
+        #if os(visionOS)
+        return immersive.isOpen && library.effectiveStereo(for: item).isPacked
+        #else
+        return false
+        #endif
+    }
 
     init(item: MediaItem, url: URL) {
         self.item = item
@@ -143,13 +183,18 @@ struct FFmpegPlayerView: View {
             .onAppear {
                 if bassLink.state == .off { bassLink.start() }
                 session.start(coordinator: coordinator, leadMs: leadMs)
+                session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive)
                 ImmersiveScreenBridge.shared.frameSource = { [weak session] in session?.currentScreenFrame }
+                ImmersiveScreenBridge.shared.avPlayer = nil
             }
             .onDisappear {
                 session.stop()
                 ImmersiveScreenBridge.shared.frameSource = nil
+                ImmersiveScreenBridge.shared.stereoFormat = .mono
             }
             .onChange(of: leadMs) { _, new in session.setLead(ms: new) }
+            .onChange(of: library.effectiveStereo(for: item)) { _, new in session.setStereo(new, immersiveStereo: immersiveStereoActive) }
+            .onChange(of: immersiveStereoActive) { _, _ in session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive) }
     }
 
     private var statusChip: some View {
@@ -184,4 +229,9 @@ final class ImmersiveScreenBridge {
     static let shared = ImmersiveScreenBridge()
     /// Returns the latest decoded frame, or nil.
     var frameSource: (() -> ScreenFrame?)?
+    /// Packing of the current film; the screen splits packed frames into two eyes.
+    var stereoFormat: StereoFormat = .mono
+    /// Set when the AVPlayer backend is active (MV-HEVC): the screen then uses RealityKit's own
+    /// video component, which renders stereo natively.
+    var avPlayer: AVPlayer?
 }
