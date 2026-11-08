@@ -13,7 +13,8 @@ let package = Package(
     products: [
         .library(
             name: "AMSMB2",
-            // Bass Player: static — a dynamic SwiftPM product was not embedded by the xcodegen project (dyld crash at launch).
+            // Bass Player: static. The dynamic product was not embedded by the generated
+            // Xcode project, so the app died in dyld at launch looking for AMSMB2.framework.
             targets: ["AMSMB2"]
         ),
     ],
@@ -55,8 +56,15 @@ let package = Package(
                 "libsmb2",
             ],
             path: "AMSMB2"
-        )
-    ,
+        ),
+        .testTarget(
+            name: "AMSMB2Tests",
+            dependencies: [
+                "AMSMB2",
+                .product(name: "Atomics", package: "swift-atomics"),
+            ],
+            path: "AMSMB2Tests"
+        ),
     ],
     swiftLanguageVersions: [.v5]
 )
