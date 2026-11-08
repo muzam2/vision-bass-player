@@ -49,11 +49,22 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Cache FFmpegKit binaries
+        uses: actions/cache@v4
+        with:
+          path: Vendor/FFmpegKit/Sources/*.xcframework
+          key: ffmpegkit-${{ hashFiles('Vendor/FFmpegKit/checksums.json', 'Vendor/FFmpegKit/RELEASE_TAG') }}
+
+      - name: Fetch FFmpegKit binaries (release zips, checksum-verified)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash Vendor/FFmpegKit/tools/fetch_binaries.sh
+
       - name: Cache Swift packages
         uses: actions/cache@v4
         with:
           path: SourcePackages
-          key: spm-${{ matrix.suffix }}-${{ hashFiles('project.yml', 'Vendor/KSPlayer/Package.swift', 'Vendor/FFmpegKit/Package.swift') }}
+          key: spm-${{ matrix.suffix }}-${{ hashFiles('project.yml', 'Vendor/KSPlayer/Package.swift', 'Vendor/FFmpegKit/Package.swift', 'Vendor/FFmpegKit/checksums.json') }}
           restore-keys: spm-${{ matrix.suffix }}-
 
       - name: Resolve Swift packages
