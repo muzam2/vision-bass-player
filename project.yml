@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.muzam2
   deploymentTarget:
     visionOS: "2.0"
+    tvOS: "17.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
@@ -12,7 +13,7 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_STRICT_CONCURRENCY: minimal
-    # Unsigned builds: the IPA is re-signed on the headset by SideStore / iloader.
+    # Unsigned builds: the IPA is re-signed on the device by SideStore / iloader / atvloadly.
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: ""
     CODE_SIGNING_ALLOWED: "NO"
@@ -20,13 +21,14 @@ settings:
     DEVELOPMENT_TEAM: ""
 
 targets:
+  # ---------------- Apple Vision Pro ----------------
   BassPlayer:
     type: application
     platform: visionOS
     sources:
       - path: BassPlayer
         excludes:
-          - "Info.plist"
+          - "Info*.plist"
     info:
       path: BassPlayer/Info.plist
       properties:
@@ -35,17 +37,50 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
-        UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: true
-          UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
         NSBluetoothAlwaysUsageDescription: Bass Player streams the low-frequency channel of your film to a subwoofer receiver over Bluetooth.
         NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin media server on the local network.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.muzam2.bassplayer
         TARGETED_DEVICE_FAMILY: "7"
         SUPPORTED_PLATFORMS: "xros xrsimulator"
+        ENABLE_PREVIEWS: "YES"
+
+  # ---------------- Apple TV ----------------
+  BassPlayerTV:
+    type: application
+    platform: tvOS
+    sources:
+      - path: BassPlayer
+        excludes:
+          - "Info*.plist"
+    info:
+      path: BassPlayer/Info-tvOS.plist
+      properties:
+        CFBundleDisplayName: Bass Player
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        NSBluetoothAlwaysUsageDescription: Bass Player streams the low-frequency channel of your film to a subwoofer receiver over Bluetooth.
+        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin media server on the local network.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
+        UIUserInterfaceStyle: Automatic
+    settings:
+      base:
+        PRODUCT_NAME: BassPlayerTV
+        PRODUCT_BUNDLE_IDENTIFIER: com.muzam2.bassplayer.tv
+        TARGETED_DEVICE_FAMILY: "3"
+        SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
         ENABLE_PREVIEWS: "YES"

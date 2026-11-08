@@ -26,9 +26,15 @@ struct ContentView: View {
                 ContentUnavailableView("Pick a film", systemImage: "film", description: Text("Choose something from your Jellyfin library."))
             }
         }
+        #if os(visionOS)
         .ornament(attachmentAnchor: .scene(.bottom)) {
             BassStatusOrnament()
         }
+        #else
+        .overlay(alignment: .bottomTrailing) {
+            BassStatusOrnament().padding(24)
+        }
+        #endif
     }
 }
 
@@ -112,7 +118,17 @@ struct SettingsView: View {
                     Button("Connect") { bassLink.start() }.disabled(bassLink.state != .off)
                     Button("Disconnect") { bassLink.stop() }.disabled(bassLink.state == .off)
                 }
+                #if os(tvOS)
+                // tvOS has no Stepper; use buttons the Siri Remote can focus.
+                HStack {
+                    Text("Extra delay: \(bassLink.extraDelayMs) ms")
+                    Spacer()
+                    Button("−10") { bassLink.extraDelayMs = max(0, bassLink.extraDelayMs - 10) }
+                    Button("+10") { bassLink.extraDelayMs = min(400, bassLink.extraDelayMs + 10) }
+                }
+                #else
                 Stepper("Extra delay: \(bassLink.extraDelayMs) ms", value: $bassLink.extraDelayMs, in: 0...400, step: 10)
+                #endif
                 Toggle("Mute sub", isOn: $bassLink.muted)
             }
 
@@ -142,6 +158,10 @@ struct BassStatusOrnament: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        #if os(visionOS)
         .glassBackgroundEffect()
+        #else
+        .background(.regularMaterial, in: Capsule())
+        #endif
     }
 }

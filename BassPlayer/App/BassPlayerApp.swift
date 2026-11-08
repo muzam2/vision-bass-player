@@ -19,11 +19,19 @@ struct BassPlayerApp: App {
     }
 
     var body: some Scene {
+        #if os(visionOS)
         WindowGroup {
             ContentView()
                 .environmentObject(jellyfin)
                 .environmentObject(bassLink)
         }
         .defaultSize(width: 1100, height: 700)
+        #else
+        WindowGroup {
+            ContentView()
+                .environmentObject(jellyfin)
+                .environmentObject(bassLink)
+        }
+        #endif
     }
 }
