@@ -12,3 +12,4 @@ firmware/**/.pio/
 firmware/**/.vscode/
 # macOS
 .DS_Store
+SourcePackages/
