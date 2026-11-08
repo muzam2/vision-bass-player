@@ -59,6 +59,30 @@ final class LibraryStore: ObservableObject {
     }
 
     func url(for item: MediaItem) -> URL? {
-        backend == .ffmpeg ? (item.directURL ?? item.avPlayerURL) : (item.avPlayerURL ?? item.directURL)
+        effectiveBackend(for: item) == .ffmpeg ? (item.directURL ?? item.avPlayerURL) : (item.avPlayerURL ?? item.directURL)
+    }
+
+    // MARK: - 3D
+
+    /// Per-item user override for the stereo format (`.auto` = use detection).
+    func stereoOverride(for item: MediaItem) -> StereoFormat {
+        StereoFormat(rawValue: defaults.string(forKey: "stereo.\(item.id)") ?? "") ?? .auto
+    }
+
+    func setStereoOverride(_ f: StereoFormat, for item: MediaItem) {
+        objectWillChange.send()
+        if f == .auto { defaults.removeObject(forKey: "stereo.\(item.id)") } else { defaults.set(f.rawValue, forKey: "stereo.\(item.id)") }
+    }
+
+    /// What we will actually use for playback.
+    func effectiveStereo(for item: MediaItem) -> StereoFormat {
+        let o = stereoOverride(for: item)
+        if o != .auto { return o }
+        return item.stereo ?? .mono
+    }
+
+    /// MV-HEVC needs AVPlayer (FFmpeg 6.1 decodes only the base view); everything else honours the setting.
+    func effectiveBackend(for item: MediaItem) -> PlayerBackend {
+        effectiveStereo(for: item) == .mvHEVC ? .avplayer : backend
     }
 }

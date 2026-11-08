@@ -107,7 +107,7 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
                 .init(name: "Recursive", value: "true"),
                 .init(name: "SortBy", value: "SortName"),
                 .init(name: "SortOrder", value: "Ascending"),
-                .init(name: "Fields", value: "MediaSources,MediaStreams,Overview,ProductionYear,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber"),
+                .init(name: "Fields", value: "MediaSources,MediaStreams,Overview,ProductionYear,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber,Path,Video3DFormat"),
             ])
             let page = try await send(req, as: ItemsPage.self)
             items = page.Items.compactMap { mediaItem(from: $0) }
@@ -178,7 +178,11 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
             audioCodec: audio?.Codec,
             audioChannels: audio?.Channels,
             videoRange: video?.VideoRangeType ?? video?.VideoRange,
-            isEpisode: item.Type == "Episode"
+            isEpisode: item.Type == "Episode",
+            width: video?.Width,
+            height: video?.Height,
+            stereo: StereoFormat.fromJellyfin(item.Video3DFormat)
+                ?? StereoFormat.detect(name: item.Name, path: item.Path ?? mediaSource?.Path, width: video?.Width, height: video?.Height, codecTag: video?.CodecTag)
         )
     }
 }
@@ -196,11 +200,14 @@ struct JellyfinItem: Decodable {
     let SeriesName: String?
     let ParentIndexNumber: Int?
     let IndexNumber: Int?
+    let Path: String?
+    let Video3DFormat: String?
     let MediaSources: [MediaSource]?
 
     struct MediaSource: Decodable {
         let Id: String?
         let Container: String?
+        let Path: String?
         let MediaStreams: [MediaStream]?
     }
 
@@ -212,6 +219,9 @@ struct JellyfinItem: Decodable {
         let IsDefault: Bool?
         let VideoRange: String?
         let VideoRangeType: String?
+        let Width: Int?
+        let Height: Int?
+        let CodecTag: String?
     }
 }
 

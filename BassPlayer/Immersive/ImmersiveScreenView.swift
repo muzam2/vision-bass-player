@@ -1,19 +1,37 @@
 #if os(visionOS)
 import SwiftUI
 import RealityKit
+import AVFoundation
 
 /// The cinema screen in an ImmersiveSpace. Video frames are pulled from whichever player is
 /// active via `ImmersiveScreenBridge`. Drag to move, pinch to resize, two-hand rotate to tilt.
+///
+/// Three rendering modes:
+///  - 2D: one texture on an unlit material.
+///  - Packed 3D (SBS/TAB): two textures on a shader-graph material whose Camera Index Switch
+///    shows the left texture to the left eye and the right to the right (StereoScreen.usda).
+///  - MV-HEVC: RealityKit's own `VideoPlayerComponent` on the AVPlayer, which renders stereo natively.
 struct ImmersiveScreenView: View {
     @EnvironmentObject private var model: ImmersiveScreenModel
     @State private var feeder = ScreenTextureFeeder()
     @State private var screen = ModelEntity()
+    @State private var videoEntity = Entity()
     @State private var root = Entity()
     @State private var dome = ModelEntity()
-    @State private var lastMeshKey = ""
+    @State private var state = ScreenState()
     @State private var dragStart: SIMD3<Float>?
     @State private var scaleStart: Double?
     @State private var tiltStart: Double?
+
+    /// Mutable bookkeeping shared with the RealityKit update closure.
+    final class ScreenState {
+        var lastMeshKey = ""
+        var stereoMaterial: ShaderGraphMaterial?
+        var stereoMaterialFailed = false
+        var boundGeneration = -1
+        var boundStereo = false
+        var avPlayerBound: AVPlayer?
+    }
 
     var body: some View {
         RealityView { content in
@@ -25,34 +43,25 @@ struct ImmersiveScreenView: View {
             dome.scale = [-1, 1, 1]
             content.add(dome)
             root.addChild(screen)
+            root.addChild(videoEntity)
             content.add(root)
             applyMesh(force: true)
             applyTransform()
             screen.components.set(InputTargetComponent())
             screen.generateCollisionShapes(recursive: false)
 
-            // Pull a new video frame every render tick.
-            _ = content.subscribe(to: SceneEvents.Update.self) { _ in
-                // Scene updates arrive on the main thread.
-                MainActor.assumeIsolated {
-                    feeder.tick(frameSource: ImmersiveScreenBridge.shared.frameSource)
-                    if let t = feeder.texture, !feeder.materialApplied {
-                        var m = UnlitMaterial()
-                        m.color = .init(tint: .white, texture: .init(t))
-                        screen.model?.materials = [m]
-                        feeder.materialApplied = true
-                    }
-                    // Follow the video's aspect ratio once we know it.
-                    if let src = ImmersiveScreenBridge.shared.frameSource, let f = src() {
-                        var w = 0, h = 0
-                        if let pb = f.pixelBuffer { w = CVPixelBufferGetWidth(pb); h = CVPixelBufferGetHeight(pb) }
-                        else if let t = f.pqTexture { w = t.width; h = t.height }
-                        if w > 0, h > 0 {
-                            let a = Double(w) / Double(h)
-                            if abs(a - model.aspect) > 0.01 { model.aspect = a }
-                        }
-                    }
+            // Load the stereo shader graph once (falls back to mono if the USD can't be loaded).
+            Task { @MainActor in
+                do {
+                    state.stereoMaterial = try await ShaderGraphMaterial(named: "/Root/StereoScreen", from: "StereoScreen.usda", in: Bundle.main)
+                } catch {
+                    print("ImmersiveScreen: stereo material unavailable (\(error)); packed 3D will show the left eye only")
+                    state.stereoMaterialFailed = true
                 }
+            }
+
+            _ = content.subscribe(to: SceneEvents.Update.self) { _ in
+                MainActor.assumeIsolated { frameTick() }
             }
         } update: { _ in
             applyMesh(force: false)
@@ -66,18 +75,71 @@ struct ImmersiveScreenView: View {
         .onDisappear { model.isOpen = false }
     }
 
+    // MARK: - Per-frame
+
+    private func frameTick() {
+        let bridge = ImmersiveScreenBridge.shared
+
+        // MV-HEVC / AVPlayer path: let RealityKit render the video (stereo if the file has it).
+        if let player = bridge.avPlayer {
+            if state.avPlayerBound !== player {
+                var comp = VideoPlayerComponent(avPlayer: player)
+                comp.desiredViewingMode = .stereo
+                comp.isPassthroughTintingEnabled = false
+                videoEntity.components.set(comp)
+                state.avPlayerBound = player
+                screen.isEnabled = false
+                videoEntity.isEnabled = true
+            }
+            // VideoPlayerComponent renders 1 m tall; scale to the configured screen size.
+            let h = Float(model.screenHeight)
+            videoEntity.scale = [h, h, 1]
+            return
+        } else if state.avPlayerBound != nil {
+            videoEntity.components.remove(VideoPlayerComponent.self)
+            state.avPlayerBound = nil
+            videoEntity.isEnabled = false
+            screen.isEnabled = true
+        }
+
+        let stereo = bridge.stereoFormat
+        feeder.tick(frameSource: bridge.frameSource, stereo: stereo)
+
+        // Follow the eye aspect once we know the frame size.
+        let (w, h) = feeder.sourceSize
+        if w > 0, h > 0 {
+            let a = stereo.displayAspect(frameWidth: Double(w), frameHeight: Double(h))
+            if abs(a - model.aspect) > 0.01 { model.aspect = a }
+        }
+
+        // (Re)bind textures when they change or the stereo mode flips.
+        let wantStereo = stereo.isPacked && state.stereoMaterial != nil
+        if feeder.textureGeneration != state.boundGeneration || wantStereo != state.boundStereo {
+            guard let left = feeder.leftTexture else { return }
+            if wantStereo, var mat = state.stereoMaterial, let right = feeder.rightTexture {
+                try? mat.setParameter(name: "leftImage", value: .textureResource(left))
+                try? mat.setParameter(name: "rightImage", value: .textureResource(right))
+                screen.model?.materials = [mat]
+            } else {
+                var m = UnlitMaterial()
+                m.color = .init(tint: .white, texture: .init(left))
+                screen.model?.materials = [m]
+            }
+            state.boundGeneration = feeder.textureGeneration
+            state.boundStereo = wantStereo
+        }
+    }
+
     // MARK: - Geometry
 
     private func applyMesh(force: Bool) {
         let key = "\(model.width)-\(model.screenHeight)-\(model.curvature)-\(model.flipV)"
-        guard force || key != lastMeshKey else { return }
-        lastMeshKey = key
+        guard force || key != state.lastMeshKey else { return }
+        state.lastMeshKey = key
         let mesh = ScreenMesh.make(width: Float(model.width), height: Float(model.screenHeight),
                                    curvature: Float(model.curvature), flipV: model.flipV)
         if screen.model == nil {
-            var mat = UnlitMaterial(color: .black)
-            if let t = feeder.texture { mat.color = .init(tint: .white, texture: .init(t)) }
-            screen.model = ModelComponent(mesh: mesh, materials: [mat])
+            screen.model = ModelComponent(mesh: mesh, materials: [UnlitMaterial(color: .black)])
         } else {
             screen.model?.mesh = mesh
         }
@@ -100,7 +162,6 @@ struct ImmersiveScreenView: View {
                 let p = start + delta
                 model.distance = Double(-p.z)
                 model.height = Double(p.y)
-                // Sideways drags become yaw around the viewer instead of off-centre placement.
                 model.yaw = Double(-atan2(p.x, -p.z) * 180 / .pi)
             }
             .onEnded { _ in dragStart = nil }
