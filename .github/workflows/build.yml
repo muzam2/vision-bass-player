@@ -49,6 +49,21 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: SourcePackages
+          key: spm-${{ matrix.suffix }}-${{ hashFiles('project.yml') }}
+          restore-keys: spm-${{ matrix.suffix }}-
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project BassPlayer.xcodeproj \
+            -scheme "${{ matrix.scheme }}" \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -skipMacroValidation | tail -n 20
+
       - name: Build ${{ matrix.name }} (unsigned)
         run: |
           set -o pipefail
@@ -58,11 +73,13 @@ jobs:
             -configuration Release \
             -destination "${{ matrix.destination }}" \
             -derivedDataPath build \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
-            build 2>&1 | tee build-${{ matrix.suffix }}.log | grep -E "error:|warning: .*BassPlayer|BUILD" || true
+            build 2>&1 | tee build-${{ matrix.suffix }}.log | grep -E "error:|BUILD" || true
           grep -q "BUILD SUCCEEDED" build-${{ matrix.suffix }}.log
 
       - name: Package IPA

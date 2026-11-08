@@ -1,16 +1,49 @@
 import SwiftUI
 import AVKit
 
+/// Picks the backend for an item: FFmpeg (KSPlayer) by default, AVPlayer as fallback.
 struct PlayerView: View {
-    let item: JellyfinItem
+    let item: MediaItem
 
-    @EnvironmentObject private var jellyfin: JellyfinClient
+    @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var bassLink: BassLink
+
+    var body: some View {
+        Group {
+            if let url = library.url(for: item) {
+                switch library.backend {
+                case .ffmpeg:
+                    FFmpegPlayerView(item: item, url: url)
+                case .avplayer:
+                    AVPlayerBackendView(item: item, url: url)
+                }
+            } else {
+                ContentUnavailableView("No stream URL", systemImage: "exclamationmark.triangle",
+                                       description: Text("The server did not provide a playable file for this item."))
+            }
+        }
+        .navigationTitle(item.title)
+        #if os(visionOS)
+        .toolbar {
+            ToolbarItem(placement: .bottomOrnament) {
+                ImmersiveScreenToggle()
+            }
+        }
+        #endif
+    }
+}
+
+/// AVPlayer backend (MP4/MOV, H.264/HEVC, AAC/AC‑3/E‑AC‑3; other files via server remux).
+struct AVPlayerBackendView: View {
+    let item: MediaItem
+    let url: URL
+
     @EnvironmentObject private var bassLink: BassLink
     @StateObject private var controller: PlayerController
 
-    init(item: JellyfinItem) {
+    init(item: MediaItem, url: URL) {
         self.item = item
-        // StateObject needs the link at init; grab it from the shared app instance via a holder.
+        self.url = url
         _controller = StateObject(wrappedValue: PlayerController(bassLink: BassLinkHolder.shared))
     }
 
@@ -20,7 +53,7 @@ struct PlayerView: View {
                 .aspectRatio(16/9, contentMode: .fit)
 
             HStack(spacing: 16) {
-                Text(item.Name).font(.headline)
+                Text(item.title).font(.headline)
                 Spacer()
                 Label(controller.tapInstalled ? "Bass tap on" : "Bass tap off",
                       systemImage: controller.tapInstalled ? "waveform" : "waveform.slash")
@@ -29,12 +62,9 @@ struct PlayerView: View {
             }
             .padding()
         }
-        .navigationTitle(item.Name)
         .onAppear {
             if bassLink.state == .off { bassLink.start() }
-            if let url = jellyfin.streamURL(for: item) {
-                controller.load(url: url)
-            }
+            controller.load(url: url)
         }
         .onDisappear { controller.stop() }
     }

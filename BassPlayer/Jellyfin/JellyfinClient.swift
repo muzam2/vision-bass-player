@@ -1,10 +1,11 @@
 import Foundation
 import SwiftUI
 
-/// Minimal Jellyfin REST client: sign in, list movies, build a playable stream URL.
+/// Minimal Jellyfin REST client: sign in, list movies + episodes, build stream URLs.
 /// Jellyfin API reference: https://api.jellyfin.org
 @MainActor
-final class JellyfinClient: ObservableObject {
+final class JellyfinClient: ObservableObject, MediaServerClient {
+    let source: MediaSource = .jellyfin
     private let defaults = UserDefaults.standard
 
     @Published var serverURL: String { didSet { defaults.set(serverURL, forKey: "jf.server") } }
@@ -13,7 +14,7 @@ final class JellyfinClient: ObservableObject {
     @Published private var storedUserId: String { didSet { defaults.set(storedUserId, forKey: "jf.userId") } }
     private let deviceId: String
 
-    @Published private(set) var items: [JellyfinItem] = []
+    @Published private(set) var items: [MediaItem] = []
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
 
@@ -22,7 +23,6 @@ final class JellyfinClient: ObservableObject {
         username = defaults.string(forKey: "jf.username") ?? ""
         storedToken = defaults.string(forKey: "jf.token") ?? ""
         storedUserId = defaults.string(forKey: "jf.userId") ?? ""
-        // Pin the device id so Jellyfin sees one device across launches.
         if let id = defaults.string(forKey: "jf.deviceId") {
             deviceId = id
         } else {
@@ -42,9 +42,8 @@ final class JellyfinClient: ObservableObject {
         return URL(string: s)
     }
 
-    /// Jellyfin's `Authorization: MediaBrowser ...` header.
     private var authorizationHeader: String {
-        var h = "MediaBrowser Client=\"BassPlayer\", Device=\"Apple Vision Pro\", DeviceId=\"\(deviceId)\", Version=\"0.1.0\""
+        var h = "MediaBrowser Client=\"BassPlayer\", Device=\"Apple\", DeviceId=\"\(deviceId)\", Version=\"0.2.0\""
         if let t = accessToken { h += ", Token=\"\(t)\"" }
         return h
     }
@@ -84,9 +83,9 @@ final class JellyfinClient: ObservableObject {
             let result = try await send(req, as: AuthResult.self)
             storedToken = result.AccessToken
             storedUserId = result.User.Id
-            await loadMovies()
+            await loadLibrary()
         } catch {
-            errorMessage = "Sign-in failed: \(error.localizedDescription)"
+            errorMessage = "Jellyfin sign-in failed: \(error.localizedDescription)"
         }
     }
 
@@ -98,103 +97,122 @@ final class JellyfinClient: ObservableObject {
 
     // MARK: - Library
 
-    func loadMovies() async {
+    func loadLibrary() async {
         guard isSignedIn else { return }
         isBusy = true; defer { isBusy = false }
         errorMessage = nil
         do {
             let req = try request("Users/\(storedUserId)/Items", query: [
-                .init(name: "IncludeItemTypes", value: "Movie"),
+                .init(name: "IncludeItemTypes", value: "Movie,Episode"),
                 .init(name: "Recursive", value: "true"),
                 .init(name: "SortBy", value: "SortName"),
                 .init(name: "SortOrder", value: "Ascending"),
-                .init(name: "Fields", value: "MediaSources,Overview,ProductionYear,RunTimeTicks"),
+                .init(name: "Fields", value: "MediaSources,MediaStreams,Overview,ProductionYear,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber"),
             ])
             let page = try await send(req, as: ItemsPage.self)
-            items = page.Items
+            items = page.Items.compactMap { mediaItem(from: $0) }
         } catch {
-            errorMessage = "Could not load library: \(error.localizedDescription)"
+            errorMessage = "Jellyfin: could not load library: \(error.localizedDescription)"
         }
     }
 
-    func posterURL(for item: JellyfinItem, maxHeight: Int = 450) -> URL? {
-        guard let base = baseURL else { return nil }
-        var comps = URLComponents(url: base.appendingPathComponent("Items/\(item.Id)/Images/Primary"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [.init(name: "maxHeight", value: "\(maxHeight)"), .init(name: "quality", value: "90")]
-        return comps.url
-    }
-
-    /// Phase 1 uses AVPlayer, which only handles MP4/MOV containers with H.264/HEVC + AAC/AC-3/E-AC-3.
-    /// Anything else is remuxed/transcoded by the server into a progressive MP4.
-    /// (Phase 2, KSPlayer/FFmpeg, will always direct-play the original file.)
-    func streamURL(for item: JellyfinItem) -> URL? {
+    private func mediaItem(from item: JellyfinItem) -> MediaItem? {
         guard let base = baseURL, let token = accessToken else { return nil }
-        let source = item.MediaSources?.first
-        let container = (source?.Container ?? item.Container ?? "").lowercased()
-        let avPlayerFriendly = ["mp4", "m4v", "mov"].contains(container)
+        let mediaSource = item.MediaSources?.first
+        let streams = mediaSource?.MediaStreams ?? []
+        let video = streams.first { $0.Type == "Video" }
+        let audio = streams.first { $0.Type == "Audio" && ($0.IsDefault ?? false) } ?? streams.first { $0.Type == "Audio" }
+        let container = (mediaSource?.Container ?? item.Container)?.lowercased()
 
-        var comps: URLComponents
-        if avPlayerFriendly {
-            comps = URLComponents(url: base.appendingPathComponent("Videos/\(item.Id)/stream"), resolvingAgainstBaseURL: false)!
-            comps.queryItems = [
-                .init(name: "static", value: "true"),
-                .init(name: "mediaSourceId", value: source?.Id ?? item.Id),
-                .init(name: "api_key", value: token),
-            ]
-        } else {
-            comps = URLComponents(url: base.appendingPathComponent("Videos/\(item.Id)/stream.mp4"), resolvingAgainstBaseURL: false)!
-            comps.queryItems = [
+        var poster = URLComponents(url: base.appendingPathComponent("Items/\(item.Id)/Images/Primary"), resolvingAgainstBaseURL: false)!
+        poster.queryItems = [.init(name: "maxHeight", value: "450"), .init(name: "quality", value: "90")]
+
+        // Direct play of the original file.
+        var direct = URLComponents(url: base.appendingPathComponent("Videos/\(item.Id)/stream"), resolvingAgainstBaseURL: false)!
+        direct.queryItems = [
+            .init(name: "static", value: "true"),
+            .init(name: "mediaSourceId", value: mediaSource?.Id ?? item.Id),
+            .init(name: "api_key", value: token),
+        ]
+
+        // AVPlayer path: MP4/MOV play directly, everything else is remuxed/transcoded server-side.
+        let avFriendly = ["mp4", "m4v", "mov"].contains(container ?? "")
+        var av = direct
+        if !avFriendly {
+            av = URLComponents(url: base.appendingPathComponent("Videos/\(item.Id)/stream.mp4"), resolvingAgainstBaseURL: false)!
+            av.queryItems = [
                 .init(name: "static", value: "false"),
-                .init(name: "mediaSourceId", value: source?.Id ?? item.Id),
+                .init(name: "mediaSourceId", value: mediaSource?.Id ?? item.Id),
                 .init(name: "api_key", value: token),
                 .init(name: "DeviceId", value: deviceId),
                 .init(name: "Container", value: "mp4"),
                 .init(name: "VideoCodec", value: "hevc,h264"),
                 .init(name: "AudioCodec", value: "eac3,ac3,aac"),
                 .init(name: "MaxAudioChannels", value: "6"),
-                .init(name: "TranscodingMaxAudioChannels", value: "6"),
                 .init(name: "AllowVideoStreamCopy", value: "true"),
                 .init(name: "AllowAudioStreamCopy", value: "true"),
             ]
         }
-        return comps.url
+
+        var subtitle: String?
+        if item.Type == "Episode", let series = item.SeriesName {
+            let s = item.ParentIndexNumber.map { String(format: "S%02d", $0) } ?? ""
+            let e = item.IndexNumber.map { String(format: "E%02d", $0) } ?? ""
+            subtitle = "\(series) · \(s)\(e)"
+        } else if let y = item.ProductionYear {
+            subtitle = String(y)
+        }
+
+        return MediaItem(
+            id: "jellyfin:\(item.Id)",
+            source: .jellyfin,
+            title: item.Name,
+            subtitle: subtitle,
+            overview: item.Overview,
+            runtimeMinutes: item.RunTimeTicks.map { Int($0 / 10_000_000 / 60) },
+            posterURL: poster.url,
+            directURL: direct.url,
+            avPlayerURL: av.url,
+            container: container,
+            videoCodec: video?.Codec,
+            audioCodec: audio?.Codec,
+            audioChannels: audio?.Channels,
+            videoRange: video?.VideoRangeType ?? video?.VideoRange,
+            isEpisode: item.Type == "Episode"
+        )
     }
 }
 
-// MARK: - Models
+// MARK: - Wire models
 
-struct JellyfinItem: Decodable, Identifiable, Hashable {
+struct JellyfinItem: Decodable {
     let Id: String
     let Name: String
+    let `Type`: String?
     let ProductionYear: Int?
     let Overview: String?
     let Container: String?
     let RunTimeTicks: Int64?
+    let SeriesName: String?
+    let ParentIndexNumber: Int?
+    let IndexNumber: Int?
     let MediaSources: [MediaSource]?
 
-    var id: String { Id }
-
-    var runtimeText: String? {
-        guard let ticks = RunTimeTicks else { return nil }
-        let minutes = Int(ticks / 10_000_000 / 60)
-        return "\(minutes / 60)h \(minutes % 60)m"
-    }
-
-    struct MediaSource: Decodable, Hashable {
+    struct MediaSource: Decodable {
         let Id: String?
         let Container: String?
         let MediaStreams: [MediaStream]?
     }
 
-    struct MediaStream: Decodable, Hashable {
+    struct MediaStream: Decodable {
         let `Type`: String?
         let Codec: String?
         let Channels: Int?
         let Language: String?
+        let IsDefault: Bool?
+        let VideoRange: String?
+        let VideoRangeType: String?
     }
-
-    static func == (lhs: JellyfinItem, rhs: JellyfinItem) -> Bool { lhs.Id == rhs.Id }
-    func hash(into hasher: inout Hasher) { hasher.combine(Id) }
 }
 
 private struct ItemsPage: Decodable { let Items: [JellyfinItem] }
@@ -215,7 +233,7 @@ enum JellyfinError: LocalizedError {
     }
 }
 
-private struct AnyEncodable: Encodable {
+struct AnyEncodable: Encodable {
     private let encodeFn: (Encoder) throws -> Void
     init(_ wrapped: Encodable) { encodeFn = wrapped.encode }
     func encode(to encoder: Encoder) throws { try encodeFn(encoder) }

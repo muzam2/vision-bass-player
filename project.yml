@@ -20,6 +20,13 @@ settings:
     CODE_SIGNING_REQUIRED: "NO"
     DEVELOPMENT_TEAM: ""
 
+packages:
+  # FFmpeg-based player. GPLv3 branch is the open-source tree with visionOS support;
+  # `main` ships a binary core without an xros slice.
+  KSPlayer:
+    url: https://github.com/kingslay/KSPlayer
+    branch: GPLv3
+
 targets:
   # ---------------- Apple Vision Pro ----------------
   BassPlayer:
@@ -29,6 +36,9 @@ targets:
       - path: BassPlayer
         excludes:
           - "Info*.plist"
+    dependencies:
+      - package: KSPlayer
+        product: KSPlayer
     info:
       path: BassPlayer/Info.plist
       properties:
@@ -60,6 +70,9 @@ targets:
       - path: BassPlayer
         excludes:
           - "Info*.plist"
+    dependencies:
+      - package: KSPlayer
+        product: KSPlayer
     info:
       path: BassPlayer/Info-tvOS.plist
       properties:
