@@ -14,7 +14,8 @@ let package = Package(
     products: [
         .library(
             name: "AMSMB2",
-            type: .dynamic,
+            // Bass Player: static. The dynamic product was not embedded by the generated
+            // Xcode project, so the app died in dyld at launch looking for AMSMB2.framework.
             targets: ["AMSMB2"]
         ),
     ],
