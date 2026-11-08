@@ -70,8 +70,8 @@ jobs:
           c.login("", "")
           shares = [s["shi1_netname"][:-1] for s in c.listShares()]
           print("shares:", shares)
-          assert "video" in shares
-          files = [f.get_longname() for f in c.listPath("video", "*")]
+          assert "VIDEO" in shares      # impacket upper-cases share names
+          files = [f.get_longname() for f in c.listPath("VIDEO", "*")]
           print("files:", files)
           assert "sample.mp4" in files
           EOF
@@ -108,7 +108,7 @@ jobs:
       - name: Run the UI tests
         env:
           TEST_RUNNER_E2E_SMB_HOST: 127.0.0.1
-          TEST_RUNNER_E2E_SMB_SHARE: video
+          TEST_RUNNER_E2E_SMB_SHARE: VIDEO
           TEST_RUNNER_E2E_SMB_FILE: sample.mp4
           TEST_RUNNER_E2E_PLEX_TOKEN: ${{ secrets.PLEX_TOKEN }}
         run: |
