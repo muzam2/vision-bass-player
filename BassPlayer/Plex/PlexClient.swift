@@ -145,16 +145,29 @@ final class PlexClient: ObservableObject, MediaServerClient {
             servers = resources
                 .filter { $0.provides.split(separator: ",").contains("server") }
                 .map { r in
-                    // Prefer a local (LAN) connection, then any direct, then relay.
+                    // Preference order: LAN, then any direct, then relay. Which one is actually
+                    // reachable is decided by probing in connect(to:); plex.tv's "local" flag
+                    // also covers Docker-internal and stale addresses.
                     let conns = r.connections ?? []
-                    let best = conns.first { $0.local && !$0.relay } ?? conns.first { !$0.relay } ?? conns.first
-                    return PlexServer(id: r.clientIdentifier, name: r.name, uri: best?.uri ?? "", accessToken: r.accessToken, connections: conns.map(\.uri))
+                    let ordered = conns.filter { $0.local && !$0.relay } + conns.filter { !$0.local && !$0.relay } + conns.filter(\.relay)
+                    // Each LAN https://a-b-c-d.<id>.plex.direct address also gets a plain
+                    // http://a.b.c.d:port twin: routers with DNS-rebinding protection (OpenWrt's
+                    // default) refuse to resolve plex.direct names to private IPs.
+                    var uris: [String] = []
+                    for c in ordered {
+                        uris.append(c.uri)
+                        if c.local, !c.relay, c.IPv6 != true, let ip = c.address, let port = c.port {
+                            uris.append("http://\(ip):\(port)")
+                        }
+                    }
+                    var seen = Set<String>()
+                    uris = uris.filter { seen.insert($0).inserted }
+                    return PlexServer(id: r.clientIdentifier, name: r.name, uri: uris.first ?? "", accessToken: r.accessToken, connections: uris)
                 }
                 .filter { !$0.uri.isEmpty }
-            if serverURL.isEmpty, let first = servers.first {
-                select(server: first)
-            } else {
-                await loadLibrary()
+            let current = servers.first { $0.name == serverName } ?? servers.first
+            if let current {
+                await connect(to: current)
             }
         } catch {
             errorMessage = "Plex: could not list servers: \(error.localizedDescription)"
@@ -162,15 +175,43 @@ final class PlexClient: ObservableObject, MediaServerClient {
     }
 
     func select(server: PlexServer) {
-        serverURL = server.uri
+        Task { await connect(to: server) }
+    }
+
+    /// Probe every connection of the server at once and use the first, in preference order,
+    /// that answers /identity. Fixes "no route to host" from an unreachable advertised address.
+    func connect(to server: PlexServer) async {
         serverName = server.name
         serverToken = server.accessToken ?? ""
-        Task { await loadLibrary() }
+        let candidates = server.connections.isEmpty ? [server.uri] : server.connections
+        let reachable = await withTaskGroup(of: (Int, Bool).self) { group in
+            for (i, uri) in candidates.enumerated() {
+                group.addTask { (i, await Self.answers(uri)) }
+            }
+            var ok = Set<Int>()
+            for await (i, up) in group where up { ok.insert(i) }
+            return ok
+        }
+        guard let index = candidates.indices.first(where: reachable.contains) else {
+            let hosts = candidates.compactMap { URL(string: $0)?.host }.joined(separator: ", ")
+            errorMessage = "Plex: \(server.name) didn't answer on any of its addresses (\(hosts))."
+            return
+        }
+        serverURL = candidates[index]
+        await loadLibrary(rediscoverOnNetworkError: false)
+    }
+
+    nonisolated private static func answers(_ uri: String) async -> Bool {
+        guard let url = URL(string: uri)?.appendingPathComponent("identity") else { return false }
+        var req = URLRequest(url: url, timeoutInterval: 3)
+        req.httpMethod = "GET"
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return false }
+        return (resp as? HTTPURLResponse).map { (200..<500).contains($0.statusCode) } ?? false
     }
 
     // MARK: - Library
 
-    func loadLibrary() async {
+    func loadLibrary(rediscoverOnNetworkError: Bool = true) async {
         guard isSignedIn, let base = URL(string: serverURL) else { return }
         isBusy = true; defer { isBusy = false }
         errorMessage = nil
@@ -188,6 +229,12 @@ final class PlexClient: ObservableObject, MediaServerClient {
             }
             items = all.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         } catch {
+            // A saved address can go stale (server moved, Docker IP, VPN off): re-probe once.
+            if rediscoverOnNetworkError, error is URLError {
+                isBusy = false
+                await discoverServers()
+                return
+            }
             errorMessage = "Plex: could not load library: \(error.localizedDescription)"
         }
     }
@@ -296,6 +343,9 @@ private struct PlexResource: Decodable {
         let uri: String
         let local: Bool
         let relay: Bool
+        let address: String?
+        let port: Int?
+        let IPv6: Bool?
     }
 }
 
