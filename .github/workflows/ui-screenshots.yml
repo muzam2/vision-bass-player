@@ -74,7 +74,9 @@ jobs:
             -destination "${{ matrix.destination }}" -derivedDataPath build \
             -clonedSourcePackagesDirPath SourcePackages -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO EXCLUDED_ARCHS=x86_64 \
             build 2>&1 | tee build.log | grep -E "error:|BUILD" || true
+          # ARCHS=arm64: FFmpegKit's visionOS-simulator slice is Apple-silicon only; the runner is too.
           grep -q "BUILD SUCCEEDED" build.log
 
       - name: Boot the simulator and take screenshots
