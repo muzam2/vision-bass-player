@@ -8,8 +8,8 @@
 # CONFIG_H261/H263/MPEG4_DECODER, CONFIG_ZLIB, CONFIG_HTTP_PROTOCOL), so an FFmpeg-only build
 # with FFmpegKit's own plugin (same configure line, same targets) yields equivalent objects.
 #
-# Output: every binary target FFmpegKit needs, stripped to visionOS + tvOS device slices and
-# zipped for SwiftPM, published once as release RELEASE_TAG of this repo (skipped if the tag
+# Output: every binary target FFmpegKit needs, stripped to visionOS + tvOS slices (device,
+# patched; simulator, stock, for CI screenshot builds) and zipped for SwiftPM, published once as release RELEASE_TAG of this repo (skipped if the tag
 # exists, so committed checksums never go stale), plus artifact "ffmpegkit-package" with the
 # generated Vendor/FFmpegKit/Package.swift to commit. To republish, bump RELEASE_TAG.
 name: FFmpegKit backports
@@ -30,7 +30,7 @@ jobs:
       contents: write
     env:
       FFMPEGKIT_TAG: "6.1.4"
-      RELEASE_TAG: "ffmpegkit-6.1.4-bp1"
+      RELEASE_TAG: "ffmpegkit-6.1.4-bp2"
       GH_TOKEN: ${{ github.token }}
       SLICES: "xros-arm64 tvos-arm64_arm64e"
     steps:
@@ -146,7 +146,7 @@ jobs:
             exit 0
           fi
           {
-            echo "FFmpegKit 6.1.4 binary targets for Bass Player (visionOS + tvOS device slices)."
+            echo "FFmpegKit 6.1.4 binary targets for Bass Player (visionOS + tvOS, device + simulator slices)."
             echo "Libavformat: mov.o + hls.o rebuilt from FFmpeg n6.1 with the upstream fixes in"
             echo "Vendor/FFmpegKit-patches (built by run ${{ github.run_id }})."
             echo "FFmpegKit is GPLv3 (https://github.com/kingslay/FFmpegKit); FFmpeg is GPL/LGPL."
@@ -156,7 +156,7 @@ jobs:
             echo '```'
           } > notes.md
           gh release create "$RELEASE_TAG" -R "${{ github.repository }}" --target "${{ github.sha }}" \
-            --title "FFmpegKit 6.1.4 + libavformat backports (bp1)" --notes-file notes.md \
+            --title "FFmpegKit 6.1.4 + libavformat backports (bp2: + simulator slices)" --notes-file notes.md \
             --prerelease --latest=false pkg/*.zip pkg/checksums.json
 
       - uses: actions/upload-artifact@v4
