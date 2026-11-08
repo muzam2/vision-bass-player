@@ -59,6 +59,7 @@ struct ImmersiveScreenView: View {
 
     var body: some View {
         RealityView { content, attachments in
+            TapToggleComponent.registerComponent()
             // Black dome around the viewer. Radius is far beyond the visible/rendered area so
             // there is no horizon, seam or edge fall-off anywhere in either lens, whatever the
             // immersion style. Negative X scale turns the sphere inside-out so we see its inner face.

@@ -145,8 +145,13 @@ extension KSVideoPlayer: UIViewRepresentable {
 
         public func makeView(url: URL, options: KSOptions) -> UIView {
             defer {
-                DispatchQueue.main.async { [weak self] in
-                    self?.subtitleModel.url = url
+                // Bass Player patch: only a *different* URL resets the subtitle list. The view is
+                // re-created when the player window reopens after the cinema screen, and the
+                // reset used to empty the subtitle menu ("No subtitles in this file").
+                if subtitleModel.url != url {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.subtitleModel.url = url
+                    }
                 }
             }
             if let playerLayer {
