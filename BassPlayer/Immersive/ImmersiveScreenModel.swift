@@ -46,15 +46,15 @@ final class ImmersiveScreenModel: ObservableObject {
     /// commercial players, in a black void.
     static let defaultWidth = 6.5
     static let defaultDistance = 3.5
-    static let defaultCurve = 0.25
+    static let defaultCurve = 0.0   // flat; curve is a slider on the cinema panel
 
     init() {
         let d = UserDefaults.standard
         // Layout v2 (2026-11-08): the first version's 4 m screen was a TV, not a cinema; values
         // saved by the broken settings popover are discarded once.
-        if d.integer(forKey: "imm.layoutVersion") < 2 {
+        if d.integer(forKey: "imm.layoutVersion") < 3 {
             for k in ["imm.width", "imm.distance", "imm.height", "imm.tilt", "imm.yaw", "imm.curve"] { d.removeObject(forKey: k) }
-            d.set(2, forKey: "imm.layoutVersion")
+            d.set(3, forKey: "imm.layoutVersion")
         }
         func num(_ k: String, _ def: Double) -> Double { d.object(forKey: k) == nil ? def : d.double(forKey: k) }
         width = num("imm.width", Self.defaultWidth)
