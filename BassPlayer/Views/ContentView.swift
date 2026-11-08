@@ -205,7 +205,8 @@ struct SettingsView: View {
                         Text(h == 2160 ? "4K (2160p)" : "\(h)p").tag(h)
                     }
                 }
-                Text("Streams come straight from YouTube's player API, so there are no ads. Search or paste a link in the library's search box. HDR versions and seeking inside a YouTube video aren't available yet.")
+                Toggle("HDR when available", isOn: $youtube.preferHDR)
+                Text("Streams come straight from YouTube's player API, so there are no ads. Search or paste a link in the library's search box.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 

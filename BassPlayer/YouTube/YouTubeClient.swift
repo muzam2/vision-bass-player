@@ -18,12 +18,15 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     /// Highest variant height handed to FFmpeg (2160 / 1440 / 1080 / 720).
     @Published var maxHeight: Int { didSet { defaults.set(maxHeight, forKey: "yt.maxHeight") } }
     static let maxHeightChoices = [2160, 1440, 1080, 720]
+    /// Take the HDR version of a video when YouTube has one.
+    @Published var preferHDR: Bool { didSet { defaults.set(preferHDR, forKey: "yt.preferHDR") } }
     @Published private(set) var lastQuery = ""
     private var searchTask: Task<Void, Never>?
 
     init() {
         sponsorBlockEnabled = defaults.object(forKey: "yt.sponsorblock") as? Bool ?? true
         maxHeight = defaults.object(forKey: "yt.maxHeight") as? Int ?? 2160
+        preferHDR = defaults.object(forKey: "yt.preferHDR") as? Bool ?? true
     }
 
     /// No account needed.
@@ -61,7 +64,7 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
         errorMessage = nil
         do {
             if let id = InnerTubeClient.videoId(from: q) {
-                let s = try await api.streams(videoId: id, maxHeight: maxHeight)
+                let s = try await api.streams(videoId: id, maxHeight: maxHeight, preferHDR: preferHDR)
                 items = [mediaItem(from: s, id: id)]
             } else {
                 items = try await api.search(q).map(mediaItem)
@@ -75,7 +78,7 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     /// Fetch fresh stream URLs for playback.
     func resolve(_ item: MediaItem) async throws -> MediaItem {
         guard let id = item.youtubeId else { return item }
-        let s = try await api.streams(videoId: id, maxHeight: maxHeight)
+        let s = try await api.streams(videoId: id, maxHeight: maxHeight, preferHDR: preferHDR)
         var out = item
         out.directURL = Self.ffmpegURL(s)
         out.avPlayerURL = s.progressiveURL ?? s.hlsURL         // AVPlayer: progressive keeps the bass tap working

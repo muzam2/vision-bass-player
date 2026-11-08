@@ -129,11 +129,8 @@ final class FFmpegSession: ObservableObject {
         sleepFired = false
         if let item, let library {
             library.noteStarted(item)
-            // FFmpeg 6.1 loses all video after a seek in fMP4 HLS (stale fragment index in the
-            // mov demuxer; fixed upstream in 8.1), so a YouTube resume would open on a black
-            // screen. Start from the beginning until FFmpegKit is rebuilt with that fix.
-            let canSeekAtOpen = item.source != .youtube
-            if canSeekAtOpen, library.resumePlayback, let pos = library.savedPosition(for: item), pos > 30 {
+            // YouTube resume needs the backported mov/hls seek fixes in Vendor/FFmpegKit.
+            if library.resumePlayback, let pos = library.savedPosition(for: item), pos > 30 {
                 options.startPlayTime = pos        // KSPlayer seeks here once the file opens
             }
         }
