@@ -222,7 +222,10 @@ struct SettingsView: View {
             if let diagStatus { Text(diagStatus).font(.footnote).foregroundStyle(.secondary) }
             if !diagTail.isEmpty {
                 ScrollView {
-                    Text(diagTail).font(.system(size: 11, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    Text(diagTail).font(.system(size: 11, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading)
+                        #if !os(tvOS)
+                        .textSelection(.enabled)
+                        #endif
                 }
                 .frame(height: 260)
             }

@@ -179,7 +179,7 @@ struct ImmersiveScreenView: View {
         case .vr360:
             mesh = ScreenMesh.makeVR(radius: 20, fullSphere: true, flipV: model.flipV)
         }
-        let material: any Material
+        let material: any RealityKit.Material
         if let m = state.material { material = m } else { material = UnlitMaterial(color: .black) }
         if screen.model == nil {
             screen.model = ModelComponent(mesh: mesh, materials: [material])
