@@ -53,7 +53,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: SourcePackages
-          key: spm-${{ matrix.suffix }}-${{ hashFiles('project.yml') }}
+          key: spm-${{ matrix.suffix }}-${{ hashFiles('project.yml', 'Vendor/KSPlayer/Package.swift') }}
           restore-keys: spm-${{ matrix.suffix }}-
 
       - name: Resolve Swift packages
