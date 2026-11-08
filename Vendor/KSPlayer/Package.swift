@@ -11,7 +11,9 @@ let package = Package(
         .library(name: "KSPlayer", targets: ["KSPlayer"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/kingslay/FFmpegKit.git", from: "6.1.4"),
+        // Local FFmpegKit 6.1.4 with libavformat backports (binaries in this repo's release
+        // ffmpegkit-6.1.4-bp1); see Vendor/FFmpegKit and docs/HANDOFF.md §3.
+        .package(path: "../FFmpegKit"),
     ],
     targets: [
         .target(

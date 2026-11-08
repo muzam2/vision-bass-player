@@ -40,11 +40,10 @@ actor VisitorID {
 /// Turns YouTube's HLS master (~30 variants) into a local master with exactly one video
 /// variant and its audio rendition, for FFmpeg.
 ///
-/// Why not hand FFmpeg the master directly:
-/// - FFmpeg 6.1 opens every variant while probing (slow start: the 4K ones are ~25 MB a segment).
-/// - HDR (PQ) variants carry both `mdcv` and `SmDm` boxes in the init segment, which FFmpeg 6.1
-///   rejects as invalid data (fixed in FFmpeg 7.1), and one bad variant fails the whole open.
-///   So only SDR variants are picked until FFmpegKit is rebuilt with that fix.
+/// Why not hand FFmpeg the master directly: FFmpeg opens every variant while probing (slow
+/// start: the 4K ones are ~25 MB a segment), and one variant it can't open fails the whole open.
+/// HDR (PQ) variants are allowed when `preferHDR` is on; their init segments carry both `mdcv`
+/// and `SmDm`, which needs the backported mov fix in Vendor/FFmpegKit (stock 6.1 rejects them).
 /// AV1 is skipped: neither the Vision Pro (M2) nor the Apple TV decodes it in hardware.
 ///
 /// The local file needs `protocol_whitelist` to include https (set in `FFmpegSession`). FFmpeg
@@ -55,13 +54,13 @@ enum HLSVariantPicker {
         let label: String
     }
 
-    static func localMaster(for master: URL, videoId: String, userAgent: String, maxHeight: Int) async -> Picked? {
+    static func localMaster(for master: URL, videoId: String, userAgent: String, maxHeight: Int, preferHDR: Bool) async -> Picked? {
         var req = URLRequest(url: master)
         req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let text = String(data: data, encoding: .utf8),
-              let picked = pick(master: text, maxHeight: maxHeight) else { return nil }
+              let picked = pick(master: text, maxHeight: maxHeight, preferHDR: preferHDR) else { return nil }
 
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("youtube-hls", isDirectory: true)
@@ -77,15 +76,16 @@ enum HLSVariantPicker {
     }
 
     /// Pure part, kept separate so it is easy to reason about: returns the new master text.
-    static func pick(master: String, maxHeight: Int) -> (playlist: String, label: String)? {
+    static func pick(master: String, maxHeight: Int, preferHDR: Bool) -> (playlist: String, label: String)? {
         let lines = master.components(separatedBy: .newlines)
-        struct Candidate { let height: Int; let fps: Double; let avc: Bool; let bandwidth: Int; let inf: String; let uri: String; let audio: String?; let codecs: String }
+        struct Candidate { let height: Int; let fps: Double; let hdr: Bool; let avc: Bool; let bandwidth: Int; let inf: String; let uri: String; let audio: String?; let codecs: String }
         var best: Candidate?
         for (i, line) in lines.enumerated() where line.hasPrefix("#EXT-X-STREAM-INF:") && i + 1 < lines.count {
             let attrs = String(line.dropFirst("#EXT-X-STREAM-INF:".count))
             let codecs = attribute("CODECS", in: attrs) ?? ""
             let range = attribute("VIDEO-RANGE", in: attrs) ?? "SDR"
-            guard range == "SDR", !codecs.contains("av01") else { continue }
+            let hdr = range == "PQ" || range == "HLG"
+            guard range == "SDR" || (hdr && preferHDR), !codecs.contains("av01") else { continue }
             let size = (attribute("RESOLUTION", in: attrs) ?? "0x0").split(separator: "x").compactMap { Int($0) }
             let height = size.count == 2 ? size[1] : 0
             guard height > 0, height <= maxHeight else { continue }
@@ -94,11 +94,13 @@ enum HLSVariantPicker {
             let c = Candidate(
                 height: height,
                 fps: Double(attribute("FRAME-RATE", in: attrs) ?? "") ?? 0,
+                hdr: hdr,
                 avc: codecs.hasPrefix("avc1"),          // at equal size H.264 wins: guaranteed hardware decode
                 bandwidth: Int(attribute("BANDWIDTH", in: attrs) ?? "") ?? 0,
                 inf: line, uri: uri, audio: attribute("AUDIO", in: attrs), codecs: codecs)
             if let b = best {
-                let better = (c.height, c.fps, c.avc ? 1 : 0, c.bandwidth) > (b.height, b.fps, b.avc ? 1 : 0, b.bandwidth)
+                // Size first, then frame rate, then HDR (only offered when preferred), then H.264.
+                let better = (c.height, c.fps, c.hdr ? 1 : 0, c.avc ? 1 : 0, c.bandwidth) > (b.height, b.fps, b.hdr ? 1 : 0, b.avc ? 1 : 0, b.bandwidth)
                 if better { best = c }
             } else {
                 best = c
@@ -118,7 +120,7 @@ enum HLSVariantPicker {
 
         let codec = best.codecs.hasPrefix("avc1") ? "H.264" : best.codecs.hasPrefix("vp09") ? "VP9" : (best.codecs.split(separator: ".").first.map(String.init) ?? "?")
         let fps = best.fps > 31 ? "\(Int(best.fps.rounded()))" : ""
-        return (out.joined(separator: "\n") + "\n", "\(best.height)p\(fps) \(codec)")
+        return (out.joined(separator: "\n") + "\n", "\(best.height)p\(fps) \(codec)\(best.hdr ? " HDR" : "")")
     }
 
     /// Value of `KEY=value` or `KEY="value"` in an HLS attribute list.
