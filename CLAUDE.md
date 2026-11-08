@@ -8,8 +8,10 @@ visionOS + tvOS video player (SwiftUI, vendored KSPlayer/FFmpeg) that streams su
 BLE to an ESP32 receiver wired to a powered subwoofer. Sources: Jellyfin, Plex, YouTube
 (InnerTube), NAS (SMB/WebDAV). Vision Pro gets a RealityKit cinema screen with 3D and VR.
 Owner has **no Mac**: everything is compiled by GitHub Actions and sideloaded with a free
-Apple ID (Vision Pro: the locally ported iloader on the Linux box; HANDOFF §1). Installed on
-the headset 2026-11-08; the ESP32 receiver hasn't arrived, so the bass path is untested.
+Apple ID (Vision Pro: SideStore 0.7.2 installs the IPA downloaded in Safari from the LAN
+helper `tools/diag_receiver.py`; HANDOFF §0 has the exact loop). Installed on the headset
+2026-11-08 and iterated all day with a live log stream; the ESP32 receiver hasn't arrived,
+so the bass path is untested.
 
 ## Build & verify
 - Never try to build Swift locally; push and read Actions. `build.yml` (visionOS + tvOS unsigned
@@ -20,8 +22,10 @@ the headset 2026-11-08; the ESP32 receiver hasn't arrived, so the bass path is u
 - When polling Actions, wait 30 s between checks, not 10.
 - Compile errors: `gh run view <id> --log-failed | grep "error:"`. Expect Xcode 26 / visionOS
   SDK on `macos-15` + `setup-xcode@latest-stable`.
-- The IPA packaging step prints app size and `FFmpeg: linked`; check it after any change to
-  `project.yml` or `Vendor/KSPlayer`.
+- The IPA packaging step prints app size, `FFmpeg: linked` and one `embedded: X` line per
+  dynamic framework the binary loads; it **fails** if a loaded framework is missing from
+  `Frameworks/` (a dynamic SwiftPM product that the generated project did not embed = dyld
+  crash at launch; that is why AMSMB2 is vendored as a static library).
 - **Look at the UI before shipping it:** `gh workflow run ui-screenshots.yml --ref <branch>`
   builds for the visionOS + tvOS simulators and uploads a PNG per tab (demo data via
   `BASSPLAYER_DEMO=1`, tab via `BASSPLAYER_SCREEN`). Download the `screenshots-*` artifacts and
@@ -31,9 +35,11 @@ the headset 2026-11-08; the ESP32 receiver hasn't arrived, so the bass path is u
 
 ## Hard-won facts (don't rediscover)
 - KSPlayer is **vendored** at `Vendor/KSPlayer` (from the `GPLv3` branch; upstream `main`
-  ships a binary xcframework with no xros slice) and patched for Dolby Vision P5, one-eye
-  crop, SMB listing and a public frame renderer. Patched files are listed in HANDOFF §3; diff
-  against `UPSTREAM_COMMIT` when pulling upstream.
+  now ships a binary xcframework, so its FFmpeg-facing code is no longer available as source
+  — our copy is the source of truth) and patched for Dolby Vision P5, one-eye crop, a frame
+  sink for the cinema screen, FFmpeg 9 API, the MVC decoder (`MEPlayer/Edge264Decode.swift`)
+  and a few lifecycle fixes (`keepsPlayerWhenViewGoesAway`, no player resurrection in
+  `updateUIView`, display link at panel rate on visionOS). Patched files: HANDOFF §3.
 - Dolby Vision P5 needs `KSOptions.asynchronousDecompression = false` (FFmpeg hwaccel path),
   otherwise the RPU side data never reaches the frame. P7/P8 play as HDR10/HLG base layer.
 - `KSVideoPlayerView` overwrites `coordinator.onStateChanged`; `FFmpegSession` therefore polls
@@ -45,29 +51,41 @@ the headset 2026-11-08; the ESP32 receiver hasn't arrived, so the bass path is u
 - `@AppStorage` inside an `ObservableObject` doesn't publish; use `@Published` + `UserDefaults`.
 - tvOS has no `Stepper`, `.ornament`, `.glassBackgroundEffect`; guard with `#if os(visionOS)`
   / `#if os(tvOS)`. All immersive/ARKit code is `#if os(visionOS)`.
-- The immersive-space origin is on the **floor**; screen `height` is absolute metres. Recentre
-  uses ARKit `WorldTrackingProvider.queryDeviceAnchor` (no permission prompt).
-- Packed 3D: flat displays crop one eye with `MetalPlayView.contentsCrop` + `customizeDar`;
-  the cinema screen binds left/right textures to `StereoScreen.usda` (hand-written MaterialX
-  graph, Camera Index Switch). MV-HEVC uses AVPlayer + `VideoPlayerComponent`. MVC (Blu-ray
-  3D) is base-view-only until edge264-mvc is integrated (plan in HANDOFF §5).
-- FFmpegKit already links **libsmbclient**: `smb://user:pass@host/share/file` plays and
-  `NetworkDirectory.list` (avio_open_dir) browses. No NFS. ISOs don't play.
+- The immersive-space origin is on the **floor**. The screen sits on the *gaze line*:
+  `recentre` takes yaw **and pitch** from ARKit's device anchor (retry until tracked — the
+  anchor is nil for the first few hundred ms), `height` is an offset from that line, dragging
+  moves the screen on a sphere around the viewer. The cinema dismisses both windows and
+  brings them back via `ImmersiveScreenModel.noteClosed` (idempotent; onDisappear of the
+  space is not always delivered, so every exit path calls it and windows `reconcile()`).
+- Cinema video path (OpenImmersive-style): decoded frames → `CMSampleBuffer` with APMP
+  extensions (`viewPackingKind` for SBS/TAB, `projectionKind` for VR) → `AVSampleBufferVideoRenderer`
+  → `VideoMaterial` on a flat/curved/sphere mesh. The old `StereoScreen.usda` + CoreImage path
+  is gone. Flat windows still crop one eye with `MetalPlayView.contentsCrop` + `customizeDar`.
+  MV-HEVC uses AVPlayer + `VideoPlayerComponent`. **MVC (3D Blu-ray) decodes with edge264-mvc**
+  into one full side-by-side frame (HANDOFF §5).
+- **SMB is not FFmpeg's job any more:** `BassPlayer/NAS/SMBBridge.swift` (AMSMB2/libsmb2 +
+  loopback HTTP range server) serves `http://127.0.0.1:<port>/smb/<share>/<path>` to both
+  backends. No NFS. ISOs don't play.
+- visionOS windows closed with their close button keep their SwiftUI view tree alive and
+  deliver no `onDisappear`; `PlaybackController` watches `UIScene.didDisconnectNotification`
+  (via `WindowSceneProbe`) and `PlayerScreen` goes inert once its scene disconnects.
+- In a `Form`, several plain `Button`s in one row all fire on one tap — one control per row.
 - YouTube: `InnerTubeClient.Client.playbackOrder` is the thing to update from yt-dlp when
   playback breaks (`_base.py` clients, `_video.py` `_DEFAULT_JSLESS_CLIENTS`). VISIONOS first,
   IOS fallback; every player call sends a visitor id (`VisitorID`, scraped from the home page),
   without which YouTube bot-checks. FFmpeg gets a local one-variant master
   (`HLSVariantPicker`: no AV1, HDR only if `yt.preferHDR`; `protocol_whitelist` set in
   `FFmpegSession.configure`).
-- FFmpeg comes from `Vendor/FFmpegKit`: FFmpegKit 6.1.4's binaries (visionOS + tvOS, device
-  slices patched, simulator slices stock) hosted as release `ffmpegkit-6.1.4-bp2`, fetched and
-  checksum-verified by `tools/fetch_binaries.sh` in CI. Libavformat's `mov.o` + `hls.o` are
-  rebuilt from n6.1 + `Vendor/FFmpegKit-patches` (workflow `ffmpegkit-backports.yml`). Stock
-  6.1 rejects YouTube HDR init segments (`mdcv` + `SmDm`) and loses VP9 video after any seek in
-  fMP4 HLS (needs both the duplicate-`ftyp` and fragment-reset patches). FFmpegKit 9.x has the
-  fixes too but drops libsmbclient. To add a patch: drop it in `Vendor/FFmpegKit-patches`, bump
-  `RELEASE_TAG` in the workflow, run it, commit `Package.swift` + `checksums.json` +
-  `RELEASE_TAG` from its artifact.
+- FFmpeg comes from `Vendor/FFmpegKit`: **stock FFmpegKit 9.0.2 (= FFmpeg 9.0.2)**, its
+  xcframeworks (dynamic, embedded in the app — hence the ~20 MB IPA) stripped to visionOS +
+  tvOS slices and hosted as release `ffmpegkit-9.0.2-vt1` of this repo by workflow
+  `ffmpegkit-repack.yml` (`tools/repack_release.py`; upstream commits the binaries into its git
+  tag and has no release assets). `tools/fetch_binaries.sh` downloads + verifies everything in
+  CI, including `FFmpegKit-sources.zip` (the C shim target), so `Sources/` is not in git. To
+  bump: edit the two tags in the workflow, run it, commit `Package.swift` + `checksums.json` +
+  `RELEASE_TAG` from its artifact, fix API fallout in `Vendor/KSPlayer`. The 6.1.4 backport
+  pipeline (`ffmpegkit-backports.yml`, `Vendor/FFmpegKit-patches`) is retired; its fixes are
+  upstream.
 - UI: `RootView` is a `TabView` (`.sidebarAdaptable`) of `AppTab`s; sources are shown by
   `LibraryGridView(source:)` / `YouTubeView` / `NASBrowserView`; everything plays through
   `library.play(item)`, which opens the `PlayerWindow` scene on visionOS and a

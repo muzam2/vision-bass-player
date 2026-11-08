@@ -108,11 +108,15 @@ GitHub release.
 ## Installing on the Vision Pro
 
 1. Vision Pro: Settings → Privacy & Security → Developer Mode → On.
-2. On a machine on the same Wi‑Fi, run an iloader build with Vision Pro support (or an
-   atvloadly-style service built on [idevice](https://github.com/jkcoxson/idevice)); pair via
-   Settings → General → Remote Devices on the headset.
-3. Install SideStore, sign in with a free Apple ID, then install the IPA from the Actions
-   artifact. Free-ID limits: 7-day signature (SideStore refreshes it), 3 apps max.
+2. Get SideStore onto the headset once (the Vision Pro build `visionos-0.7.2-signin` from
+   `muzam2/SideStore`, installed with an iloader build that has Vision Pro support — pair via
+   Settings → General → Remote Devices) and sign in with a free Apple ID.
+3. Put the IPA where the headset can download it, e.g. run `tools/diag_receiver.py` on a LAN
+   machine (`python3 tools/diag_receiver.py --bind <ip> --port 8799 --dir <folder with the ipa>`),
+   open `http://<ip>:8799/BassPlayer.ipa` in Safari on the headset, Download, then in SideStore
+   → My Apps → "+" pick the downloaded file. Updates install over the old app and keep its data.
+   Free-ID limits: 7-day signature (SideStore refreshes it), 3 apps max.
+4. The same helper receives the app's diagnostics log (Settings → Diagnostics → Send / Stream).
 
 ## Installing on the Apple TV
 
