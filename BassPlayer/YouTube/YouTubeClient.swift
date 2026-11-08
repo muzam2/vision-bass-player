@@ -33,16 +33,17 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     var isSignedIn: Bool { true }
     func signOut() {}
 
-    /// Default view: trending.
+    /// Default view: trending if YouTube still serves it. It retired the Trending page in 2025
+    /// (browse FEtrending now answers HTTP 400), so an empty start screen is the normal case;
+    /// that is not an error.
     func loadLibrary() async {
         if !query.isEmpty { await search(query); return }
         isBusy = true; defer { isBusy = false }
         errorMessage = nil
-        do {
-            items = try await api.trending().map(mediaItem)
-            lastQuery = ""
-        } catch {
-            errorMessage = "YouTube: \(error.localizedDescription)"
+        lastQuery = ""
+        items = (try? await api.trending().map(mediaItem)) ?? []
+        if items.isEmpty {
+            errorMessage = "Search YouTube or paste a link in the search box."
         }
     }
 
