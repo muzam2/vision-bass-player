@@ -61,6 +61,9 @@ struct BassPlayerApp: App {
                 .environmentObject(immersive)
         }
         .defaultSize(width: 1600, height: 900)
+        // Never restore the player at launch: if a file crashes the player, restoration would
+        // reopen the same file and crash again before the user can do anything.
+        .restorationBehavior(.disabled)
 
         ImmersiveSpace(id: ImmersiveScreenSpace.id) {
             ImmersiveScreenView()
