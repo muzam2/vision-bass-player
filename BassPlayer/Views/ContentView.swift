@@ -54,7 +54,9 @@ struct LibraryView: View {
             .padding(.bottom, 8)
 
             Group {
-                if !library.currentIsSignedIn {
+                if library.selectedSource == .nas {
+                    NASBrowserView(selectedItem: $selectedItem)
+                } else if !library.currentIsSignedIn {
                     ContentUnavailableView("Not connected", systemImage: "server.rack",
                                            description: Text("Open Settings to connect \(library.selectedSource.label)."))
                 } else if library.items.isEmpty && library.currentIsBusy {
