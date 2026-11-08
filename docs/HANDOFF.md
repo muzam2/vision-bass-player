@@ -77,6 +77,41 @@ The cinema screen uses `StereoScreen.usda`, a hand-written MaterialX graph with
 drop the exported `.usda` in — the node ids are the ones RCP exports. MV-HEVC goes through
 AVPlayer + `VideoPlayerComponent` (set `ImmersiveScreenBridge.avPlayer`).
 
+### Blu-ray 3D (frame-packed MVC) — not done, two viable routes
+MVC = H.264 Annex H: a normal base view plus a *dependent* view predicted from the base view
+(inter-view prediction). FFmpeg's h264 decoder drops NAL types 14/15/20, so it yields the
+base view only; VideoToolbox has no MVC at all. You cannot rewrite the dependent view into a
+standalone H.264 stream (its reference lists point at base-view pictures).
+
+How players like 4XVR do it: a **software MVC decoder**. Open-source options exist:
+- **edge264** (BSD-3, C, SIMD incl. NEON) decodes MVC 3D; **edge264-mvc** is a fork hardened
+  on complete commercial 3D Blu-rays, multithreaded, portable x86/ARM, with an API that
+  returns both views per access unit (`samples` + `samples_mvc`). https://github.com/jens-duttke/edge264-mvc
+- **brunoga/mvc** is a pure-Go MVC decoder (bit-exact vs conformance suite) plus `mvctools`
+  to convert a 3D Blu-ray/ISO/MKV to side-by-side MKV on Linux. Good for the *offline*
+  route; not embeddable in the app.
+
+Route A — convert on the server (works today, zero app changes): `mvctools` (Linux, Go) or
+FRIM/BD3D2MK3D (Windows, Intel QuickSync) → half-SBS MKV → plays 3D via the existing path.
+
+Route B — in-app playback (multi-day job, do it on a branch):
+1. Add edge264-mvc as a C target in `Vendor/KSPlayer/Package.swift` (it builds for arm64;
+   check its NEON path compiles under Xcode's clang; `-O3`, `-march` not needed on Apple).
+2. New `Edge264Decode: DecodeProtocol` in `MEPlayer/` chosen by `MEPlayerItemTrack` when the
+   H.264 track carries MVC (detect subset SPS NAL 15 / slice-extension NAL 20 in the first
+   packets, or FFmpeg's `profile == 128` Stereo High). Feed Annex B (apply `h264_mp4toannexb`
+   bsf for MKV/MP4; m2ts is already Annex B). For Blu-ray .m2ts/.ssif the dependent view is
+   a second PID (0x1012) that FFmpeg exposes as a second video stream: merge its packets
+   into the same access unit before decoding.
+3. Output: extend `VideoVTBFrame` with `rightPixelBuffer`; wrap edge264's planar 8-bit
+   YUV420 in `kCVPixelFormatType_420YpCbCr8Planar` CVPixelBuffers (copy the planes once).
+4. Display: 2D window / tvOS show the base view as now. The immersive screen gets a new
+   `ScreenFrame` case carrying two pixel buffers → `ScreenTextureFeeder` renders each into
+   its own drawable (the stereo material path already exists). Set `StereoFormat.mvcPacked`
+   to mean "true stereo available" once this lands.
+5. Performance: 1080p24 × 2 views in software on M2 is fine with edge264's threading; keep
+   `hardwareDecode` for everything else.
+
 ### YouTube (added later)
 `InnerTubeClient` mirrors yt-dlp's client table; `Client.playbackOrder` is the thing to update
 when playback breaks (yt-dlp `youtube/_base.py`, INNERTUBE_CLIENTS). The iOS client returns an
@@ -153,6 +188,7 @@ Ordered by likelihood of needing a fix.
 
 ## 6. Things deliberately not done
 
+- No in-app MVC decoding yet (see the Blu-ray 3D section; owner knows both routes).
 - No KSPlayer-based player for DRM services (impossible in-sandbox; told the owner).
 - No system-wide audio capture (visionOS has no third-party audio driver layer; told the owner).
 - No Plex transcoding for the AVPlayer fallback (FFmpeg backend makes it unnecessary).
