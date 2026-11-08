@@ -84,10 +84,13 @@ jobs:
             read only = yes
             browseable = yes
           EOF
-          sudo "$(brew --prefix)/sbin/smbd" -D -s /Users/runner/smb/smb.conf
+          # samba is keg-only in Homebrew: binaries are under its own prefix.
+          SMB=$(brew --prefix samba)
+          ls "$SMB/sbin" "$SMB/bin" | head -20
+          sudo "$SMB/sbin/smbd" -D -s /Users/runner/smb/smb.conf
           sleep 3
-          "$(brew --prefix)/bin/smbclient" -N -L 127.0.0.1 || { echo "smbd not answering"; sudo cat /Users/runner/smb/log/*.log; exit 1; }
-          "$(brew --prefix)/bin/smbclient" -N //127.0.0.1/video -c 'ls'
+          "$SMB/bin/smbclient" -N -L 127.0.0.1 || { echo "smbd not answering"; sudo cat /Users/runner/smb/log/*.log; exit 1; }
+          "$SMB/bin/smbclient" -N //127.0.0.1/video -c 'ls'
 
       - name: Resolve Swift packages
         run: |
