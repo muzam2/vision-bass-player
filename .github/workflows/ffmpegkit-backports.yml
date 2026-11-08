@@ -8,8 +8,10 @@
 # CONFIG_H261/H263/MPEG4_DECODER, CONFIG_ZLIB, CONFIG_HTTP_PROTOCOL), so an FFmpeg-only build
 # with FFmpegKit's own plugin (same configure line, same targets) yields equivalent objects.
 #
-# Output: artifact "libavformat-backported" with the two patched Libavformat binaries,
-# a manifest and checks. Publishing them (fork tag) is a separate, manual step: see HANDOFF.
+# Output: every binary target FFmpegKit needs, stripped to visionOS + tvOS device slices and
+# zipped for SwiftPM, published once as release RELEASE_TAG of this repo (skipped if the tag
+# exists, so committed checksums never go stale), plus artifact "ffmpegkit-package" with the
+# generated Vendor/FFmpegKit/Package.swift to commit. To republish, bump RELEASE_TAG.
 name: FFmpegKit backports
 
 on:
@@ -18,13 +20,18 @@ on:
     paths:
       - .github/workflows/ffmpegkit-backports.yml
       - Vendor/FFmpegKit-patches/**
+      - Vendor/FFmpegKit/tools/**
 
 jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 120
+    permissions:
+      contents: write
     env:
       FFMPEGKIT_TAG: "6.1.4"
+      RELEASE_TAG: "ffmpegkit-6.1.4-bp1"
+      GH_TOKEN: ${{ github.token }}
       SLICES: "xros-arm64 tvos-arm64_arm64e"
     steps:
       - uses: actions/checkout@v4
@@ -122,10 +129,44 @@ jobs:
             shasum -a 256 orig/* out/*
           } | tee out/MANIFEST.txt
 
+      - name: Zip xcframeworks and generate Package.swift
+        run: |
+          mkdir -p pkg
+          python3 Vendor/FFmpegKit/tools/package_xcframeworks.py fk out pkg \
+            "https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG" \
+            pkg/Package.swift
+          cp out/MANIFEST.txt pkg/
+          du -sh pkg/*.zip | sort -h | tail -5
+          du -ch pkg/*.zip | tail -1
+
+      - name: Publish release (once per tag)
+        run: |
+          if gh release view "$RELEASE_TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG exists; not touching its assets. Bump RELEASE_TAG to republish."
+            exit 0
+          fi
+          {
+            echo "FFmpegKit 6.1.4 binary targets for Bass Player (visionOS + tvOS device slices)."
+            echo "Libavformat: mov.o + hls.o rebuilt from FFmpeg n6.1 with the upstream fixes in"
+            echo "Vendor/FFmpegKit-patches (built by run ${{ github.run_id }})."
+            echo "FFmpegKit is GPLv3 (https://github.com/kingslay/FFmpegKit); FFmpeg is GPL/LGPL."
+            echo
+            echo '```'
+            cat pkg/MANIFEST.txt
+            echo '```'
+          } > notes.md
+          gh release create "$RELEASE_TAG" -R "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "FFmpegKit 6.1.4 + libavformat backports (bp1)" --notes-file notes.md \
+            --prerelease --latest=false pkg/*.zip pkg/checksums.json
+
       - uses: actions/upload-artifact@v4
         with:
-          name: libavformat-backported
-          path: out/
+          name: ffmpegkit-package
+          path: |
+            pkg/Package.swift
+            pkg/checksums.json
+            pkg/MANIFEST.txt
+            out/Libavformat-*
 
       - name: Upload build log on failure
         if: failure()
