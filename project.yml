@@ -1,0 +1,51 @@
+name: BassPlayer
+options:
+  bundleIdPrefix: com.muzam2
+  deploymentTarget:
+    visionOS: "2.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    # Unsigned builds: the IPA is re-signed on the headset by SideStore / iloader.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  BassPlayer:
+    type: application
+    platform: visionOS
+    sources:
+      - path: BassPlayer
+        excludes:
+          - "Info.plist"
+    info:
+      path: BassPlayer/Info.plist
+      properties:
+        CFBundleDisplayName: Bass Player
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
+        NSBluetoothAlwaysUsageDescription: Bass Player streams the low-frequency channel of your film to a subwoofer receiver over Bluetooth.
+        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin media server on the local network.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.muzam2.bassplayer
+        TARGETED_DEVICE_FAMILY: "7"
+        SUPPORTED_PLATFORMS: "xros xrsimulator"
+        ENABLE_PREVIEWS: "YES"
