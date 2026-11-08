@@ -1,5 +1,25 @@
 # Handoff — Bass Player
 
+## 0. Start here (the daily loop, as of 2026-11-08 night)
+
+- **Repo:** `~/src/vision-bass-player` on the Linux box (`/home/remoteuser`), remote
+  `https://github.com/muzam2/vision-bass-player`, branch `main`. Nothing builds locally; **CI
+  is the compiler** (`.github/workflows/build.yml`, runner `macos-15` + latest Xcode, ~25–35 min).
+- **Build:** push to `main` (or `gh workflow run build.yml --ref <branch>`), then
+  `gh run watch <id> --exit-status`; errors with `gh run view <id> --log-failed | grep error:`.
+  Artifact: `gh run download <id> -n BassPlayer-visionos-unsigned-ipa -D <dir>`.
+- **Serve + install:** copy the `.ipa` to `~/Downloads/ipa-serve/BassPlayer.ipa`. The LAN
+  helper `python3 -I tools/diag_receiver.py --bind 192.168.0.191 --port 8799 --dir ~/Downloads/ipa-serve`
+  serves it; on the headset: Safari → `http://192.168.0.191:8799/BassPlayer.ipa` → Download →
+  SideStore (Vision Pro build 0.7.2 from `muzam2/SideStore`, release `visionos-0.7.2-signin`)
+  → My Apps → "+" → pick the file. Same bundle id, data preserved. SideStore refreshes the
+  7-day signature itself. (The ported iloader at `~/src/iloader-vp` still works as a fallback.)
+- **Logs:** the headset streams its log live (Settings → Diagnostics → "Stream log live to
+  computer", remembered across launches) into `~/Downloads/ipa-serve/logs/live-Apple_Vision_Pro.log`;
+  `tail -f` it while the owner tests. App lines are `category | message`; KSPlayer's are `ks:`.
+- **Owner's constraints:** no Mac, free Apple ID, Plex token never printed, no PHI in chat,
+  don't fork public repos on his behalf without asking (§1).
+
 Last updated 2026-11-08 (v0.2.x on `main`). Compiles for visionOS and tvOS. **Installed on the
 owner's Vision Pro on 2026-11-08** (see §1 for the sideloading route). First run found three
 breakages, all fixed on `main` the same day: Plex ("server with the specified host name could
@@ -386,21 +406,23 @@ Ordered by likelihood of needing a fix.
   every 2 s to `<dir>/logs/live-<device>.log` — `tail -f` it while the user tests. "Show log"
   is a live tail inside Settings. The same server serves the `.ipa` for installing through
   SideStore in Safari.
-- **Installing on the Vision Pro from the Linux box:** launch the ported iloader
-  (`~/src/iloader-vp/src-tauri/target/release/iloader`, DISPLAY=:10), headset awake, Import IPA
-  with the artifact's `.ipa`. The same step renews the 7-day signature.
+- **Installing on the Vision Pro:** see §0 (Safari download from the diag receiver → SideStore
+  "+"). Fallback: the ported iloader (`~/src/iloader-vp/src-tauri/target/release/iloader`,
+  DISPLAY=:10), headset awake, Import IPA.
 
 ## 7. Suggested next steps, in order
 
-1. **First-run support, continued.** The app is on the headset; Plex/NAS/YouTube fixes and the
-   new UI need a second on-device pass. Then the A1S arrives: flash, pair, work down §4.
-2. **Timing tune.** One-tap "measure latency": send a tagged click, read the receiver's
-   played-timestamp back over the status characteristic, auto-set `bass.leadMs`.
-3. **Immersive polish.** Hide/shrink the 2D window while the cinema screen is open; a small
-   play/pause/seek attachment on the screen; left/right swap toggle.
-4. **MVC via edge264-mvc** (§5) once a test file is on the owner's server.
-5. **Library UX, next round.** Group episodes by series (season pages), a detail sheet with
-   overview/cast before playing, poster caching for large libraries.
-6. **Firmware extras.** Optional Wi‑Fi (UDP) transport for higher-rate bass and lower latency;
-   OTA updates.
-7. **Release hygiene.** Owner pushes `v0.3.0`; both workflows attach artifacts to the release.
+1. **On-device verification of today's big changes** (all built, none confirmed on the headset
+   yet): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
+   the SMB bridge (NAS browse + play), MVC 3D Blu-ray (needs a MakeMKV 3D MKV on the server;
+   watch `video delay` lines for decode speed), the new icon, the judder fix (display link at
+   panel rate — "drop next frame" lines should be rare).
+2. **MVC follow-ups if it works:** left/right swap toggle, SSIF/m2ts with the dependent view on
+   its own PID (stream merge), a "3D MVC" badge on library cards (needs server metadata).
+3. **Timing tune** once the ESP32 arrives: one-tap "measure latency", auto-set `bass.leadMs`.
+4. **Cinema polish:** environments other than black (owner wants black for now), picture
+   controls (brightness/contrast were dropped with the CoreImage path; libplacebo is now in the
+   FFmpeg build and could do tone mapping), debounce the 30 `spatialCapabilityChange`
+   notifications at cinema open.
+5. **Library UX:** detail sheet before playing, poster caching for large libraries.
+6. **Firmware extras:** Wi‑Fi (UDP) transport, OTA.
