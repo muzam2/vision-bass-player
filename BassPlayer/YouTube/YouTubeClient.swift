@@ -15,11 +15,15 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     @Published var errorMessage: String?
     @Published var query = ""
     @Published var sponsorBlockEnabled: Bool { didSet { defaults.set(sponsorBlockEnabled, forKey: "yt.sponsorblock") } }
+    /// Highest variant height handed to FFmpeg (2160 / 1440 / 1080 / 720).
+    @Published var maxHeight: Int { didSet { defaults.set(maxHeight, forKey: "yt.maxHeight") } }
+    static let maxHeightChoices = [2160, 1440, 1080, 720]
     @Published private(set) var lastQuery = ""
     private var searchTask: Task<Void, Never>?
 
     init() {
         sponsorBlockEnabled = defaults.object(forKey: "yt.sponsorblock") as? Bool ?? true
+        maxHeight = defaults.object(forKey: "yt.maxHeight") as? Int ?? 2160
     }
 
     /// No account needed.
@@ -57,7 +61,7 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
         errorMessage = nil
         do {
             if let id = InnerTubeClient.videoId(from: q) {
-                let s = try await api.streams(videoId: id)
+                let s = try await api.streams(videoId: id, maxHeight: maxHeight)
                 items = [mediaItem(from: s, id: id)]
             } else {
                 items = try await api.search(q).map(mediaItem)
@@ -71,10 +75,11 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     /// Fetch fresh stream URLs for playback.
     func resolve(_ item: MediaItem) async throws -> MediaItem {
         guard let id = item.youtubeId else { return item }
-        let s = try await api.streams(videoId: id)
+        let s = try await api.streams(videoId: id, maxHeight: maxHeight)
         var out = item
-        out.directURL = s.hlsURL ?? s.progressiveURL           // FFmpeg: HLS has every quality
+        out.directURL = Self.ffmpegURL(s)
         out.avPlayerURL = s.progressiveURL ?? s.hlsURL         // AVPlayer: progressive keeps the bass tap working
+        out.container = s.variantLabel.map { "HLS \($0)" } ?? (s.hlsURL != nil ? "hls" : "mp4")
         out.userAgent = s.userAgent
         out.needsResolve = false
         return out
@@ -86,6 +91,11 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
     }
 
     // MARK: - Mapping
+
+    /// FFmpeg gets the local single-variant master; YouTube's own master only if picking failed.
+    private static func ffmpegURL(_ s: InnerTubeClient.Streams) -> URL? {
+        s.ffmpegURL ?? s.hlsURL ?? s.progressiveURL
+    }
 
     private func mediaItem(_ v: InnerTubeClient.Video) -> MediaItem {
         MediaItem(
@@ -106,8 +116,8 @@ final class YouTubeClient: ObservableObject, MediaServerClient {
             subtitle: s.author, overview: nil,
             runtimeMinutes: s.lengthSeconds.map { $0 / 60 },
             posterURL: s.thumbnailURL,
-            directURL: s.hlsURL ?? s.progressiveURL, avPlayerURL: s.progressiveURL ?? s.hlsURL,
-            container: s.hlsURL != nil ? "hls" : "mp4", videoCodec: nil, audioCodec: nil, audioChannels: nil, videoRange: nil,
+            directURL: Self.ffmpegURL(s), avPlayerURL: s.progressiveURL ?? s.hlsURL,
+            container: s.variantLabel.map { "HLS \($0)" } ?? (s.hlsURL != nil ? "hls" : "mp4"), videoCodec: nil, audioCodec: nil, audioChannels: nil, videoRange: nil,
             isEpisode: false, width: nil, height: nil, stereo: nil,
             needsResolve: false, youtubeId: id, userAgent: s.userAgent
         )
