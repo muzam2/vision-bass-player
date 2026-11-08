@@ -2,13 +2,14 @@ import Foundation
 
 /// Which media server an item came from.
 enum MediaSource: String, CaseIterable, Identifiable, Codable {
-    case jellyfin, plex, youtube
+    case jellyfin, plex, youtube, nas
     var id: String { rawValue }
     var label: String {
         switch self {
         case .jellyfin: return "Jellyfin"
         case .plex: return "Plex"
         case .youtube: return "YouTube"
+        case .nas: return "NAS"
         }
     }
 }
