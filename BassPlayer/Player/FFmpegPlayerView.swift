@@ -18,6 +18,10 @@ enum FFmpegConfig {
         KSOptions.isAutoPlay = true
         KSOptions.isSecondOpen = true
         KSOptions.preferredForwardBufferDuration = 4
+        // The 90 Hz panel can't pace a display link at 23.976/24/25 Hz (it lands on 22.5 or
+        // 18 Hz, the video falls ~0.2 s behind the audio clock and KSPlayer drops frames every
+        // few hundred ms — the "jitter" seen on every film). Run the link at panel rate instead.
+        KSOptions.preferredFrame = false
         KSOptions.maxBufferDuration = 60
         KSOptions.logLevel = .warning
         KSOptions.logger = DiagLog.shared                    // KSPlayer messages land in Settings → Diagnostics

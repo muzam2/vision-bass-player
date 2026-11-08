@@ -485,7 +485,10 @@ public extension KSOptions {
     static var asynchronousDecompression = false
     static var isPipPopViewController = false
     static var canStartPictureInPictureAutomaticallyFromInline = true
-    static var preferredFrame = true
+    /// Bass Player patch: public so the app can turn it off. When true the display link is
+    /// paced at the content frame rate, which a 90 Hz panel cannot hit for 24p (it lands on
+    /// 22.5 or 18 Hz and the video falls behind the clock until frames are dropped).
+    public static var preferredFrame = true
     static var useSystemHTTPProxy = true
     /// 日志级别
     static var logLevel = LogLevel.warning

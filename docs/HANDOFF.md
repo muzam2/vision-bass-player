@@ -209,6 +209,16 @@ Ordered by likelihood of needing a fix.
    panel (second row). `openWindow(id:)` on the value-less library WindowGroup opens a new
    instance each call — three callers left three library windows — so `MainWindowTracker`
    opens one only when no library scene is connected.
+   Sixth pass — **judder on every film**: the live log showed `[video] video delay=-0.2 …
+   drop next frame` every 80–400 ms with 9–16 decoded frames queued, in the window and in
+   the cinema alike. Cause: `KSOptions.preferredFrame` paces `MetalPlayView`'s CADisplayLink
+   at the content rate (24 ± range 24–48); the 90 Hz panel cannot do that and settles on a
+   divisor (22.5/18 Hz), so rendering runs slower than the film and the clock sync drops
+   frames in bursts. Now `preferredFrame = false` (made public) and on visionOS the link asks
+   for 60–120 Hz, preferred 4× the film rate (96 for 24p, if the panel grants it). Residual
+   3:4 cadence judder at 90 Hz is inherent unless the system grants 96 Hz. Also seen: ~30
+   `spatialPlaybackCapabilitiesChanged` notifications in 200 ms when the immersive space
+   opens; KSMEPlayer reconfigures audio on each (one-off hiccup at cinema open, not fixed).
 2b. **Subtitles / audio tracks (2026-11-08).** KSPlayer's stock view hid its subtitle menu in a
    scene ornament that collided with the app's; visionOS now uses the app's own chrome
    (`Player/PlayerChrome.swift`: transport, scrubber, audio/subtitle/speed menus, 3D +
