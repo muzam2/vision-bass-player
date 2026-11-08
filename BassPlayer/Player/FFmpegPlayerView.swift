@@ -244,9 +244,10 @@ struct FFmpegPlayerView: View {
         #endif
     }
 
-    init(item: MediaItem, url: URL) {
+    init(item: MediaItem, url: URL, onFinished: (() -> Void)? = nil) {
         self.item = item
         self.url = url
+        self.onFinished = onFinished
         _session = StateObject(wrappedValue: FFmpegSession(bassLink: BassLinkHolder.shared))
     }
 
