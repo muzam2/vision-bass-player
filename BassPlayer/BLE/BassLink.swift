@@ -36,6 +36,12 @@ final class BassLink: NSObject, ObservableObject {
     private var statusChar: CBCharacteristic?
     private let queue = DispatchQueue(label: "bass.ble", qos: .userInteractive)
     private var shouldRun = false
+    // Queue-confined mirrors of the published state, so the 50 Hz send path never touches
+    // main-actor properties and SwiftUI is updated at most ~4 times a second.
+    private var linkUp = false
+    private var sentCount = 0
+    private var droppedCount = 0
+    private var flushScheduled = false
 
     override init() {
         super.init()
@@ -64,14 +70,15 @@ final class BassLink: NSObject, ObservableObject {
     /// Called on the audio thread by BassExtractor. Hop to the BLE queue; never block the renderer.
     func send(_ packet: Data) {
         queue.async { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.audioChar, self.state == .connected else { return }
+            guard let self, let p = self.peripheral, let c = self.audioChar, self.linkUp else { return }
             if p.canSendWriteWithoutResponse {
                 p.writeValue(packet, for: c, type: .withoutResponse)
-                self.bump(\.packetsSent)
+                self.sentCount += 1
             } else {
                 // Link is saturated; dropping 20 ms of sub-bass is inaudible, stalling the renderer is not.
-                self.bump(\.packetsDropped)
+                self.droppedCount += 1
             }
+            self.scheduleCounterFlush()
         }
     }
 
@@ -105,12 +112,24 @@ final class BassLink: NSObject, ObservableObject {
     }
 
     private func setState(_ s: State) {
+        linkUp = s == .connected
+        if s != .connected { sentCount = 0; droppedCount = 0; scheduleCounterFlush() }
         DispatchQueue.main.async { self.state = s }
     }
 
-    private func bump(_ key: ReferenceWritableKeyPath<BassLink, Int>) {
-        // Coalesce counter updates so SwiftUI isn't hammered 50×/s.
-        DispatchQueue.main.async { self[keyPath: key] += 1 }
+    /// Publish the packet counters at most every 250 ms instead of once per packet.
+    private func scheduleCounterFlush() {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        queue.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self] in
+            guard let self else { return }
+            self.flushScheduled = false
+            let sent = self.sentCount, dropped = self.droppedCount
+            DispatchQueue.main.async {
+                self.packetsSent = sent
+                self.packetsDropped = dropped
+            }
+        }
     }
 }
 

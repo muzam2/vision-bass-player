@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: com.muzam2
   deploymentTarget:
     visionOS: "2.0"
-    tvOS: "17.0"
+    tvOS: "18.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
@@ -52,7 +52,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSBluetoothAlwaysUsageDescription: Bass Player streams the low-frequency channel of your film to a subwoofer receiver over Bluetooth.
-        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin media server on the local network.
+        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin or Plex server and your NAS on the local network.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
@@ -87,7 +87,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSBluetoothAlwaysUsageDescription: Bass Player streams the low-frequency channel of your film to a subwoofer receiver over Bluetooth.
-        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin media server on the local network.
+        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin or Plex server and your NAS on the local network.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
