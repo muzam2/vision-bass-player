@@ -7,6 +7,7 @@ struct BassPlayerApp: App {
     @StateObject private var jellyfin: JellyfinClient
     @StateObject private var plex: PlexClient
     @StateObject private var youtube: YouTubeClient
+    @StateObject private var nas: NASClient
     @StateObject private var bassLink: BassLink
     #if os(visionOS)
     @StateObject private var immersive = ImmersiveScreenModel()
@@ -20,10 +21,12 @@ struct BassPlayerApp: App {
         let jf = JellyfinClient()
         let px = PlexClient()
         let yt = YouTubeClient()
+        let ns = NASClient()
         _jellyfin = StateObject(wrappedValue: jf)
         _plex = StateObject(wrappedValue: px)
         _youtube = StateObject(wrappedValue: yt)
-        _library = StateObject(wrappedValue: LibraryStore(jellyfin: jf, plex: px, youtube: yt))
+        _nas = StateObject(wrappedValue: ns)
+        _library = StateObject(wrappedValue: LibraryStore(jellyfin: jf, plex: px, youtube: yt, nas: ns))
 
         FFmpegConfig.apply()
 
@@ -42,6 +45,7 @@ struct BassPlayerApp: App {
                 .environmentObject(jellyfin)
                 .environmentObject(plex)
                 .environmentObject(youtube)
+                .environmentObject(nas)
                 .environmentObject(bassLink)
                 .environmentObject(immersive)
                 .onChange(of: immersive.darkRoom, initial: true) { _, dark in
@@ -62,6 +66,7 @@ struct BassPlayerApp: App {
                 .environmentObject(jellyfin)
                 .environmentObject(plex)
                 .environmentObject(youtube)
+                .environmentObject(nas)
                 .environmentObject(bassLink)
         }
         #endif

@@ -15,6 +15,7 @@ final class LibraryStore: ObservableObject {
     let jellyfin: JellyfinClient
     let plex: PlexClient
     let youtube: YouTubeClient
+    let nas: NASClient
     private let defaults = UserDefaults.standard
     private var cancellables = Set<AnyCancellable>()
 
@@ -23,10 +24,11 @@ final class LibraryStore: ObservableObject {
     @Published var searchText = ""
     @Published var showEpisodes: Bool { didSet { defaults.set(showEpisodes, forKey: "lib.showEpisodes") } }
 
-    init(jellyfin: JellyfinClient, plex: PlexClient, youtube: YouTubeClient) {
+    init(jellyfin: JellyfinClient, plex: PlexClient, youtube: YouTubeClient, nas: NASClient) {
         self.jellyfin = jellyfin
         self.plex = plex
         self.youtube = youtube
+        self.nas = nas
         selectedSource = MediaSource(rawValue: defaults.string(forKey: "lib.source") ?? "") ?? .jellyfin
         backend = PlayerBackend(rawValue: defaults.string(forKey: "lib.backend") ?? "") ?? .ffmpeg
         showEpisodes = defaults.object(forKey: "lib.showEpisodes") as? Bool ?? false
@@ -34,6 +36,7 @@ final class LibraryStore: ObservableObject {
         jellyfin.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         plex.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         youtube.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        nas.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
     }
 
     var currentIsSignedIn: Bool {
@@ -41,6 +44,7 @@ final class LibraryStore: ObservableObject {
         case .jellyfin: return jellyfin.isSignedIn
         case .plex: return plex.isSignedIn && plex.hasServer
         case .youtube: return true
+        case .nas: return true
         }
     }
 
@@ -49,6 +53,7 @@ final class LibraryStore: ObservableObject {
         case .jellyfin: return jellyfin.isBusy
         case .plex: return plex.isBusy
         case .youtube: return youtube.isBusy
+        case .nas: return false
         }
     }
 
@@ -57,12 +62,14 @@ final class LibraryStore: ObservableObject {
         case .jellyfin: return jellyfin.errorMessage
         case .plex: return plex.errorMessage
         case .youtube: return youtube.errorMessage
+        case .nas: return nas.errorMessage
         }
     }
 
     var items: [MediaItem] {
         // YouTube's list is already the search result; local filtering applies to the servers.
         if selectedSource == .youtube { return youtube.items }
+        if selectedSource == .nas { return [] }     // NAS has its own folder browser
         let all = selectedSource == .jellyfin ? jellyfin.items : plex.items
         return all.filter { item in
             (showEpisodes || !item.isEpisode) &&
@@ -75,6 +82,7 @@ final class LibraryStore: ObservableObject {
         case .jellyfin: await jellyfin.loadLibrary()
         case .plex: await plex.loadLibrary()
         case .youtube: await youtube.loadLibrary()
+        case .nas: break
         }
     }
 
@@ -112,6 +120,8 @@ final class LibraryStore: ObservableObject {
 
     /// MV-HEVC needs AVPlayer (FFmpeg 6.1 decodes only the base view); everything else honours the setting.
     func effectiveBackend(for item: MediaItem) -> PlayerBackend {
-        effectiveStereo(for: item) == .mvHEVC ? .avplayer : backend
+        if effectiveStereo(for: item) == .mvHEVC { return .avplayer }
+        if item.source == .nas { return .ffmpeg }          // smb:// and basic-auth URLs need FFmpeg
+        return backend
     }
 }

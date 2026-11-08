@@ -112,6 +112,15 @@ Route B — in-app playback (multi-day job, do it on a branch):
 5. Performance: 1080p24 × 2 views in software on M2 is fine with edge264's threading; keep
    `hardwareDecode` for everything else.
 
+### NAS (added later)
+`NetworkDirectory` (vendored KSPlayer) wraps `avio_open_dir`/`avio_read_dir`; with FFmpegKit's
+libsmbclient this lists `smb://` folders. `NASClient` builds `smb://[domain;]user:pass@host/share/path`
+URLs (percent-encoded) and `WebDAVLister` does PROPFIND depth 1 with an HTML-index fallback.
+Passwords: Keychain (`Keychain` helper, service `com.muzam2.bassplayer.nas`). Untested risks:
+libsmbclient against SMB3-only NAS boxes (it should negotiate; if not, options
+`"workgroup"`/`"timeout"` are passed through `NetworkDirectory.list(options:)`), and guest
+access with empty username on Windows shares. NFS is not available (FFmpegKit has no libnfs).
+
 ### YouTube (added later)
 `InnerTubeClient` mirrors yt-dlp's client table; `Client.playbackOrder` is the thing to update
 when playback breaks (yt-dlp `youtube/_base.py`, INNERTUBE_CLIENTS). The iOS client returns an
