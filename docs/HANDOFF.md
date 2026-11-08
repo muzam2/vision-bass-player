@@ -56,10 +56,24 @@ Backend, show episodes, Jellyfin creds, Plex token/server, receiver extra delay 
 sent to firmware), bass lead (0–300 ms, FFmpeg only, `bass.leadMs`), mute, immersive width /
 distance / height / tilt / yaw / curve / full-immersion / flipV / HDR.
 
+### Dolby Vision (added after the first session)
+KSPlayer is now vendored (`Vendor/KSPlayer`) so it could be patched. P8 and P7 play as their
+HDR10/HLG base layer. P5 is mapped by `displayDoviNV12Texture` / `displayDoviYUVTexture`
+(Shaders.metal) using `DoviMetadata` built from FFmpeg's `AV_FRAME_DATA_DOVI_METADATA`; the
+player forces the Metal path (not AVSampleBufferDisplayLayer) for those frames and sets the
+layer colour space to ITU‑R 2100 PQ. `DoviFrameRenderer` renders the same mapping into a
+texture for the immersive screen. This is the single most likely thing to be visually wrong
+on first run (sign of offsets, limited-vs-full range, matrix orientation): compare against
+the same film in the Apple TV app and adjust `doviToPQ` in the shader. Reference
+implementation: libplacebo `src/shaders/colorspace.c` (`pl_shader_dovi_reshape`,
+`pl_shader_decode_color` DOLBYVISION branch).
+
 ## 3. Known risks — check these first on hardware
 
 Ordered by likelihood of needing a fix.
 
+0. **Dolby Vision P5 colours wrong** — see the section above; everything else about DV
+   (detection, pipeline selection, texture feed) is plumbing that compiles and is simple.
 1. **Tap never installs on visionOS/tvOS.** `FFmpegSession.poll()` requires
    `engine.mainMixerNode.outputFormat(forBus:0).sampleRate > 0`. If the chip stays "Bass tap
    off" while audio plays, log the format and the `layer.state` sequence; possibly KSPlayer's

@@ -20,6 +20,7 @@ receiver, so one sub serves the headset and the TV.
 | Path | What |
 |---|---|
 | `project.yml` | XcodeGen spec with two targets, `BassPlayer` (visionOS) and `BassPlayerTV` (tvOS), sharing all sources |
+| `Vendor/KSPlayer` | KSPlayer GPLv3 source, vendored and patched (Dolby Vision P5, frame renderer). `UPSTREAM_COMMIT` records the base. |
 | `BassPlayer/App` | SwiftUI app entry, audio session |
 | `BassPlayer/Media` | `MediaItem` model shared by both servers, `LibraryStore` (source/backend settings) |
 | `BassPlayer/Jellyfin`, `BassPlayer/Plex` | Server clients |
@@ -40,9 +41,16 @@ for the step-by-step setup.
 
 - **Playback:** [KSPlayer](https://github.com/kingslay/KSPlayer) (GPLv3 branch, FFmpeg 6.1) is
   the default backend. Direct-plays MKV/MP4/MOV/TS/AVI with H.264, HEVC, AV1, VP9, ProRes and
-  more; audio AAC, AC‑3, E‑AC‑3, DTS, DTS‑HD, TrueHD, FLAC, Opus; HDR10, HLG and Dolby Vision
-  profile 8 passed to the display. Hardware decoding via VideoToolbox. AVPlayer remains as a
-  fallback backend (MP4 only; Jellyfin remuxes for it).
+  more; audio AAC, AC‑3, E‑AC‑3, DTS, DTS‑HD, TrueHD, FLAC, Opus; HDR10 and HLG passed to the
+  display. Hardware decoding via VideoToolbox. AVPlayer remains as a fallback backend (MP4
+  only; Jellyfin remuxes for it).
+- **Dolby Vision:** profile 8 (HDR10/HLG-compatible base layer) and profile 7 (plays its HDR10
+  base layer; the enhancement layer is dropped) work through the normal HDR path. **Profile 5**
+  (IPT‑PQ‑C2, the streaming-service flavour) is handled by a patch in the vendored KSPlayer:
+  FFmpeg's RPU parser supplies the per-frame reshaping curves and colour matrices, and a Metal
+  shader (`displayDovi*Texture`) applies polynomial/MMR reshaping, the IPT→LMS→RGB matrices and
+  PQ encoding, mirroring libplacebo's approach. The same renderer feeds the immersive screen.
+  Dynamic tone-mapping metadata (DM level 1–11) is not applied; the display gets PQ BT.2020.
 - **Servers:** Jellyfin (username/password) and Plex (plex.tv PIN sign-in, server discovery,
   per-server tokens). Both map into one `MediaItem` model; movies and TV episodes.
 - **Bass:** with the FFmpeg backend the tap sits on KSPlayer's `AVAudioEngine` mixer, picking

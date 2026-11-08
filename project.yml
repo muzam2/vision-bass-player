@@ -21,11 +21,11 @@ settings:
     DEVELOPMENT_TEAM: ""
 
 packages:
-  # FFmpeg-based player. GPLv3 branch is the open-source tree with visionOS support;
-  # `main` ships a binary core without an xros slice.
+  # FFmpeg-based player, vendored from the GPLv3 branch (the open-source tree with visionOS
+  # support; `main` ships a binary core without an xros slice) and patched for Dolby Vision
+  # profile 5. See Vendor/KSPlayer/UPSTREAM_COMMIT.
   KSPlayer:
-    url: https://github.com/kingslay/KSPlayer
-    branch: GPLv3
+    path: Vendor/KSPlayer
 
 targets:
   # ---------------- Apple Vision Pro ----------------
