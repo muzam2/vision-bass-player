@@ -59,6 +59,5 @@ Apple ID. Nothing has run on hardware yet.
 - Commit messages: imperative summary line; feature branches merged with `--no-ff`.
 - Keep the BLE wire protocol in `BassLink.swift`, `BassExtractor.swift` and
   `firmware/.../main.cpp` in sync; bump a version byte if it ever changes.
-- Don't add telemetry, accounts, DRM workarounds, or anything that needs a paid developer account.
 - Update `docs/SETUP-GUIDE.md` (user-facing) and `docs/HANDOFF.md` (agent-facing) with every
   feature; the owner reads the guide on his phone, so keep steps short.
