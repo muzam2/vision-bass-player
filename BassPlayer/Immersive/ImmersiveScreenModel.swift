@@ -10,6 +10,10 @@ final class ImmersiveScreenModel: ObservableObject {
     private let d = UserDefaults.standard
 
     @Published var isOpen = false
+    /// Last RealityKit frame tick while open. The system can take the space down (Digital Crown,
+    /// device removed) without delivering onDisappear; a stale tick with `isOpen` reveals that.
+    var lastTick = Date.distantPast
+    var isStale: Bool { isOpen && Date().timeIntervalSince(lastTick) > 2 }
     @Published var aspect: Double = 16.0 / 9.0
     /// Bumped by the UI to ask the view to recentre on the current head pose.
     @Published var recentreRequest = 0

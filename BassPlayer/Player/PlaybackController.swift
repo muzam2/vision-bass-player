@@ -23,6 +23,8 @@ final class PlaybackController: ObservableObject {
     /// player view's disappearance must not end playback then.
     var detachedForImmersive = false
     private var sessionSink: AnyCancellable?
+    private weak var library: LibraryStore?
+    private var leadMs = 0
     #if os(visionOS)
     /// The UIKit scene of the player window (reported by `WindowSceneProbe`). SwiftUI's
     /// onDisappear is not delivered when the user closes a window with its close button, but
@@ -99,8 +101,13 @@ final class PlaybackController: ObservableObject {
         sessionSink = s.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         self.item = item
         self.url = url
+        self.library = library
+        self.leadMs = leadMs
         state = .initialized
         s.start(coordinator: coordinator, leadMs: leadMs, item: item, library: library)
+        // Create the player here rather than waiting for a SwiftUI view to mount it: in the
+        // cinema there is no window, and a view that appears later just adopts this player.
+        _ = coordinator.makeView(url: url, options: s.options)
         DiagLog.log("begin \(item.source.rawValue) · \(item.title)", "playback")
         return s
     }
@@ -130,6 +137,10 @@ final class PlaybackController: ObservableObject {
     private func handle(state: KSPlayerState, layer: KSPlayerLayer) {
         self.state = state
         DiagLog.log("state \(state)", "playback")
+        if state == .playedToTheEnd, detachedForImmersive {
+            // No player window exists in the cinema, so the window's autoplay cannot run.
+            Task { await autoplayNextInCinema() }
+        }
         if state == .readyToPlay {
             let a = layer.player.tracks(mediaType: .audio).map { "\($0.trackID):\($0.name)" }
             let s = layer.player.tracks(mediaType: .subtitle).map { "\($0.trackID):\($0.name)" }
@@ -139,6 +150,23 @@ final class PlaybackController: ObservableObject {
             if let urls = item?.subtitleURLs, !urls.isEmpty {
                 coordinator.subtitleModel.addSubtitle(dataSouce: URLSubtitleDataSouce(urls: urls))
             }
+        }
+    }
+
+    private func autoplayNextInCinema() async {
+        guard let library, let item, library.autoplayNext, let next = library.next(after: item) else { return }
+        DiagLog.log("cinema autoplay → \(next.title)", "playback")
+        do {
+            let resolved = try await library.resolve(next)
+            guard detachedForImmersive, self.item?.id == item.id else { return }   // the user moved on meanwhile
+            guard let url = library.url(for: resolved) else { DiagLog.log("autoplay: no stream URL", "playback"); return }
+            let s = begin(item: resolved, url: url, library: library, leadMs: leadMs)
+            let stereo = library.effectiveStereo(for: resolved)
+            s.setStereo(stereo, immersiveStereo: stereo.isPacked)
+            ImmersiveScreenBridge.shared.projection = library.effectiveProjection(for: resolved)
+            if resolved.source == .youtube { s.setSponsorSegments(await library.youtube.sponsorSegments(for: resolved)) }
+        } catch {
+            DiagLog.log("autoplay resolve failed: \(error.localizedDescription)", "playback")
         }
     }
 }

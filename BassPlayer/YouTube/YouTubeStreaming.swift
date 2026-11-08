@@ -111,8 +111,26 @@ enum HLSVariantPicker {
         var out = ["#EXTM3U", "#EXT-X-INDEPENDENT-SEGMENTS"]
         if let group = best.audio {
             let renditions = lines.filter { $0.hasPrefix("#EXT-X-MEDIA:") && $0.contains("TYPE=AUDIO") && $0.contains("GROUP-ID=\"\(group)\"") }
-            if let audio = renditions.first(where: { $0.contains("DEFAULT=YES") }) ?? renditions.first {
-                out.append(audio)
+            // Dubbed videos carry one rendition per language and YouTube's DEFAULT is not the
+            // original. Prefer the original, then the device's languages, then DEFAULT, then
+            // the first; keep every rendition (first = preferred) so the audio menu can switch —
+            // the player only downloads the selected one.
+            let preferred = Locale.preferredLanguages.compactMap { Locale(identifier: $0).language.languageCode?.identifier }
+            func lang(_ r: String) -> String { (attribute("LANGUAGE", in: r) ?? "").lowercased().split(separator: "-").first.map(String.init) ?? "" }
+            let chosen = renditions.first(where: { (attribute("NAME", in: $0) ?? "").lowercased().contains("original") })
+                ?? preferred.lazy.compactMap({ p in renditions.first(where: { lang($0) == p }) }).first
+                ?? renditions.first(where: { $0.contains("DEFAULT=YES") })
+                ?? renditions.first
+            if let chosen {
+                func strip(_ r: String, default isDefault: Bool) -> String {
+                    var s = r.replacingOccurrences(of: ",DEFAULT=YES", with: "").replacingOccurrences(of: ",DEFAULT=NO", with: "")
+                        .replacingOccurrences(of: ",AUTOSELECT=YES", with: "").replacingOccurrences(of: ",AUTOSELECT=NO", with: "")
+                    s += isDefault ? ",DEFAULT=YES,AUTOSELECT=YES" : ",DEFAULT=NO,AUTOSELECT=NO"
+                    return s
+                }
+                out.append(strip(chosen, default: true))
+                for r in renditions where r != chosen { out.append(strip(r, default: false)) }
+                DiagLog.log("audio renditions: \(renditions.count), chosen \(attribute("NAME", in: chosen) ?? "?") [\(lang(chosen))] (device prefers \(preferred.prefix(2).joined(separator: ",")))", "youtube")
             }
         }
         out.append(best.inf)
