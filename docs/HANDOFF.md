@@ -183,7 +183,23 @@ Ordered by likelihood of needing a fix.
    fire on one tap, so "Send" also ran "Clear" first. Each control is now its own row, and a
    "Stream log live to computer" toggle posts new lines every 2 s (`DiagLog.setLive`,
    receiver appends to `logs/live-<device>.log`). Picture controls
-   (brightness/contrast/saturation) were dropped with the CoreImage path.
+   (brightness/contrast/saturation) were dropped with the CoreImage path. Fourth pass (same
+   evening, first one with the live log stream): (a) a visionOS window closed with its close
+   button keeps its SwiftUI view tree alive and *updating* — KSPlayer's `updateUIView` then
+   re-created the player 80 ms after `end()` (so Stop/close "didn't work"), and the ghost's
+   autoplay opened a second item when a film ended. `KSVideoPlayer.updateView` no longer
+   resurrects a nil player layer under `keepsPlayerWhenViewGoesAway`, and `PlayerScreen` goes
+   inert once its `UIWindowScene` disconnects. (b) The space's onDisappear was not delivered
+   on one exit, leaving `isOpen`/`detachedForImmersive` stuck ("Playing on the cinema screen"
+   over a window). Closure bookkeeping is now `ImmersiveScreenModel.noteClosed` (idempotent),
+   run after every `dismissImmersiveSpace()` we issue, from onDisappear, and from
+   `reconcile()` when a window appears/activates and the space's frame tick is stale. (c) The
+   library window is dismissed while the cinema is up and reopened on exit. (d) In the cinema
+   `PlaybackController` creates the player itself (`coordinator.makeView`) and runs autoplay
+   (`autoplayNextInCinema`) since no window exists. (e) YouTube dubbed videos: the HLS master
+   picker preferred DEFAULT=YES, which YouTube sets on a dub (Japanese); now original →
+   device language → DEFAULT → first, and every rendition is kept (preferred first) so the
+   audio menu can switch; KSPlayer discards unselected streams so only one is downloaded.
 2b. **Subtitles / audio tracks (2026-11-08).** KSPlayer's stock view hid its subtitle menu in a
    scene ornament that collided with the app's; visionOS now uses the app's own chrome
    (`Player/PlayerChrome.swift`: transport, scrubber, audio/subtitle/speed menus, 3D +

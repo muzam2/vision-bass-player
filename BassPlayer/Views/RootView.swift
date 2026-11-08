@@ -9,6 +9,7 @@ struct RootView: View {
     #if os(visionOS)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var immersive: ImmersiveScreenModel
     #endif
 
@@ -30,6 +31,8 @@ struct RootView: View {
         .onChange(of: immersive.closeRequest) { _, _ in
             if immersive.isOpen { Task { await dismissImmersiveSpace() } }
         }
+        .onAppear { immersive.reconcile(playback: library.playback, openWindow: openWindow) }
+        .onChange(of: scenePhase) { _, p in if p == .active { immersive.reconcile(playback: library.playback, openWindow: openWindow) } }
         #else
         .fullScreenCover(item: $library.nowPlaying) { item in
             PlayerScreen(item: item)

@@ -67,7 +67,16 @@ extension KSVideoPlayer: UIViewRepresentable {
 
     @MainActor
     private func updateView(_: UIView, context: Context) {
-        if context.coordinator.playerLayer?.url != url {
+        guard let layer = context.coordinator.playerLayer else {
+            // Bass Player patch: with keepsPlayerWhenViewGoesAway the owner sets playerLayer to nil
+            // to *end* playback; a later SwiftUI update of a still-mounted view (a window that was
+            // closed with its close button keeps its views alive) must not recreate the player.
+            if !context.coordinator.keepsPlayerWhenViewGoesAway {
+                _ = context.coordinator.makeView(url: url, options: options)
+            }
+            return
+        }
+        if layer.url != url {
             _ = context.coordinator.makeView(url: url, options: options)
         }
     }

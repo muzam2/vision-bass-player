@@ -144,26 +144,22 @@ struct ImmersiveScreenView: View {
         .simultaneousGesture(magnifyGesture)
         .onAppear {
             model.isOpen = true
+            model.lastTick = Date()
             showControls = true
             scheduleHide()
-            // The picture lives here now: close the player window, keep the film running.
+            // The picture lives here now: close the player window, keep the film running. The
+            // library window goes too — a cinema with the menu floating in it is not a cinema.
             if library.playback.isActive {
                 library.playback.detachedForImmersive = true
                 dismissWindow(id: PlayerWindow.id)
             }
+            dismissWindow(id: MainWindow.id)
             DiagLog.log("cinema screen opened (playback active: \(library.playback.isActive))", "immersive")
         }
         .onDisappear {
-            model.isOpen = false
-            ImmersiveScreenBridge.shared.pushFrame = nil
             state.feed?.flush()
-            let playback = library.playback
-            let wasDetached = playback.detachedForImmersive
-            playback.detachedForImmersive = false
-            if wasDetached, let item = playback.item {
-                openWindow(id: PlayerWindow.id, value: item)
-            }
-            DiagLog.log("cinema screen closed (pushed \(state.feed?.pushed ?? 0), dropped \(state.feed?.dropped ?? 0), reopen window: \(wasDetached && playback.item != nil))", "immersive")
+            model.noteClosed(playback: library.playback, openWindow: openWindow,
+                             reason: "onDisappear; pushed \(state.feed?.pushed ?? 0), dropped \(state.feed?.dropped ?? 0)")
         }
     }
 
@@ -191,6 +187,7 @@ struct ImmersiveScreenView: View {
 
     private func frameTick() {
         let bridge = ImmersiveScreenBridge.shared
+        model.lastTick = Date()
 
         // MV-HEVC / AVPlayer path: let RealityKit render the video (stereo if the file has it).
         if let player = bridge.avPlayer {
@@ -397,7 +394,10 @@ struct ImmersiveControlPanel: View {
                         DiagLog.log("stop pressed (cinema)", "player")
                         library.playback.end()
                         openWindow(id: MainWindow.id)
-                        Task { await dismissImmersiveSpace() }
+                        Task {
+                            await dismissImmersiveSpace()
+                            model.noteClosed(playback: library.playback, openWindow: openWindow, reason: "stop")
+                        }
                     }
                 }
                 TransportBar(item: item, playback: library.playback, session: session)
@@ -442,12 +442,14 @@ struct ImmersiveControlPanel: View {
     /// so the user is never left in an empty void if the space's onDisappear does not run.
     private func exitCinema() {
         DiagLog.log("exit cinema pressed", "immersive")
+        openWindow(id: MainWindow.id)
         if let item = library.playback.item {
             openWindow(id: PlayerWindow.id, value: item)
-        } else {
-            openWindow(id: MainWindow.id)
         }
-        Task { await dismissImmersiveSpace() }
+        Task {
+            await dismissImmersiveSpace()
+            model.noteClosed(playback: library.playback, openWindow: openWindow, reason: "exit button")
+        }
     }
 }
 
@@ -464,8 +466,10 @@ struct ImmersiveScreenToggle: View {
         Button {
             Task {
                 if model.isOpen {
+                    openWindow(id: MainWindow.id)
                     if let item = library.playback.item { openWindow(id: PlayerWindow.id, value: item) }
                     await dismissSpace()
+                    model.noteClosed(playback: library.playback, openWindow: openWindow, reason: "toggle")
                 } else {
                     let result = await openSpace(id: ImmersiveScreenSpace.id)
                     DiagLog.log("openImmersiveSpace → \(result)", "immersive")
@@ -534,5 +538,28 @@ private struct LabeledSlider: View {
 
 enum ImmersiveScreenSpace {
     static let id = "cinema-screen"
+}
+
+extension ImmersiveScreenModel {
+    /// Bookkeeping once the space is gone, from whichever path noticed it first (button, the
+    /// view's onDisappear, or a window seeing a stale tick). Idempotent. Brings the windows back.
+    func noteClosed(playback: PlaybackController, openWindow: OpenWindowAction, reason: String) {
+        guard isOpen else { return }
+        isOpen = false
+        ImmersiveScreenBridge.shared.pushFrame = nil
+        let wasDetached = playback.detachedForImmersive
+        playback.detachedForImmersive = false
+        openWindow(id: MainWindow.id)
+        if wasDetached, let item = playback.item {
+            openWindow(id: PlayerWindow.id, value: item)
+        }
+        DiagLog.log("cinema closed (\(reason)); player window back: \(wasDetached && playback.item != nil)", "immersive")
+    }
+
+    /// Called when a window appears or becomes active: if the model still thinks the cinema is
+    /// open but it has not rendered for a while, the system took it down without telling us.
+    func reconcile(playback: PlaybackController, openWindow: OpenWindowAction) {
+        if isStale { noteClosed(playback: playback, openWindow: openWindow, reason: "stale tick") }
+    }
 }
 #endif
