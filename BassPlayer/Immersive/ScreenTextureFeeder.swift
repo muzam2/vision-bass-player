@@ -38,13 +38,22 @@ final class ScreenTextureFeeder {
     /// Pixel size of the full source frame as last seen (for aspect calculations).
     private(set) var sourceSize: (Int, Int) = (0, 0)
 
+    /// Picture controls (CoreImage). Set from the model each tick; cheap when neutral.
+    var brightness: Float = 0
+    var contrast: Float = 1
+    var saturation: Float = 1
+    var exposure: Float = 0
+    /// Force a redraw even if the frame id didn't change (after a control moved).
+    var dirty = false
+
     /// Called once per RealityKit frame. Cheap when there is no new video frame.
     func tick(frameSource: (() -> ScreenFrame?)?, stereo: StereoFormat) {
         guard let source = frameSource, let frame = source() else { return }
-        if frame.id == lastFrameId { return }
+        if frame.id == lastFrameId && !dirty { return }
         lastFrameId = frame.id
+        dirty = false
 
-        let image: CIImage
+        var image: CIImage
         let w: Int, h: Int
         if let pb = frame.pixelBuffer {
             w = CVPixelBufferGetWidth(pb); h = CVPixelBufferGetHeight(pb)
@@ -59,6 +68,14 @@ final class ScreenTextureFeeder {
         }
         guard w > 0, h > 0 else { return }
         sourceSize = (w, h)
+        if brightness != 0 || contrast != 1 || saturation != 1 {
+            image = image.applyingFilter("CIColorControls", parameters: [
+                kCIInputBrightnessKey: brightness, kCIInputContrastKey: contrast, kCIInputSaturationKey: saturation,
+            ])
+        }
+        if exposure != 0 {
+            image = image.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: exposure])
+        }
 
         let packed = stereo.isPacked
         // Eye crop rects in CI coordinates (origin bottom-left).

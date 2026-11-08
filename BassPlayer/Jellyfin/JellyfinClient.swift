@@ -107,7 +107,7 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
                 .init(name: "Recursive", value: "true"),
                 .init(name: "SortBy", value: "SortName"),
                 .init(name: "SortOrder", value: "Ascending"),
-                .init(name: "Fields", value: "MediaSources,MediaStreams,Overview,ProductionYear,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber,Path,Video3DFormat"),
+                .init(name: "Fields", value: "MediaSources,MediaStreams,Overview,ProductionYear,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber,Path,Video3DFormat,UserData"),
             ])
             let page = try await send(req, as: ItemsPage.self)
             items = page.Items.compactMap { mediaItem(from: $0) }
@@ -163,7 +163,18 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
             subtitle = String(y)
         }
 
-        return MediaItem(
+        // External subtitle files the server can deliver as-is.
+        var subs: [URL] = []
+        for (i, st) in streams.enumerated() where st.Type == "Subtitle" && (st.IsExternal ?? false) {
+            let idx = st.Index ?? i
+            let ext = (st.Codec ?? "srt").lowercased() == "ass" ? "ass" : "srt"
+            var c = URLComponents(url: base.appendingPathComponent("Videos/\(item.Id)/\(mediaSource?.Id ?? item.Id)/Subtitles/\(idx)/Stream.\(ext)"), resolvingAgainstBaseURL: false)!
+            c.queryItems = [.init(name: "api_key", value: token)]
+            if let u = c.url { subs.append(u) }
+        }
+        let name = item.Name
+        let path = item.Path ?? mediaSource?.Path
+        var mi = MediaItem(
             id: "jellyfin:\(item.Id)",
             source: .jellyfin,
             title: item.Name,
@@ -182,8 +193,29 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
             width: video?.Width,
             height: video?.Height,
             stereo: StereoFormat.fromJellyfin(item.Video3DFormat)
-                ?? StereoFormat.detect(name: item.Name, path: item.Path ?? mediaSource?.Path, width: video?.Width, height: video?.Height, codecTag: video?.CodecTag)
+                ?? StereoFormat.detect(name: name, path: path, width: video?.Width, height: video?.Height, codecTag: video?.CodecTag)
         )
+        mi.projection = ScreenProjection.detect(name: name, path: path)
+        if mi.projection != nil, mi.stereo == nil { mi.stereo = ScreenProjection.detectStereoForVR(name: name, path: path) }
+        mi.subtitleURLs = subs
+        if let ticks = item.UserData?.PlaybackPositionTicks, ticks > 0 { mi.serverResumeSeconds = Double(ticks) / 10_000_000 }
+        return mi
+    }
+
+    // MARK: - Playback reporting (Continue Watching on the server)
+
+    func reportPlayback(itemId: String, positionSeconds: Double, state: PlaybackReportState) async {
+        guard isSignedIn else { return }
+        let ticks = Int64(positionSeconds * 10_000_000)
+        let path: String
+        switch state {
+        case .started: path = "Sessions/Playing"
+        case .progress: path = "Sessions/Playing/Progress"
+        case .stopped: path = "Sessions/Playing/Stopped"
+        }
+        struct Body: Encodable { let ItemId: String; let PositionTicks: Int64; let IsPaused: Bool; let PlayMethod: String }
+        guard let req = try? request(path, method: "POST", body: Body(ItemId: itemId, PositionTicks: ticks, IsPaused: false, PlayMethod: "DirectPlay")) else { return }
+        _ = try? await URLSession.shared.data(for: req)
     }
 }
 
@@ -202,7 +234,13 @@ struct JellyfinItem: Decodable {
     let IndexNumber: Int?
     let Path: String?
     let Video3DFormat: String?
+    let UserData: UserData?
     let MediaSources: [MediaSource]?
+
+    struct UserData: Decodable {
+        let PlaybackPositionTicks: Int64?
+        let Played: Bool?
+    }
 
     struct MediaSource: Decodable {
         let Id: String?
@@ -222,6 +260,8 @@ struct JellyfinItem: Decodable {
         let Width: Int?
         let Height: Int?
         let CodecTag: String?
+        let Index: Int?
+        let IsExternal: Bool?
     }
 }
 

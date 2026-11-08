@@ -16,7 +16,7 @@ enum MediaSource: String, CaseIterable, Identifiable, Codable {
 
 /// Server-agnostic description of something playable. Both clients map into this so the
 /// library UI, the player and the bass pipeline never care where a file lives.
-struct MediaItem: Identifiable, Hashable {
+struct MediaItem: Identifiable, Hashable, Codable {
     let id: String                 // "<source>:<server item id>"
     let source: MediaSource
     let title: String
@@ -37,13 +37,19 @@ struct MediaItem: Identifiable, Hashable {
     let width: Int?
     let height: Int?
     /// Detected 3D packing (nil = 2D as far as we can tell). User overrides live in LibraryStore.
-    let stereo: StereoFormat?
+    var stereo: StereoFormat?
     /// Stream URLs must be fetched just before playback (YouTube links expire after ~6 h).
     var needsResolve = false
     /// YouTube video id, when this item came from YouTube (drives resolution + SponsorBlock).
     var youtubeId: String? = nil
     /// User-Agent the stream URLs were issued for; the player must send the same one.
     var userAgent: String? = nil
+    /// Detected VR projection (nil = flat). User overrides live in LibraryStore.
+    var projection: ScreenProjection? = nil
+    /// External subtitle files (SRT/ASS/VTT) offered by the server.
+    var subtitleURLs: [URL] = []
+    /// Server-side resume position in seconds, if the server knows one.
+    var serverResumeSeconds: Double? = nil
 
     var formatBadge: String {
         var parts: [String] = []
@@ -89,3 +95,5 @@ protocol MediaServerClient: ObservableObject {
     func loadLibrary() async
     func signOut()
 }
+
+enum PlaybackReportState { case started, progress, stopped }

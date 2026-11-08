@@ -23,6 +23,11 @@ final class LibraryStore: ObservableObject {
     @Published var backend: PlayerBackend { didSet { defaults.set(backend.rawValue, forKey: "lib.backend") } }
     @Published var searchText = ""
     @Published var showEpisodes: Bool { didSet { defaults.set(showEpisodes, forKey: "lib.showEpisodes") } }
+    @Published var autoplayNext: Bool { didSet { defaults.set(autoplayNext, forKey: "lib.autoplayNext") } }
+    @Published var resumePlayback: Bool { didSet { defaults.set(resumePlayback, forKey: "lib.resume") } }
+    /// When set, playback pauses at this time (sleep timer).
+    @Published var sleepTimerEnd: Date?
+    @Published private(set) var recents: [MediaItem] = []
 
     init(jellyfin: JellyfinClient, plex: PlexClient, youtube: YouTubeClient, nas: NASClient) {
         self.jellyfin = jellyfin
@@ -32,6 +37,9 @@ final class LibraryStore: ObservableObject {
         selectedSource = MediaSource(rawValue: defaults.string(forKey: "lib.source") ?? "") ?? .jellyfin
         backend = PlayerBackend(rawValue: defaults.string(forKey: "lib.backend") ?? "") ?? .ffmpeg
         showEpisodes = defaults.object(forKey: "lib.showEpisodes") as? Bool ?? false
+        autoplayNext = defaults.object(forKey: "lib.autoplayNext") as? Bool ?? true
+        resumePlayback = defaults.object(forKey: "lib.resume") as? Bool ?? true
+        if let data = defaults.data(forKey: "lib.recents"), let r = try? JSONDecoder().decode([MediaItem].self, from: data) { recents = r }
         // Re-publish when either client changes so views depending on `items` refresh.
         jellyfin.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         plex.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
@@ -97,6 +105,64 @@ final class LibraryStore: ObservableObject {
 
     func url(for item: MediaItem) -> URL? {
         effectiveBackend(for: item) == .ffmpeg ? (item.directURL ?? item.avPlayerURL) : (item.avPlayerURL ?? item.directURL)
+    }
+
+    // MARK: - Recents & progress
+
+    func noteStarted(_ item: MediaItem) {
+        recents.removeAll { $0.id == item.id }
+        recents.insert(item, at: 0)
+        if recents.count > 20 { recents.removeLast(recents.count - 20) }
+        if let data = try? JSONEncoder().encode(recents) { defaults.set(data, forKey: "lib.recents") }
+    }
+
+    /// Locally remembered position (seconds); server-known position wins when newer is unknown.
+    func savedPosition(for item: MediaItem) -> Double? {
+        let local = defaults.double(forKey: "pos.\(item.id)")
+        if local > 0 { return local }
+        return item.serverResumeSeconds
+    }
+
+    func savePosition(_ seconds: Double, duration: Double, for item: MediaItem) {
+        // Near the end counts as finished: clear so the next play starts fresh.
+        if duration > 0, seconds > duration * 0.95 || seconds < 15 {
+            defaults.removeObject(forKey: "pos.\(item.id)")
+        } else {
+            defaults.set(seconds, forKey: "pos.\(item.id)")
+        }
+    }
+
+    /// Tell the server where we are (Jellyfin Continue Watching, Plex On Deck).
+    func report(_ item: MediaItem, position: Double, duration: Double, state: PlaybackReportState) async {
+        switch item.source {
+        case .jellyfin:
+            await jellyfin.reportPlayback(itemId: String(item.id.dropFirst("jellyfin:".count)), positionSeconds: position, state: state)
+        case .plex:
+            await plex.reportPlayback(ratingKey: String(item.id.dropFirst("plex:".count)), positionSeconds: position, durationSeconds: duration, state: state)
+        default: break
+        }
+    }
+
+    /// The item after `item` in the current list (for autoplay).
+    func next(after item: MediaItem) -> MediaItem? {
+        let list = items
+        guard let i = list.firstIndex(of: item), i + 1 < list.count else { return nil }
+        return list[i + 1]
+    }
+
+    // MARK: - Projection (VR)
+
+    func projectionOverride(for item: MediaItem) -> ScreenProjection? {
+        ScreenProjection(rawValue: defaults.string(forKey: "proj.\(item.id)") ?? "")
+    }
+
+    func setProjectionOverride(_ p: ScreenProjection?, for item: MediaItem) {
+        objectWillChange.send()
+        if let p { defaults.set(p.rawValue, forKey: "proj.\(item.id)") } else { defaults.removeObject(forKey: "proj.\(item.id)") }
+    }
+
+    func effectiveProjection(for item: MediaItem) -> ScreenProjection {
+        projectionOverride(for: item) ?? item.projection ?? .flat
     }
 
     // MARK: - 3D

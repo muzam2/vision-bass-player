@@ -20,7 +20,7 @@ struct ContentView: View {
                 }
         } detail: {
             if let item = selectedItem {
-                PlayerView(item: item)
+                PlayerView(item: item) { next in selectedItem = next }
                     .id(item.id)
             } else {
                 ContentUnavailableView("Pick something to watch", systemImage: "film",
@@ -65,8 +65,16 @@ struct LibraryView: View {
                     ContentUnavailableView("Nothing here yet", systemImage: "tray",
                                            description: Text("Pull to refresh, or check the server has movie or TV libraries."))
                 } else {
-                    List(library.items, selection: $selectedItem) { item in
-                        LibraryRow(item: item).tag(item)
+                    List(selection: $selectedItem) {
+                        let recent = library.recents.filter { $0.source == library.selectedSource }
+                        if !recent.isEmpty && library.searchText.isEmpty {
+                            Section("Recent") {
+                                ForEach(recent.prefix(5)) { item in LibraryRow(item: item).tag(item) }
+                            }
+                        }
+                        Section(library.selectedSource == .youtube ? (library.searchText.isEmpty ? "Trending" : "Results") : "Library") {
+                            ForEach(library.items) { item in LibraryRow(item: item).tag(item) }
+                        }
                     }
                     .refreshable { await library.refresh() }
                     .searchable(text: $library.searchText,
@@ -137,6 +145,9 @@ struct SettingsView: View {
                     ForEach(PlayerBackend.allCases) { Text($0.label).tag($0) }
                 }
                 Toggle("Show TV episodes in library", isOn: $library.showEpisodes)
+                Toggle("Resume where you left off", isOn: $library.resumePlayback)
+                Toggle("Autoplay next item", isOn: $library.autoplayNext)
+                SleepTimerRow()
             }
 
             Section("Jellyfin") {
@@ -230,6 +241,23 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+    }
+}
+
+struct SleepTimerRow: View {
+    @EnvironmentObject private var library: LibraryStore
+    var body: some View {
+        HStack {
+            Text(library.sleepTimerEnd.map { "Sleep timer: \(Int(max(0, $0.timeIntervalSinceNow / 60))) min left" } ?? "Sleep timer")
+            Spacer()
+            if library.sleepTimerEnd != nil {
+                Button("Off") { library.sleepTimerEnd = nil }
+            } else {
+                ForEach([30, 60, 90], id: \.self) { m in
+                    Button("\(m)m") { library.sleepTimerEnd = Date().addingTimeInterval(TimeInterval(m * 60)) }
+                }
+            }
+        }
     }
 }
 

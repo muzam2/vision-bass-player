@@ -2,6 +2,7 @@
 import SwiftUI
 import RealityKit
 import AVFoundation
+import ARKit
 
 /// The cinema screen in an ImmersiveSpace. Video frames are pulled from whichever player is
 /// active via `ImmersiveScreenBridge`. Drag to move, pinch to resize, two-hand rotate to tilt.
@@ -26,6 +27,10 @@ struct ImmersiveScreenView: View {
     /// Mutable bookkeeping shared with the RealityKit update closure.
     final class ScreenState {
         var lastMeshKey = ""
+        var lastDomeDim: Double = -1
+        var lastProjection: ScreenProjection = .flat
+        var arSession: ARKitSession?
+        var worldTracking: WorldTrackingProvider?
         var stereoMaterial: ShaderGraphMaterial?
         var stereoMaterialFailed = false
         var boundGeneration = -1
@@ -50,6 +55,21 @@ struct ImmersiveScreenView: View {
             screen.components.set(InputTargetComponent())
             screen.generateCollisionShapes(recursive: false)
 
+            // Head tracking for recentre; the device anchor needs no user permission.
+            Task { @MainActor in
+                let session = ARKitSession()
+                let world = WorldTrackingProvider()
+                do {
+                    try await session.run([world])
+                    state.arSession = session
+                    state.worldTracking = world
+                    try? await Task.sleep(for: .milliseconds(300))
+                    recentre()
+                } catch {
+                    print("ImmersiveScreen: world tracking unavailable (\(error))")
+                }
+            }
+
             // Load the stereo shader graph once (falls back to mono if the USD can't be loaded).
             Task { @MainActor in
                 do {
@@ -66,8 +86,10 @@ struct ImmersiveScreenView: View {
         } update: { _ in
             applyMesh(force: false)
             applyTransform()
+            applyDome()
             screen.generateCollisionShapes(recursive: false)
         }
+        .onChange(of: model.recentreRequest) { _, _ in recentre() }
         .gesture(dragGesture)
         .simultaneousGesture(magnifyGesture)
         .simultaneousGesture(rotateGesture)
@@ -103,6 +125,16 @@ struct ImmersiveScreenView: View {
         }
 
         let stereo = bridge.stereoFormat
+        if bridge.projection != state.lastProjection {
+            state.lastProjection = bridge.projection
+            applyMesh(force: true)
+            applyTransform()
+        }
+        let b = Float(model.brightness), c = Float(model.contrast), sat = Float(model.saturation), ev = Float(model.hdrBoost)
+        if feeder.brightness != b || feeder.contrast != c || feeder.saturation != sat || feeder.exposure != ev {
+            feeder.brightness = b; feeder.contrast = c; feeder.saturation = sat; feeder.exposure = ev
+            feeder.dirty = true
+        }
         feeder.tick(frameSource: bridge.frameSource, stereo: stereo)
 
         // Follow the eye aspect once we know the frame size.
@@ -133,11 +165,20 @@ struct ImmersiveScreenView: View {
     // MARK: - Geometry
 
     private func applyMesh(force: Bool) {
-        let key = "\(model.width)-\(model.screenHeight)-\(model.curvature)-\(model.flipV)"
+        let projection = ImmersiveScreenBridge.shared.projection
+        let key = "\(projection.rawValue)-\(model.width)-\(model.screenHeight)-\(model.curvature)-\(model.flipV)"
         guard force || key != state.lastMeshKey else { return }
         state.lastMeshKey = key
-        let mesh = ScreenMesh.make(width: Float(model.width), height: Float(model.screenHeight),
+        let mesh: MeshResource
+        switch projection {
+        case .flat:
+            mesh = ScreenMesh.make(width: Float(model.width), height: Float(model.screenHeight),
                                    curvature: Float(model.curvature), flipV: model.flipV)
+        case .vr180:
+            mesh = ScreenMesh.makeVR(radius: 20, fullSphere: false, flipV: model.flipV)
+        case .vr360:
+            mesh = ScreenMesh.makeVR(radius: 20, fullSphere: true, flipV: model.flipV)
+        }
         if screen.model == nil {
             screen.model = ModelComponent(mesh: mesh, materials: [UnlitMaterial(color: .black)])
         } else {
@@ -146,8 +187,36 @@ struct ImmersiveScreenView: View {
     }
 
     private func applyTransform() {
-        root.position = model.position
-        root.orientation = model.orientation
+        if ImmersiveScreenBridge.shared.projection.isImmersiveVideo {
+            // VR: sphere centred on the head, yaw only (tilt would tip the horizon).
+            root.position = model.headPosition
+            root.orientation = simd_quatf(angle: Float(model.yaw * .pi / 180), axis: [0, 1, 0])
+        } else {
+            // Rotate the offset around the viewer so yaw swings the screen around you.
+            let yawQ = simd_quatf(angle: Float(model.yaw * .pi / 180), axis: [0, 1, 0])
+            let offset = yawQ.act(SIMD3<Float>(0, 0, -Float(model.distance)))
+            root.position = SIMD3<Float>(model.headPosition.x, 0, model.headPosition.z) + offset + SIMD3<Float>(0, Float(model.height), 0)
+            root.orientation = model.orientation
+        }
+    }
+
+    /// Dome opacity follows "room dim" so passthrough can show through in mixed immersion.
+    private func applyDome() {
+        guard model.roomDim != state.lastDomeDim else { return }
+        state.lastDomeDim = model.roomDim
+        var m = UnlitMaterial(color: .black)
+        m.blending = .transparent(opacity: .init(floatLiteral: Float(model.roomDim)))
+        dome.model?.materials = [m]
+    }
+
+    /// Place the screen (or VR sphere) straight ahead of where the user is looking now.
+    private func recentre() {
+        guard let world = state.worldTracking,
+              let anchor = world.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()) else { return }
+        let t = anchor.originFromAnchorTransform
+        let p = SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+        let f = -SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z)
+        model.recentre(headPosition: p, headForward: f)
     }
 
     // MARK: - Gestures
@@ -158,11 +227,12 @@ struct ImmersiveScreenView: View {
             .onChanged { value in
                 if dragStart == nil { dragStart = root.position }
                 guard let start = dragStart else { return }
+                guard !ImmersiveScreenBridge.shared.projection.isImmersiveVideo else { return }
                 let delta = value.convert(value.translation3D, from: .local, to: .scene)
-                let p = start + delta
-                model.distance = Double(-p.z)
+                let p = start + delta - SIMD3<Float>(model.headPosition.x, 0, model.headPosition.z)
+                model.distance = Double(max(0.5, simd_length(SIMD2<Float>(p.x, p.z))))
                 model.height = Double(p.y)
-                model.yaw = Double(-atan2(p.x, -p.z) * 180 / .pi)
+                model.yaw = Double(atan2(-p.x, -p.z) * 180 / .pi)
             }
             .onEnded { _ in dragStart = nil }
     }
@@ -235,12 +305,24 @@ struct ImmersiveScreenSettings: View {
                 LabeledSlider("Height", value: $model.height, range: -2...3, unit: "m")
                 LabeledSlider("Tilt", value: $model.tilt, range: -60...60, unit: "°")
                 LabeledSlider("Curve", value: $model.curvature, range: 0...1, unit: "")
-                Button("Reset placement") { model.reset() }
+                HStack {
+                    Button("Recentre") { model.recentreRequest += 1 }
+                    Button("Reset placement") { model.reset() }
+                }
             }
             Section("Picture") {
+                LabeledSlider("Brightness", value: $model.brightness, range: -0.3...0.3, unit: "")
+                LabeledSlider("Contrast", value: $model.contrast, range: 0.6...1.4, unit: "")
+                LabeledSlider("Saturation", value: $model.saturation, range: 0...1.6, unit: "")
+                LabeledSlider("HDR boost", value: $model.hdrBoost, range: -2...2, unit: " EV")
+                Button("Reset picture") { model.resetPicture() }.disabled(model.pictureIsNeutral)
                 Toggle("HDR output", isOn: $model.hdr)
                 Toggle("Flip vertically", isOn: $model.flipV)
+            }
+            Section("Room") {
                 Toggle("Full immersion (hide passthrough)", isOn: $model.darkRoom)
+                LabeledSlider("Room dim", value: $model.roomDim, range: 0...1, unit: "")
+                    .disabled(model.darkRoom)
             }
         }
         .padding()
