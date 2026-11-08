@@ -26,8 +26,12 @@ rebuilt around tabs (§2). The ESP32 board hasn't arrived; nothing has reached t
   iloader 2.4.1** (`~/src/iloader-vp`, branch `vp-on-2.4.1`, built with Tauri; see the
   Claude memory note "vision-pro-sideload-iloader-port"). Pair once via Settings → General →
   Remote Devices (6-digit code), sign in, then **Import IPA** installs over Wi‑Fi.
-  **SideStore for Vision Pro 0.7.0 also gets `-80045` at sign-in**, so it cannot refresh apps
-  on-device: the 7-day re-sign is done by re-running Import IPA from the box. Apple TV:
+  **SideStore for Vision Pro 0.7.0 also gets `-80045` at sign-in** (AnisetteKit hard-codes a
+  Mac client identity). A fixed build exists: `muzam2/SideStore` release `visionos-0.7.1-signin`
+  (branch `visionos-signin-fix`; identity taken from the anisette server's `/v3/client_info`,
+  `adi.pb` re-provisioned automatically; CI workflow `visionos.yml`, no secrets). The iloader
+  port's "Install SideStore" installs it. **Not yet tested on the headset**: if its sign-in
+  works, 7-day renewals happen on-device; otherwise re-run Import IPA from the box. Apple TV:
   atvloadly (untested so far).
 - Is ordering an **ESP32-A1S Audio Kit** (ES8388). Firmware target `esp32-a1s` is primary;
   `esp32dev` + PCM5102A is the alternative.

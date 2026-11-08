@@ -96,8 +96,9 @@ fine too). Steps, in order:
    it asks for **Developer Mode**, turn it on (Settings → Privacy & Security) and let it restart.
 
 Free Apple ID rules: the signature lasts **7 days**, then the app refuses to open. Renew it by
-repeating step 5 (settings are kept). SideStore's Vision Pro build can't sign in to Apple at
-the moment, so it can't do the renewal for you. You can have 3 sideloaded apps at once.
+repeating step 5 (settings are kept). Optionally install **SideStore** from iloader (the
+button installs a Vision Pro build with the sign-in fix); if it signs in with the same Apple
+ID, it can renew Bass Player on the headset itself. You can have 3 sideloaded apps at once.
 
 ---
 
