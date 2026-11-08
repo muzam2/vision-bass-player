@@ -34,15 +34,16 @@ final class PlexClient: ObservableObject, MediaServerClient {
         serverURL = defaults.string(forKey: "plex.server") ?? ""
         serverName = defaults.string(forKey: "plex.serverName") ?? ""
         serverToken = defaults.string(forKey: "plex.serverToken") ?? ""
-        // CI end-to-end tests can't complete the plex.tv/link PIN flow; they inject a token.
-        if token.isEmpty, let t = ProcessInfo.processInfo.environment["BASSPLAYER_PLEX_TOKEN"], !t.isEmpty {
-            token = t
-        }
         if let id = defaults.string(forKey: "plex.clientId") {
             clientId = id
         } else {
             clientId = UUID().uuidString
             defaults.set(clientId, forKey: "plex.clientId")
+        }
+        // CI end-to-end tests can't complete the plex.tv/link PIN flow; they inject a token.
+        // (After all stored properties are set, so `token` may be read.)
+        if token.isEmpty, let t = ProcessInfo.processInfo.environment["BASSPLAYER_PLEX_TOKEN"], !t.isEmpty {
+            token = t
         }
     }
 

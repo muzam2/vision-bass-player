@@ -120,7 +120,8 @@ jobs:
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO EXCLUDED_ARCHS=x86_64 \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
             2>&1 | tee test.log | grep -E "error:|Test Case|Test Suite|passed|failed|skipped|E2E |BUILD|TEST" || true
-          grep -q -E "TEST SUCCEEDED|TEST FAILED" test.log
+          # Fails on compile errors and on failing tests alike (skipped tests still succeed).
+          grep -q "TEST SUCCEEDED" test.log
 
       - name: Collect results
         if: always()
