@@ -22,7 +22,7 @@ let package = Package(
             name: "KSPlayer",
             dependencies: [
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
-                .product(name: "edge264mvc", package: "edge264mvc"),
+                .product(name: "edge264mvc", package: "edge264-mvc"),
                 "DisplayCriteria",
             ],
             resources: [.process("Metal/Shaders.metal")],
