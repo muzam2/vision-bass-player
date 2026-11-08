@@ -23,7 +23,7 @@ receiver, so one sub serves the headset and the TV.
 | `Vendor/KSPlayer` | KSPlayer GPLv3 source, vendored and patched (Dolby Vision P5, frame renderer). `UPSTREAM_COMMIT` records the base. |
 | `BassPlayer/App` | SwiftUI app entry, audio session |
 | `BassPlayer/Media` | `MediaItem` model shared by both servers, `LibraryStore` (source/backend settings) |
-| `BassPlayer/Jellyfin`, `BassPlayer/Plex`, `BassPlayer/YouTube` | Sources: media servers and YouTube (InnerTube + SponsorBlock) |
+| `BassPlayer/Jellyfin`, `BassPlayer/Plex`, `BassPlayer/YouTube`, `BassPlayer/NAS` | Sources: media servers, YouTube (InnerTube + SponsorBlock), NAS shares (SMB / WebDAV) |
 | `BassPlayer/Player` | `FFmpegPlayerView` (KSPlayer) and the AVPlayer fallback |
 | `BassPlayer/Audio` | `BassExtractor` (LPF → 1 kHz Int16 packets), `BassEngineTap` (AVAudioEngine tap + lead delay), `BassTapProcessor` (MTAudioProcessingTap glue for AVPlayer) |
 | `BassPlayer/Immersive` | RealityKit cinema screen (visionOS only) |
@@ -71,6 +71,10 @@ for the step-by-step setup.
   NewPipe / yt-dlp approach), played through our own pipeline so the sub works and there are
   no ads. SponsorBlock segments are skipped (toggle in Settings). Client identities are tried
   in order (iOS → Android VR → TV embedded → web); update them from yt-dlp when YouTube moves.
+- **NAS:** browse and play straight off a share, no media server needed. SMB goes through
+  FFmpeg's libsmbclient (listing via `avio_open_dir`, playback via `smb://`), WebDAV through
+  PROPFIND with a fallback to scraping plain HTTP directory indexes. Credentials live in the
+  Keychain. NAS files always use the FFmpeg backend.
 - **Two devices, one sub:** receiver accepts both and follows whichever is sending.
 
 ## Wire protocol
