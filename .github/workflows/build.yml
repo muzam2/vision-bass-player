@@ -117,10 +117,12 @@ jobs:
           du -sh "$APP"
           BIN="$APP/$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist")"
           ls -lh "$BIN"
-          if strings "$BIN" | grep -q "avcodec_open2\|avformat_open_input\|@rpath/Libavcodec.framework"; then echo "FFmpeg: linked"; else echo "FFmpeg: NOT FOUND in binary"; exit 1; fi
+          # macOS `strings` skips the load commands; otool -L lists the dylibs the binary loads.
+          otool -L "$BIN" | sed -n '2,$p' | awk '{print "  loads " $1}'
+          if otool -L "$BIN" | grep -q "Libavcodec.framework" || strings - "$BIN" | grep -q "avcodec_open2"; then echo "FFmpeg: linked"; else echo "FFmpeg: NOT FOUND in binary"; exit 1; fi
           # Every dynamic framework the binary loads must be embedded, or the app dies in dyld at launch.
           missing=0
-          for fw in $(strings "$BIN" | grep -o '@rpath/[^/]*\.framework' | sort -u); do
+          for fw in $(otool -L "$BIN" | grep -o '@rpath/[^/]*\.framework' | sort -u); do
             name=$(basename "$fw" .framework)
             if [ -d "$APP/Frameworks/$name.framework" ]; then echo "embedded: $name"; else echo "MISSING embedded framework: $name"; missing=1; fi
           done
