@@ -156,7 +156,13 @@ Ordered by likelihood of needing a fix.
    lives in `LibraryStore.playback` (`PlaybackController`: KSPlayer coordinator + FFmpegSession);
    the cinema dismisses the player window on appear (`detachedForImmersive`, and KSPlayer's
    `Coordinator.keepsPlayerWhenViewGoesAway` patch keeps the player alive without its view) and
-   reopens it on exit. Stop ends playback and closes everything. First on-device attempt
+   reopens it on exit. Stop ends playback and closes everything (from the cinema: closes the
+   space first, the reopened window finishes the stop — `stopAfterCinema`). Second device pass
+   (same day): log uploads arrived empty (file-handle logger rewritten to an in-memory ring),
+   the screen showed as a grey sliver (no frames reaching the renderer? aspect now clamped and
+   logged; a live debug line sits on the panel), the panel was under the far-away screen (now
+   anchored 1.35 m in front of the viewer), tapping the panel hid it (tap toggles only on the
+   screen/backdrop now), default curve is 0 with a Curve slider on the panel. First on-device attempt
    showed the black dome with a magenta box (RealityKit's failed-material colour) and the
    settings popover did nothing. Now: native `AVSampleBufferVideoRenderer` + `VideoMaterial`
    path (§2 data flow 6), the player window becomes a remote (controls + screen settings

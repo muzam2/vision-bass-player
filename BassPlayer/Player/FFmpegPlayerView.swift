@@ -250,6 +250,7 @@ struct FFmpegPlayerView: View {
     @EnvironmentObject private var bassLink: BassLink
     @EnvironmentObject private var library: LibraryStore
     @AppStorage("bass.leadMs") private var leadMs: Int = 0
+    @Environment(\.dismiss) private var dismissWindow
     #if os(visionOS)
     @EnvironmentObject private var immersive: ImmersiveScreenModel
     #endif
@@ -273,6 +274,13 @@ struct FFmpegPlayerView: View {
             }
         }
         .onAppear {
+            if playback.stopAfterCinema {
+                playback.stopAfterCinema = false
+                playback.end()
+                DiagLog.log("stop (deferred from cinema) → closing player window", "player")
+                dismissWindow()
+                return
+            }
             if bassLink.state == .off { bassLink.start() }
             let session = playback.begin(item: item, url: url, library: library, leadMs: leadMs)
             session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive)

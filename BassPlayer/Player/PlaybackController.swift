@@ -19,6 +19,9 @@ final class PlaybackController: ObservableObject {
     /// True while the player window has been dismissed in favour of the cinema screen; the
     /// player view's disappearance must not end playback then.
     var detachedForImmersive = false
+    /// Set by the cinema's Stop button: the space closes, the window reopens, then ends playback
+    /// and closes itself (so the user lands back on the library instead of in an empty void).
+    var stopAfterCinema = false
     private var sessionSink: AnyCancellable?
 
     var isActive: Bool { item != nil }

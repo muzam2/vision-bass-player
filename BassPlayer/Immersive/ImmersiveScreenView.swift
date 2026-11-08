@@ -25,10 +25,11 @@ struct ImmersiveScreenView: View {
     @State private var root = Entity()
     @State private var dome = ModelEntity()
     @State private var tapCatcher = ModelEntity()
+    /// Head-relative anchor for the control panel (yaw only), ~1.3 m in front, below eye level.
+    @State private var hud = Entity()
     @State private var state = ScreenState()
     @State private var dragStart: SIMD3<Float>?
     @State private var scaleStart: Double?
-    @State private var tiltStart: Double?
     @State private var showControls = true
     @State private var hideTask: Task<Void, Never>?
 
@@ -45,7 +46,11 @@ struct ImmersiveScreenView: View {
         var lastStatusLog = Date.distantPast
         var controls: Entity?
         var subtitles: Entity?
+        var lastAspectLog = ""
     }
+
+    /// Marks the entities a tap on which shows/hides the panel (not the panel itself).
+    struct TapToggleComponent: Component {}
 
     private static let controlsID = "controls"
     private static let subtitlesID = "subtitles"
@@ -65,9 +70,11 @@ struct ImmersiveScreenView: View {
             // Invisible wall behind the screen so a tap anywhere around it toggles the controls.
             tapCatcher.components.set(InputTargetComponent())
             tapCatcher.components.set(CollisionComponent(shapes: [.generateBox(width: 60, height: 40, depth: 0.05)]))
+            tapCatcher.components.set(TapToggleComponent())
             tapCatcher.position = [0, 0, -1.5]
             root.addChild(tapCatcher)
             content.add(root)
+            content.add(hud)
 
             if let feed = ImmersiveFrameFeed() {
                 state.feed = feed
@@ -79,12 +86,13 @@ struct ImmersiveScreenView: View {
             applyMesh(force: true)
             applyTransform()
             screen.components.set(InputTargetComponent())
+            screen.components.set(TapToggleComponent())
             screen.generateCollisionShapes(recursive: false)
             bindBridge()
 
             if let controls = attachments.entity(for: Self.controlsID) {
                 state.controls = controls
-                root.addChild(controls)
+                hud.addChild(controls)
             }
             if let subs = attachments.entity(for: Self.subtitlesID) {
                 state.subtitles = subs
@@ -119,7 +127,7 @@ struct ImmersiveScreenView: View {
             state.controls?.isEnabled = showControls
         } attachments: {
             Attachment(id: Self.controlsID) {
-                ImmersiveControlPanel(onInteract: { scheduleHide() })
+                ImmersiveControlPanel(debugLine: debugLine, onInteract: { scheduleHide() })
             }
             Attachment(id: Self.subtitlesID) {
                 SubtitleOverlay(model: library.playback.coordinator.subtitleModel, fontSize: 44)
@@ -133,7 +141,6 @@ struct ImmersiveScreenView: View {
         .gesture(tapGesture)
         .simultaneousGesture(dragGesture)
         .simultaneousGesture(magnifyGesture)
-        .simultaneousGesture(rotateGesture)
         .onAppear {
             model.isOpen = true
             showControls = true
@@ -216,11 +223,17 @@ struct ImmersiveScreenView: View {
             applyTransform()
         }
 
-        // Follow the eye aspect once we know the frame size.
+        // Follow the eye aspect once we know the frame size (clamped: a bad value makes the
+        // screen a sliver or a tower, which is worse than a wrong aspect).
         let (w, h) = feed.frameSize
         if w > 0, h > 0 {
-            let a = bridge.stereoFormat.displayAspect(frameWidth: Double(w), frameHeight: Double(h))
-            if abs(a - model.aspect) > 0.01 { model.aspect = a }
+            let raw = bridge.stereoFormat.displayAspect(frameWidth: Double(w), frameHeight: Double(h))
+            let a = min(4.0, max(1.0, raw))
+            if abs(a - model.aspect) > 0.01 {
+                model.aspect = a
+                let msg = "aspect \(String(format: "%.3f", raw)) → \(String(format: "%.3f", a)) from \(w)x\(h) stereo=\(bridge.stereoFormat.rawValue)"
+                if msg != state.lastAspectLog { state.lastAspectLog = msg; DiagLog.log(msg, "immersive") }
+            }
         }
 
         let now = Date()
@@ -270,16 +283,20 @@ struct ImmersiveScreenView: View {
         }
     }
 
-    /// Control panel under the screen's bottom edge, subtitles just inside it; both scale with
-    /// distance so they read the same whatever the screen size.
+    /// Control panel ~1.3 m in front of the viewer, below eye level, facing them (yaw from the
+    /// screen so it sits under the picture); subtitles just inside the screen's bottom edge,
+    /// scaled with the screen.
     private func placeAttachments() {
         let vr = ImmersiveScreenBridge.shared.projection.isImmersiveVideo
         let halfH = vr ? 0.9 : Float(model.screenHeight) / 2
-        let s = max(0.8, Float(model.distance) / 2.2)
+        let yawQ = simd_quatf(angle: Float(model.yaw * .pi / 180), axis: [0, 1, 0])
+        let head = model.headPosition
+        hud.position = SIMD3<Float>(head.x, 0, head.z) + yawQ.act(SIMD3<Float>(0, 0, -1.35)) + SIMD3<Float>(0, head.y - 0.45, 0)
+        hud.orientation = yawQ * simd_quatf(angle: -0.35, axis: [1, 0, 0])
         if let c = state.controls {
-            c.scale = SIMD3<Float>(repeating: s)
-            c.position = [0, -halfH - 0.32 * s, vr ? -Float(model.distance) + 0.3 : 0.25]
-            c.orientation = simd_quatf(angle: -0.25, axis: [1, 0, 0])
+            c.scale = SIMD3<Float>(repeating: 1)
+            c.position = .zero
+            c.orientation = simd_quatf(angle: 0, axis: [1, 0, 0])
         }
         if let subs = state.subtitles {
             let k = vr ? s : Float(model.width) * 0.8 / (1800 / Self.pointsPerMetre)
@@ -311,10 +328,20 @@ struct ImmersiveScreenView: View {
 
     private var tapGesture: some Gesture {
         SpatialTapGesture()
-            .targetedToAnyEntity()
+            .targetedToEntity(where: .has(TapToggleComponent.self))
             .onEnded { _ in
                 if showControls { showControls = false; hideTask?.cancel() } else { scheduleHide() }
             }
+    }
+
+    /// One line of live state for the panel (the log is the full story).
+    private var debugLine: String {
+        let f = state.feed
+        let (w, h) = f?.frameSize ?? (0, 0)
+        let st = f.map { "\($0.renderer.status.rawValue)" } ?? "-"
+        return String(format: "frames %d (dropped %d) · %dx%d · aspect %.2f · screen %.1f×%.1f m @ %.1f m · tilt %.0f° · renderer %@%@",
+                      f?.pushed ?? 0, f?.dropped ?? 0, w, h, model.aspect, model.width, model.screenHeight, model.distance, model.tilt, st,
+                      f?.lastError.map { " · \($0)" } ?? "")
     }
 
     private var dragGesture: some Gesture {
@@ -344,23 +371,12 @@ struct ImmersiveScreenView: View {
             .onEnded { _ in scaleStart = nil }
     }
 
-    private var rotateGesture: some Gesture {
-        RotateGesture3D(constrainedToAxis: .x)
-            .targetedToEntity(screen)
-            .onChanged { value in
-                if tiltStart == nil { tiltStart = model.tilt }
-                guard let t = tiltStart else { return }
-                let angle = value.rotation.angle.degrees
-                let sign: Double = value.rotation.axis.x >= 0 ? 1 : -1
-                model.tilt = max(-60, min(60, t - sign * angle))
-            }
-            .onEnded { _ in tiltStart = nil }
-    }
 }
 
 /// The floating panel under the cinema screen: transport + menus, screen size / distance,
 /// recentre, exit, stop.
 struct ImmersiveControlPanel: View {
+    var debugLine: String = ""
     var onInteract: () -> Void = {}
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var model: ImmersiveScreenModel
@@ -374,20 +390,28 @@ struct ImmersiveControlPanel: View {
                     Spacer()
                     BassStatusChip(session: session)
                     StopButton {
+                        // Close the cinema first; the player window comes back and finishes the stop.
                         DiagLog.log("stop pressed (cinema)", "player")
-                        library.playback.end()
+                        library.playback.stopAfterCinema = true
                         Task { await dismissImmersiveSpace() }
                     }
                 }
                 TransportBar(item: item, playback: library.playback, session: session)
             } else {
-                Text("Nothing playing").font(.title3).foregroundStyle(.secondary)
+                HStack {
+                    Text("Nothing playing").font(.title3).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { Task { await dismissImmersiveSpace() } } label: { Label("Exit cinema", systemImage: "rectangle.on.rectangle") }
+                        .buttonStyle(.borderedProminent)
+                }
             }
-            HStack(spacing: 18) {
-                Label("Size", systemImage: "arrow.up.left.and.arrow.down.right").font(.callout)
-                Slider(value: $model.width, in: 1...14).frame(width: 220)
-                Label("Distance", systemImage: "arrow.left.and.right").font(.callout)
-                Slider(value: $model.distance, in: 1...10).frame(width: 220)
+            HStack(spacing: 14) {
+                Label("Size", systemImage: "arrow.up.left.and.arrow.down.right")
+                Slider(value: $model.width, in: 1...14).frame(width: 170)
+                Label("Distance", systemImage: "arrow.left.and.right")
+                Slider(value: $model.distance, in: 1...10).frame(width: 170)
+                Label("Curve", systemImage: "rectangle.portrait.and.arrow.right")
+                Slider(value: $model.curvature, in: 0...1).frame(width: 120)
                 Button("Recentre") { model.recentreRequest += 1 }
                 Button("Reset") { model.reset() }
                 Spacer()
@@ -399,13 +423,17 @@ struct ImmersiveControlPanel: View {
                 .buttonStyle(.borderedProminent)
             }
             .font(.callout)
+            .labelStyle(.iconOnly)
+            if !debugLine.isEmpty {
+                Text(debugLine).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+            }
         }
         .padding(24)
         .frame(width: 1240)
         .glassBackgroundEffect()
-        .onTapGesture { onInteract() }
         .onChange(of: model.width) { _, _ in onInteract() }
         .onChange(of: model.distance) { _, _ in onInteract() }
+        .onChange(of: model.curvature) { _, _ in onInteract() }
     }
 }
 
