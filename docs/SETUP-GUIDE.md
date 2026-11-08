@@ -194,6 +194,17 @@ The audio and the bass link are unaffected by the screen; it only changes where 
 
 ---
 
+## 10a. Cinema screen tips
+
+- **Recentre** (slider icon → Recentre) puts the screen straight ahead of wherever you're
+  looking, at your current eye height. Do it after lying down, then raise **Tilt**.
+- **Picture** sliders adjust brightness/contrast/saturation; **HDR boost** lifts dim HDR films.
+- **Room dim** lets some passthrough through when full immersion is off.
+- **VR 180°/360°** videos are detected from the file name (`180`, `360`, `_LR`, `_TB`…). If
+  not, the player's **Projection** menu sets it. Recentre resets the forward direction.
+- Films resume where you stopped (local memory plus the server's own position) and the next
+  episode autoplays; both are switches in Settings → Playback, next to the sleep timer.
+
 ## 10b. 3D films
 
 Nothing to set up. The library badge shows what was detected (e.g. "3D Half SBS"). If a 3D
