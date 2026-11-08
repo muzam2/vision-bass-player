@@ -16,3 +16,6 @@ SourcePackages/
 
 # FFmpegKit binaries: fetched by Vendor/FFmpegKit/tools/fetch_binaries.sh
 Vendor/FFmpegKit/Sources/*.xcframework/
+
+# FFmpegKit shim sources come from the release zip (tools/fetch_binaries.sh), like the xcframeworks
+Vendor/FFmpegKit/Sources/FFmpegKit/
