@@ -29,8 +29,7 @@ packages:
   # SMB client (libsmb2, LGPL-2.1) for NAS browsing and the loopback SMBBridge; replaces
   # FFmpeg's libsmbclient, which FFmpegKit 9 no longer ships.
   AMSMB2:
-    url: https://github.com/amosavian/AMSMB2.git
-    from: 4.0.3
+    path: Vendor/AMSMB2   # 4.0.3, vendored to make the product static (see its Package.swift)
 
 schemes:
   # Explicit scheme so `xcodebuild test -scheme BassPlayer` runs the UI tests in the simulator

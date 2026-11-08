@@ -117,7 +117,14 @@ jobs:
           du -sh "$APP"
           BIN="$APP/$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist")"
           ls -lh "$BIN"
-          if strings "$BIN" | grep -q "avcodec_open2\|avformat_open_input"; then echo "FFmpeg: linked"; else echo "FFmpeg: NOT FOUND in binary"; fi
+          if strings "$BIN" | grep -q "avcodec_open2\|avformat_open_input\|@rpath/Libavcodec.framework"; then echo "FFmpeg: linked"; else echo "FFmpeg: NOT FOUND in binary"; exit 1; fi
+          # Every dynamic framework the binary loads must be embedded, or the app dies in dyld at launch.
+          missing=0
+          for fw in $(strings "$BIN" | grep -o '@rpath/[^/]*\.framework' | sort -u); do
+            name=$(basename "$fw" .framework)
+            if [ -d "$APP/Frameworks/$name.framework" ]; then echo "embedded: $name"; else echo "MISSING embedded framework: $name"; missing=1; fi
+          done
+          test "$missing" = 0
           ls "$APP/Frameworks" 2>/dev/null || echo "(no embedded frameworks)"
           rm -rf Payload && mkdir Payload
           cp -R "$APP" Payload/
