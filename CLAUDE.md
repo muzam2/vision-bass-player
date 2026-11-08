@@ -8,7 +8,8 @@ visionOS + tvOS video player (SwiftUI, vendored KSPlayer/FFmpeg) that streams su
 BLE to an ESP32 receiver wired to a powered subwoofer. Sources: Jellyfin, Plex, YouTube
 (InnerTube), NAS (SMB/WebDAV). Vision Pro gets a RealityKit cinema screen with 3D and VR.
 Owner has **no Mac**: everything is compiled by GitHub Actions and sideloaded with a free
-Apple ID. Nothing has run on hardware yet.
+Apple ID (Vision Pro: the locally ported iloader on the Linux box; HANDOFF §1). Installed on
+the headset 2026-11-08; the ESP32 receiver hasn't arrived, so the bass path is untested.
 
 ## Build & verify
 - Never try to build Swift locally; push and read Actions. `build.yml` (visionOS + tvOS unsigned
@@ -21,6 +22,10 @@ Apple ID. Nothing has run on hardware yet.
   SDK on `macos-15` + `setup-xcode@latest-stable`.
 - The IPA packaging step prints app size and `FFmpeg: linked`; check it after any change to
   `project.yml` or `Vendor/KSPlayer`.
+- **Look at the UI before shipping it:** `gh workflow run ui-screenshots.yml --ref <branch>`
+  builds for the visionOS + tvOS simulators and uploads a PNG per tab (demo data via
+  `BASSPLAYER_DEMO=1`, tab via `BASSPLAYER_SCREEN`). Download the `screenshots-*` artifacts and
+  read the images. New screens should be added to `DemoData` and the workflow's screen list.
 - Tag pushes and release creation were blocked for the original agent session; the owner can
   push a `v*` tag himself to get a GitHub release with IPAs + firmware attached.
 
@@ -54,14 +59,22 @@ Apple ID. Nothing has run on hardware yet.
   without which YouTube bot-checks. FFmpeg gets a local one-variant master
   (`HLSVariantPicker`: no AV1, HDR only if `yt.preferHDR`; `protocol_whitelist` set in
   `FFmpegSession.configure`).
-- FFmpeg comes from `Vendor/FFmpegKit`: FFmpegKit 6.1.4's binaries, device slices only,
-  hosted as release `ffmpegkit-6.1.4-bp1`, with Libavformat's `mov.o` + `hls.o` rebuilt from
-  n6.1 + `Vendor/FFmpegKit-patches` (workflow `ffmpegkit-backports.yml`). Stock 6.1 rejects
-  YouTube HDR init segments (`mdcv` + `SmDm`) and loses VP9 video after any seek in fMP4 HLS
-  (needs both the duplicate-`ftyp` and fragment-reset patches). No simulator slices: build
-  for devices only. FFmpegKit 9.x has the fixes too but drops libsmbclient. To add a patch:
-  drop it in `Vendor/FFmpegKit-patches`, bump `RELEASE_TAG`, run the workflow, commit the
-  generated `Package.swift` from its artifact.
+- FFmpeg comes from `Vendor/FFmpegKit`: FFmpegKit 6.1.4's binaries (visionOS + tvOS, device
+  slices patched, simulator slices stock) hosted as release `ffmpegkit-6.1.4-bp2`, fetched and
+  checksum-verified by `tools/fetch_binaries.sh` in CI. Libavformat's `mov.o` + `hls.o` are
+  rebuilt from n6.1 + `Vendor/FFmpegKit-patches` (workflow `ffmpegkit-backports.yml`). Stock
+  6.1 rejects YouTube HDR init segments (`mdcv` + `SmDm`) and loses VP9 video after any seek in
+  fMP4 HLS (needs both the duplicate-`ftyp` and fragment-reset patches). FFmpegKit 9.x has the
+  fixes too but drops libsmbclient. To add a patch: drop it in `Vendor/FFmpegKit-patches`, bump
+  `RELEASE_TAG` in the workflow, run it, commit `Package.swift` + `checksums.json` +
+  `RELEASE_TAG` from its artifact.
+- UI: `RootView` is a `TabView` (`.sidebarAdaptable`) of `AppTab`s; sources are shown by
+  `LibraryGridView(source:)` / `YouTubeView` / `NASBrowserView`; everything plays through
+  `library.play(item)`, which opens the `PlayerWindow` scene on visionOS and a
+  `fullScreenCover` on tvOS. `LibraryStore` has per-source `isSignedIn/isBusy/error/items/
+  refresh/status`. Plex connects by probing every address (`connect(to:)`); a host-only SMB
+  address lists shares as folders (`NetworkDirectory` treats share/server/workgroup entries
+  as directories).
 - `MediaItem` is `Codable` (recents); new fields need defaults so the memberwise init stays
   compatible with the four source clients.
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and

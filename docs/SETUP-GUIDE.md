@@ -80,23 +80,24 @@ You only do this once.
 
 ## 4. Install the app on the Vision Pro (no Mac needed)
 
-1. **Turn on Developer Mode** on the headset: Settings → Privacy & Security → Developer Mode →
-   On. (If it's not there yet, finish step 3 below first, it appears after the first pairing.)
-2. On your computer, download the **iloader** build with Vision Pro support (see the README link),
-   run it, and allow it to find devices on the local network.
-3. On the headset open Settings → General → **Remote Devices**. Leave that screen open. In
-   iloader, click your Vision Pro → **Pair** → type the code the headset shows.
-4. In iloader install **SideStore** onto the headset and sign in with a free Apple ID (a burner
-   Apple ID is fine and arguably better).
-5. On the headset, install **LocalDevVPN** from the App Store and turn its VPN on. SideStore
-   needs it to refresh apps by itself.
-6. Get the app: GitHub repo → Actions → latest green "Build unsigned IPAs" → download
-   **`BassPlayer-visionos-unsigned-ipa`**, unzip, and either drag the `.ipa` into iloader or
-   AirDrop/open it in SideStore on the headset. SideStore signs it with your Apple ID.
-7. First launch: Settings → General → VPN & Device Management → trust your Apple ID.
+The stock iloader can't see a Vision Pro (it only talks USB). The Linux box has a build of
+iloader with wireless Vision Pro support (`~/src/iloader-vp/…/iloader`; a desktop launcher is
+fine too). Steps, in order:
 
-Free Apple ID rules: the signature lasts 7 days (SideStore renews it in the background while the
-VPN is on), and you can have 3 sideloaded apps at once.
+1. Put the headset on, same Wi‑Fi as the computer. Open **Settings → General → Remote Devices**
+   and leave that screen up (the headset only announces itself while it's open).
+2. Start iloader. The Vision Pro appears under Devices → click it → type the **6-digit code**
+   the headset shows → Pair. (Only needed once.)
+3. **Add Account** → sign in with your Apple ID (2FA code goes to your other Apple devices).
+4. Get the app: GitHub repo → Actions → latest green "Build unsigned IPAs" → download
+   **`BassPlayer-visionos-unsigned-ipa`**, unzip.
+5. In iloader: **Import IPA** → pick the `.ipa`. It signs and installs over Wi‑Fi (~30 s).
+6. On the headset: Settings → General → VPN & Device Management → **Trust** your Apple ID. If
+   it asks for **Developer Mode**, turn it on (Settings → Privacy & Security) and let it restart.
+
+Free Apple ID rules: the signature lasts **7 days**, then the app refuses to open. Renew it by
+repeating step 5 (settings are kept). SideStore's Vision Pro build can't sign in to Apple at
+the moment, so it can't do the renewal for you. You can have 3 sideloaded apps at once.
 
 ---
 
@@ -114,13 +115,16 @@ VPN is on), and you can have 3 sideloaded apps at once.
 
 ## 6. Connect your media server
 
-Open Bass Player → gear icon (top right).
+Open Bass Player → **Settings** tab (bottom of the side bar).
 
 **Jellyfin:** enter the server address (`http://192.168.x.x:8096`), username and password →
-Sign in. Your movies (and episodes if you enable them under Playback) appear.
+Sign in. The Jellyfin tab fills with posters; the **All / Movies / Episodes** switch at the top
+filters, and search is always in the toolbar.
 
 **Plex:** tap **Sign in with plex.tv**. A 4-letter code appears. On your phone go to
-**plex.tv/link**, enter the code. Within ~10 s the app shows your servers; pick one.
+**plex.tv/link**, enter the code. Within ~10 s the app shows your servers; pick one. The app
+tries every address the server has and uses the first that answers, so it also works when the
+router blocks Plex's `plex.direct` names (see Troubleshooting).
 
 Leave **Backend** on **FFmpeg (all formats)**. That plays MKV, DTS, TrueHD, FLAC, AV1, HDR10,
 HLG and Dolby Vision profile 8 straight from the original file. (AVPlayer mode is only there
@@ -131,10 +135,12 @@ as a fallback and relies on the server transcoding to MP4.)
 ## 7. First play
 
 1. Power the A1S. Its serial log (if attached) says `advertising`.
-2. In the app, pick a film. The player opens and the status chip top-right should go
-   **green: "Bass tap · 48000 Hz · 6 ch"** (or 2 ch) within a few seconds.
-3. The bottom strip should say **Sub connected**. If it says Off, tap **Connect sub**; the first
-   time visionOS/tvOS asks for Bluetooth permission → Allow.
+2. In the app, pick a film. On the Vision Pro the player opens in its **own window** (the
+   library stays where it is); on Apple TV it fills the screen. The status chip top-right should
+   go **green: "Bass tap · 48000 Hz · 6 ch"** (or 2 ch) within a few seconds.
+3. The strip under the library window should say **Sub connected** (also on the Home tab's
+   Subwoofer card). If it says Off, tap **Connect sub**; the first time visionOS/tvOS asks for
+   Bluetooth permission → Allow.
 4. Find an explosion. You should feel it.
 
 If nothing: see Troubleshooting at the bottom.
@@ -223,12 +229,12 @@ rip isn't detected, or detected wrongly, use the **3D** menu in the player to pi
 
 ## 10c. Play straight off the NAS (no media server)
 
-Source switch → **NAS** → **+**. Two kinds:
+**NAS** tab → **Add share** (also in Settings → NAS). Two kinds:
 
-- **SMB** (Synology, QNAP, TrueNAS, Windows shares): address `nas.local` or `192.168.1.20`
-  lists the shares; `192.168.1.20/video` opens one share directly. Username/password as for
-  the NAS; leave blank for guest. The first time, visionOS/tvOS asks for Local Network access
-  → Allow.
+- **SMB** (Synology, QNAP, TrueNAS, Unraid, Windows shares): address `nas.local` or
+  `192.168.1.20` lists the shares as folders; `192.168.1.20/video` opens one share directly.
+  Username/password as for the NAS; leave blank for guest. The first time, visionOS/tvOS asks
+  for Local Network access → Allow.
 - **WebDAV / HTTP**: the full URL of the WebDAV folder (Synology: `https://nas:5006/video`),
   or any web server folder with directory listing turned on.
 
@@ -237,10 +243,11 @@ here too (MKV, DTS, HDR, 3D by file name). Blu-ray ISOs don't play; use MakeMKV 
 
 ## 10d. YouTube
 
-Pick **YouTube** in the library's source switch. Trending loads by default; the search box
-searches, and a pasted link or video id plays directly. Streams are fetched from YouTube's
-player API at play time, so there are no ads; SponsorBlock skips sponsor segments (Settings →
-YouTube to turn off). The sub works exactly as with films.
+**YouTube** tab. There is no feed (YouTube switched off its anonymous Trending page), so the
+screen opens on a search box plus your recent searches. Type a search, or **Paste** a video
+link, and tap a result. Streams are fetched from YouTube's player API at play time, so there
+are no ads; SponsorBlock skips sponsor segments (slider icon in the toolbar, or Settings →
+YouTube, to turn off). The sub works exactly as with films.
 
 Quality goes up to 4K, in HDR when the video has it. If 4K stutters on your Wi‑Fi, lower
 Settings → YouTube → **Max quality**; if HDR looks wrong or stutters, turn off **HDR when
@@ -258,7 +265,9 @@ side; the fix is updating the client identities in `InnerTubeClient.swift` from 
 | Status chip stays "Bass tap off" | Backend is AVPlayer and the stream is HLS/transcoding; switch Backend to FFmpeg. |
 | Hum from the sub | Same socket strip for both; then ground-loop isolator on the RCA lead; then try battery power on the A1S (JST connector). |
 | Film won't open (FFmpeg) | Jellyfin: check the user has access to the library. Plex: the chosen server connection might be a remote relay; pick the server again from Settings when on the same LAN. |
-| App vanished after a week | SideStore's refresh failed: open SideStore, make sure LocalDevVPN is on, tap Refresh. On Apple TV check atvloadly is still running. |
+| Plex: "A server with the specified host name could not be found" | Your router refuses to resolve Plex's `*.plex.direct` names to a LAN address (DNS-rebinding protection; OpenWrt does this by default). The app now falls back to the plain IP by itself. To fix it at the router too (OpenWrt): add `plex.direct` to dnsmasq's *Domain whitelist* / `rebind_domain`. |
+| NAS shows no files | Enter just the host (`192.168.1.20`): the shares appear as folders. If a share still looks empty, it needs a username/password. |
+| App won't open after a week | The free-ID signature expired. On the Linux box: iloader → Import IPA again (settings are kept). On Apple TV check atvloadly is still running. |
 | Bass stutters | Keep the A1S within ~5 m line-of-sight of the headset; move it away from the Wi‑Fi router; check "Packets dropped" in Diagnostics. |
 | `ES8388 init FAILED` on serial | You have the AC101 variant of the A1S. Build the `esp32dev` firmware and use a £6 PCM5102A board instead (wiring in `src/main.cpp`). |
 
@@ -267,5 +276,5 @@ side; the fix is updating the client identities in `InnerTubeClient.swift` from 
 ## 12. Updating
 
 Every push to the repo builds fresh IPAs and firmware in Actions. Reinstall the `.ipa` the same
-way as before (SideStore keeps your settings); reflash the firmware only when the firmware
-artifact changes.
+way as before (iloader → Import IPA; your settings are kept); reflash the firmware only when the
+firmware artifact changes.
