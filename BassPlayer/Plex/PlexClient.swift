@@ -222,7 +222,11 @@ final class PlexClient: ObservableObject, MediaServerClient {
             range = "Dolby Vision"
         }
 
-        return MediaItem(
+        var subs: [URL] = []
+        for st in part.Stream ?? [] where st.streamType == 3 {
+            if let k = st.key, let u = tokened(k) { subs.append(u) }
+        }
+        var mi = MediaItem(
             id: "plex:\(m.ratingKey)",
             source: .plex,
             title: m.title,
@@ -242,6 +246,27 @@ final class PlexClient: ObservableObject, MediaServerClient {
             height: media.height,
             stereo: StereoFormat.detect(name: m.title, path: part.file, width: media.width, height: media.height, codecTag: nil)
         )
+        mi.projection = ScreenProjection.detect(name: m.title, path: part.file)
+        if mi.projection != nil, mi.stereo == nil { mi.stereo = ScreenProjection.detectStereoForVR(name: m.title, path: part.file) }
+        mi.subtitleURLs = subs
+        if let vo = m.viewOffset, vo > 0 { mi.serverResumeSeconds = Double(vo) / 1000 }
+        return mi
+    }
+
+    // MARK: - Playback reporting (On Deck / resume on the server)
+
+    func reportPlayback(ratingKey: String, positionSeconds: Double, durationSeconds: Double, state: PlaybackReportState) async {
+        guard isSignedIn, let base = URL(string: serverURL) else { return }
+        var comps = URLComponents(url: base.appendingPathComponent(":/timeline"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            .init(name: "ratingKey", value: ratingKey),
+            .init(name: "key", value: "/library/metadata/\(ratingKey)"),
+            .init(name: "state", value: state == .stopped ? "stopped" : "playing"),
+            .init(name: "time", value: "\(Int(positionSeconds * 1000))"),
+            .init(name: "duration", value: "\(Int(durationSeconds * 1000))"),
+        ]
+        guard let url = comps.url else { return }
+        _ = try? await URLSession.shared.data(for: request(url))
     }
 }
 
@@ -299,6 +324,7 @@ private struct PlexMetadata: Decodable {
     let grandparentTitle: String?
     let parentIndex: Int?
     let index: Int?
+    let viewOffset: Int?
     let Media: [Media]?
 
     struct Media: Decodable {
@@ -318,6 +344,7 @@ private struct PlexMetadata: Decodable {
     }
     struct Stream: Decodable {
         let streamType: Int
+        let key: String?
         let codec: String?
         let channels: Int?
         let selected: Bool?

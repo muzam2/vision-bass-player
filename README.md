@@ -75,6 +75,13 @@ for the step-by-step setup.
   FFmpeg's libsmbclient (listing via `avio_open_dir`, playback via `smb://`), WebDAV through
   PROPFIND with a fallback to scraping plain HTTP directory indexes. Credentials live in the
   Keychain. NAS files always use the FFmpeg backend.
+- **VR video:** 180° and 360° equirectangular (mono, or stereo via SBS/TAB halves) wrapped on
+  a sphere around you on the Vision Pro, detected from file names with a per-file override.
+- **Comfort & playback:** recentre on your current head pose (ARKit device anchor; use it
+  lying down), screen placement remembered, resume where you left off with progress synced to
+  Jellyfin (Continue Watching) and Plex (On Deck), external subtitles from both servers,
+  picture controls and HDR boost on the cinema screen, room dimming, autoplay next, sleep
+  timer, recent items.
 - **Two devices, one sub:** receiver accepts both and follows whichever is sending.
 
 ## Wire protocol

@@ -121,6 +121,19 @@ libsmbclient against SMB3-only NAS boxes (it should negotiate; if not, options
 `"workgroup"`/`"timeout"` are passed through `NetworkDirectory.list(options:)`), and guest
 access with empty username on Windows shares. NFS is not available (FFmpegKit has no libnfs).
 
+### Feature-parity pass (vs Skybox / Moon VR / 4XVR)
+Added: `ScreenProjection` (flat/vr180/vr360) + `ScreenMesh.makeVR`, ARKit `WorldTrackingProvider`
+device anchor for recentre (`ImmersiveScreenView.recentre`; immersive-space origin is on the
+floor, so `height` is now absolute metres), resume via `KSOptions.startPlayTime` with local +
+server positions, progress reporting (`JellyfinClient.reportPlayback`, `PlexClient.reportPlayback`
+every 20 s and on stop), external subtitles via `URLSubtitleDataSouce`, CoreImage picture
+controls in the feeder, dome opacity, autoplay next (`LibraryStore.next(after:)`), sleep timer,
+recents (Codable `MediaItem`). Deliberately not built: DLNA/UPnP browsing, cloud drives, 3D
+theatre environments, 2D-window picture controls (would need `hwdownload` for hardware frames).
+Untested: the VR sphere UV orientation (flipV toggle covers vertical; horizontal mirroring would
+mean negating `x` in `makeVR`), and whether `startPlayTime` applies before the first frame on
+HLS (YouTube) sources.
+
 ### YouTube (added later)
 `InnerTubeClient` mirrors yt-dlp's client table; `Client.playbackOrder` is the thing to update
 when playback breaks (yt-dlp `youtube/_base.py`, INNERTUBE_CLIENTS). The iOS client returns an

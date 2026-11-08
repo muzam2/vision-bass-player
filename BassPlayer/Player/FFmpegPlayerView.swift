@@ -64,6 +64,15 @@ final class FFmpegSession: ObservableObject {
     private let bassLink: BassLink
     private var sponsorSkipper = SponsorSkipper()
     @Published private(set) var sponsorSkips = 0
+    @Published private(set) var finished = false
+    private var item: MediaItem?
+    private weak var library: LibraryStore?
+    private var lastProgressSave: Date = .distantPast
+    private var lastServerReport: Date = .distantPast
+    private var reportedStart = false
+    private var lastKnownPosition: Double = 0
+    private var lastKnownDuration: Double = 0
+    private var sleepFired = false
 
     private lazy var doviRenderer = DoviFrameRenderer()
     private var lastFrameId: ObjectIdentifier?
@@ -96,12 +105,23 @@ final class FFmpegSession: ObservableObject {
         extractor.onPacket = { [weak bassLink] packet in bassLink?.send(packet) }
     }
 
-    func start(coordinator: KSVideoPlayer.Coordinator, leadMs: Int, item: MediaItem? = nil) {
+    func start(coordinator: KSVideoPlayer.Coordinator, leadMs: Int, item: MediaItem? = nil, library: LibraryStore? = nil) {
         self.coordinator = coordinator
+        self.item = item
+        self.library = library
         tap.leadMs = leadMs
         options.videoDelay = Double(leadMs) / 1000
         if let ua = item?.userAgent { options.userAgent = ua }    // YouTube URLs are tied to the requesting client
         sponsorSkipper = SponsorSkipper()
+        finished = false
+        reportedStart = false
+        sleepFired = false
+        if let item, let library {
+            library.noteStarted(item)
+            if library.resumePlayback, let pos = library.savedPosition(for: item), pos > 30 {
+                options.startPlayTime = pos        // KSPlayer seeks here once the file opens
+            }
+        }
         pollTimer?.invalidate()
         // KSVideoPlayerView owns the state callbacks, so we poll briefly until the engine exists.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -137,12 +157,50 @@ final class FFmpegSession: ObservableObject {
         pollTimer = nil
         tap.detach()
         tapInstalled = false
+        if let item, let library, lastKnownPosition > 0 {
+            library.savePosition(lastKnownPosition, duration: lastKnownDuration, for: item)
+            let pos = lastKnownPosition, dur = lastKnownDuration
+            Task { await library.report(item, position: pos, duration: dur, state: .stopped) }
+        }
+    }
+
+    private func trackProgress(layer: KSPlayerLayer) {
+        guard let item, let library else { return }
+        let player = layer.player
+        let pos = player.currentPlaybackTime
+        let dur = player.duration
+        guard pos.isFinite, pos > 0 else { return }
+        lastKnownPosition = pos
+        lastKnownDuration = dur.isFinite ? dur : 0
+        let now = Date()
+        if !reportedStart, layer.state.isPlaying {
+            reportedStart = true
+            Task { await library.report(item, position: pos, duration: lastKnownDuration, state: .started) }
+        }
+        if now.timeIntervalSince(lastProgressSave) > 5 {
+            lastProgressSave = now
+            library.savePosition(pos, duration: lastKnownDuration, for: item)
+        }
+        if now.timeIntervalSince(lastServerReport) > 20, layer.state.isPlaying {
+            lastServerReport = now
+            Task { await library.report(item, position: pos, duration: lastKnownDuration, state: .progress) }
+        }
+        if layer.state == .playedToTheEnd, !finished {
+            finished = true
+            library.savePosition(lastKnownDuration, duration: lastKnownDuration, for: item)
+        }
+        if let end = library.sleepTimerEnd, now >= end, !sleepFired {
+            sleepFired = true
+            layer.pause()
+            library.sleepTimerEnd = nil
+        }
     }
 
     private func poll() {
         guard let layer = coordinator?.playerLayer else { return }
         let player = layer.player
         backendName = player is KSMEPlayer ? "FFmpeg" : "AVPlayer"
+        trackProgress(layer: layer)
         // SponsorBlock: jump over marked segments.
         if !sponsorSkipper.segments.isEmpty, layer.state == .bufferFinished || layer.state == .readyToPlay,
            let target = sponsorSkipper.skipTarget(at: player.currentPlaybackTime) {
@@ -167,6 +225,7 @@ final class FFmpegSession: ObservableObject {
 struct FFmpegPlayerView: View {
     let item: MediaItem
     let url: URL
+    var onFinished: (() -> Void)? = nil
 
     @EnvironmentObject private var bassLink: BassLink
     @EnvironmentObject private var library: LibraryStore
@@ -185,19 +244,22 @@ struct FFmpegPlayerView: View {
         #endif
     }
 
-    init(item: MediaItem, url: URL) {
+    init(item: MediaItem, url: URL, onFinished: (() -> Void)? = nil) {
         self.item = item
         self.url = url
+        self.onFinished = onFinished
         _session = StateObject(wrappedValue: FFmpegSession(bassLink: BassLinkHolder.shared))
     }
 
     var body: some View {
-        KSVideoPlayerView(coordinator: coordinator, url: url, options: session.options, title: item.title)
+        KSVideoPlayerView(coordinator: coordinator, url: url, options: session.options, title: item.title,
+                          subtitleDataSouce: item.subtitleURLs.isEmpty ? nil : URLSubtitleDataSouce(urls: item.subtitleURLs))
             .overlay(alignment: .topTrailing) { statusChip.padding(12) }
             .onAppear {
                 if bassLink.state == .off { bassLink.start() }
-                session.start(coordinator: coordinator, leadMs: leadMs, item: item)
+                session.start(coordinator: coordinator, leadMs: leadMs, item: item, library: library)
                 session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive)
+                ImmersiveScreenBridge.shared.projection = library.effectiveProjection(for: item)
                 if item.source == .youtube {
                     Task { session.setSponsorSegments(await library.youtube.sponsorSegments(for: item)) }
                 }
@@ -208,10 +270,13 @@ struct FFmpegPlayerView: View {
                 session.stop()
                 ImmersiveScreenBridge.shared.frameSource = nil
                 ImmersiveScreenBridge.shared.stereoFormat = .mono
+                ImmersiveScreenBridge.shared.projection = .flat
             }
             .onChange(of: leadMs) { _, new in session.setLead(ms: new) }
             .onChange(of: library.effectiveStereo(for: item)) { _, new in session.setStereo(new, immersiveStereo: immersiveStereoActive) }
             .onChange(of: immersiveStereoActive) { _, _ in session.setStereo(library.effectiveStereo(for: item), immersiveStereo: immersiveStereoActive) }
+            .onChange(of: library.effectiveProjection(for: item)) { _, new in ImmersiveScreenBridge.shared.projection = new }
+            .onChange(of: session.finished) { _, done in if done { onFinished?() } }
     }
 
     private var statusChip: some View {
@@ -249,6 +314,8 @@ final class ImmersiveScreenBridge {
     var frameSource: (() -> ScreenFrame?)?
     /// Packing of the current film; the screen splits packed frames into two eyes.
     var stereoFormat: StereoFormat = .mono
+    /// Flat screen or VR sphere.
+    var projection: ScreenProjection = .flat
     /// Set when the AVPlayer backend is active (MV-HEVC): the screen then uses RealityKit's own
     /// video component, which renders stereo natively.
     var avPlayer: AVPlayer?
