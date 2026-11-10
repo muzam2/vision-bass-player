@@ -557,11 +557,11 @@ public extension KSOptions {
         let preferredOutputNumberOfChannels = AVAudioChannelCount(AVAudioSession.sharedInstance().preferredOutputNumberOfChannels)
         let isSpatialAudioEnabled = isSpatialAudioEnabled(channelCount: channelCount)
         let isUseAudioRenderer = KSOptions.audioPlayerType == AudioRendererPlayer.self
-        KSLog("[audio] maximumOutputNumberOfChannels: \(maximumOutputNumberOfChannels), preferredOutputNumberOfChannels: \(preferredOutputNumberOfChannels), isSpatialAudioEnabled: \(isSpatialAudioEnabled), isUseAudioRenderer: \(isUseAudioRenderer) ")
+        KSLog(level: .info, "[audio] maximumOutputNumberOfChannels: \(maximumOutputNumberOfChannels), preferredOutputNumberOfChannels: \(preferredOutputNumberOfChannels), isSpatialAudioEnabled: \(isSpatialAudioEnabled), isUseAudioRenderer: \(isUseAudioRenderer) ")
         let maxRouteChannelsCount = AVAudioSession.sharedInstance().currentRoute.outputs.compactMap {
             $0.channels?.count
         }.max() ?? 2
-        KSLog("[audio] currentRoute max channels: \(maxRouteChannelsCount)")
+        KSLog(level: .info, "[audio] currentRoute max channels: \(maxRouteChannelsCount)")
         var channelCount = channelCount
         if channelCount > 2 {
             let minChannels = min(maximumOutputNumberOfChannels, channelCount)
@@ -581,7 +581,7 @@ public extension KSOptions {
             channelCount = 2
         }
         // 不在这里设置setPreferredOutputNumberOfChannels,因为这个方法会在获取音轨信息的时候，进行调用。
-        KSLog("[audio] outputNumberOfChannels: \(AVAudioSession.sharedInstance().outputNumberOfChannels) output channelCount: \(channelCount)")
+        KSLog(level: .info, "[audio] outputNumberOfChannels: \(AVAudioSession.sharedInstance().outputNumberOfChannels) output channelCount: \(channelCount)")
         return channelCount
     }
     #endif

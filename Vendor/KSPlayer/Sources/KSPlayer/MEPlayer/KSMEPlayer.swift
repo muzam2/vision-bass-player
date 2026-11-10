@@ -166,7 +166,7 @@ private extension KSMEPlayer {
     }
 
     @objc private func spatialCapabilityChange(notification _: Notification) {
-        KSLog("[audio] spatialCapabilityChange")
+        KSLog(level: .info, "[audio] spatialCapabilityChange")
         for track in tracks(mediaType: .audio) {
             (track as? FFmpegAssetTrack)?.audioDescriptor?.updateAudioFormat()
         }

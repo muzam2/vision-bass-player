@@ -333,7 +333,7 @@ public class AudioDescriptor: Equatable {
                 layoutTag = outChannel.layoutTag!
             }
         }
-        KSLog("[audio] out channelLayout: \(outChannel)")
+        KSLog(level: .info, "[audio] out channelLayout: \(outChannel)")
         var commonFormat: AVAudioCommonFormat
         var interleaved: Bool
         switch sampleFormat {
