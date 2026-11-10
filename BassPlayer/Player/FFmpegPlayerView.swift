@@ -16,7 +16,10 @@ enum FFmpegConfig {
         // plays as its HDR10 base layer; profile 8 is HDR10/HLG-compatible by design.
         KSOptions.asynchronousDecompression = false
         KSOptions.isAutoPlay = true
-        KSOptions.isSecondOpen = true
+        // Off: "instant open" let audio start before any video was decoded (and after seeks,
+        // with half the buffer), so on software-decoded YouTube the sound ran ahead while the
+        // picture caught up. Now both must have preferredForwardBufferDuration buffered.
+        KSOptions.isSecondOpen = false
         // Seconds of buffered media KSPlayer wants before it starts / resumes after a seek. 4 s
         // meant 3–9 s seek latency on 4K60 YouTube (fetch + software VP9 decode of 4 s of video
         // before the first frame); 1.5 s is enough with the 60 s max buffer behind it.
