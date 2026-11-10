@@ -438,6 +438,10 @@ Ordered by likelihood of needing a fix.
    reads the media playlist once and `KSOptions.seekSnap` (patch, applied in
    `KSMEPlayer.seek`) snaps every user seek down to a segment start (sponsor skips bypass it);
    buffer requirement 1.0 s. Expect ~1–1.5 s.
+   Seen once: a TCP reset from googlevideo mid-segment → FFmpeg's `reconnect_streamed` restarted
+   the segment at byte 0 → duplicated bytes → VP9 header errors → video frozen 12 s, audio on
+   (self-recovered at the next keyframe). YouTube sessions now set `reconnect=1,
+   reconnect_streamed=0, reconnect_on_network_error=1, reconnect_delay_max=2`.
    **Look to Scroll** (visionOS 26): `View.lookToScroll()` on RootView and PlayerScreen; the
    user must also enable it in the headset's Settings.
 1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
