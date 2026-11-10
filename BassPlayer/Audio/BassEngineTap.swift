@@ -59,15 +59,25 @@ final class BassEngineTap {
 
     private func installTapIfNeeded() {
         guard let engine, !tapInstalled else { return }
+        // Before KSPlayer connects its graph the mixer reports a placeholder (44.1 kHz stereo);
+        // installing then meant the extractor decimated 48 kHz 5.1 buffers with the wrong ratio
+        // (packets 9 % too fast). Wait for the running graph, and re-read the format from every
+        // buffer anyway: KSPlayer rebuilds the graph when the track's format changes.
+        guard engine.isRunning else { return }
         let mixer = engine.mainMixerNode
         let format = mixer.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { return }   // graph not connected yet
         extractor.configure(sampleRate: format.sampleRate, channels: Int(format.channelCount), interleaved: format.isInterleaved)
-        mixer.installTap(onBus: 0, bufferSize: 1024, format: format) { [extractor] buffer, _ in
+        mixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { [extractor] buffer, _ in
+            let f = buffer.format
+            if f.sampleRate != extractor.sampleRate || Int(f.channelCount) != extractor.channels || f.isInterleaved != extractor.interleaved {
+                extractor.configure(sampleRate: f.sampleRate, channels: Int(f.channelCount), interleaved: f.isInterleaved)
+                DiagLog.log("tap format now \(Int(f.sampleRate)) Hz, \(f.channelCount) ch, \(f.isInterleaved ? "interleaved" : "planar")", "bass")
+            }
             extractor.process(bufferList: buffer.mutableAudioBufferList, frames: Int(buffer.frameLength))
         }
         tapInstalled = true
-        DiagLog.log("tap installed on the mixer: \(Int(format.sampleRate)) Hz, \(format.channelCount) ch, \(format.isInterleaved ? "interleaved" : "planar"), engine running: \(engine.isRunning)", "bass")
+        DiagLog.log("tap installed on the mixer: \(Int(format.sampleRate)) Hz, \(format.channelCount) ch, \(format.isInterleaved ? "interleaved" : "planar")", "bass")
     }
 
     /// Rewire mixer → delay → output when a lead is requested; restore the direct link when not.

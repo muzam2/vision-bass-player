@@ -412,8 +412,16 @@ Ordered by likelihood of needing a fix.
 
 ## 7. Suggested next steps, in order
 
-1. **On-device verification of today's big changes** (all built, none confirmed on the headset
-   yet): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
+0. **Verified on device 2026-11-10 (21 Bridges, 4K HEVC, DTS-HD MA 5.1):** the bass tap
+   works — mixer tap delivers 48 kHz 6-channel planar buffers, the extractor takes the LFE
+   channel (index 3), ~50 packets/s, levels follow the film; BLE stays "scanning" (no
+   receiver yet). visionOS keeps 5.1 → spatial audio renders it, so LFE is not lost in a
+   downmix. Found + fixed: the tap was installed before the graph ran, so the extractor was
+   configured from the placeholder 44.1 kHz stereo format and decimated 9 % too fast (now
+   waits for the running engine and re-reads every buffer's format). Judder fix confirmed:
+   8 frame drops in a minute, all at cinema open / unpause / window reopen, none in steady
+   state (was ~700/min). Cinema gaze-line placement, exit and library reopen all behaved.
+1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
    the SMB bridge (NAS browse + play), MVC 3D Blu-ray (needs a MakeMKV 3D MKV on the server;
    watch `video delay` lines for decode speed), the new icon, the judder fix (display link at
    panel rate — "drop next frame" lines should be rare).
