@@ -49,6 +49,7 @@ struct PlayerScreen: View {
             #endif
         }
         #if os(visionOS)
+        .lookToScroll()
         .background(WindowSceneProbe { s in if let s { scene = s } })
         .onReceive(NotificationCenter.default.publisher(for: UIScene.didDisconnectNotification)) { n in
             if let s = n.object as? UIWindowScene, s === scene, !dead {

@@ -48,6 +48,7 @@ struct RootView: View {
         }
         #endif
         .onAppear(perform: applyScreenOverride)
+        .lookToScroll()
     }
 
     private func tabLabel(_ tab: AppTab) -> some View {

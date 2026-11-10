@@ -430,7 +430,16 @@ Ordered by likelihood of needing a fix.
    variant picker now keeps software-decoded variants within a pixel-rate budget
    (`HLSVariantPicker.softwareDecodePixelRateBudget`, 1440p60 / 2160p30 pass, 2160p60 does
    not); H.264 variants are unaffected. "keepalive request failed" after seeks is FFmpeg's
-   HLS persistent-connection retry against googlevideo — harmless, one extra round trip.
+   HLS persistent-connection retry against googlevideo — now disabled (`http_persistent=0`).
+   Second round (same day, 1440p60 VP9): seeks resumed in 1.0–3.1 s with zero drops and A/V
+   together (`isSecondOpen` off). Remaining latency is FFmpeg's HLS seek reading the segment
+   that contains the target and discarding up to the first keyframe ≥ target = the *next*
+   segment start, so ~1.5 segments were fetched per seek. Now `FFmpegSession.learnSegments`
+   reads the media playlist once and `KSOptions.seekSnap` (patch, applied in
+   `KSMEPlayer.seek`) snaps every user seek down to a segment start (sponsor skips bypass it);
+   buffer requirement 1.0 s. Expect ~1–1.5 s.
+   **Look to Scroll** (visionOS 26): `View.lookToScroll()` on RootView and PlayerScreen; the
+   user must also enable it in the headset's Settings.
 1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
    the SMB bridge (NAS browse + play), MVC 3D Blu-ray (needs a MakeMKV 3D MKV on the server;
    watch `video delay` lines for decode speed), the new icon, the judder fix (display link at

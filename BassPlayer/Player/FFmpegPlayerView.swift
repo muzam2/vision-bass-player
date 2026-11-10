@@ -23,7 +23,7 @@ enum FFmpegConfig {
         // Seconds of buffered media KSPlayer wants before it starts / resumes after a seek. 4 s
         // meant 3–9 s seek latency on 4K60 YouTube (fetch + software VP9 decode of 4 s of video
         // before the first frame); 1.5 s is enough with the 60 s max buffer behind it.
-        KSOptions.preferredForwardBufferDuration = 1.5
+        KSOptions.preferredForwardBufferDuration = 1.0
         // The 90 Hz panel can't pace a display link at 23.976/24/25 Hz (it lands on 22.5 or
         // 18 Hz, the video falls ~0.2 s behind the audio clock and KSPlayer drops frames every
         // few hundred ms — the "jitter" seen on every film). Run the link at panel rate instead.
@@ -139,6 +139,59 @@ final class FFmpegSession: ObservableObject {
             // playlists and segments are https: a file-opened HLS is limited to local protocols
             // unless whitelisted.
             options.formatContextOptions["protocol_whitelist"] = "file,http,https,tcp,tls,crypto,data"
+            // googlevideo closes the connection after every segment; FFmpeg's keep-alive reuse
+            // then fails and is retried ("keepalive request failed"), one wasted round trip per
+            // segment and per seek.
+            options.formatContextOptions["http_persistent"] = 0
+            options.seekSnap = nil
+            if let master = item.directURL, master.isFileURL {
+                Task { await learnSegments(master: master, userAgent: item.userAgent) }
+            }
+        }
+    }
+
+    /// FFmpeg's HLS demuxer seeks by reading the segment that contains the target and
+    /// discarding everything up to the first keyframe at or after it — on YouTube that keyframe
+    /// is the start of the *next* segment, so a seek fetched ~1.5 segments before the first
+    /// frame (2.5–3 s). Seeking to the segment start instead makes the first packet usable.
+    /// Read the media playlist once to know the boundaries (EXTINF durations are not constant).
+    private func learnSegments(master: URL, userAgent: String?) async {
+        guard let text = try? String(contentsOf: master, encoding: .utf8) else { return }
+        var mediaURL: URL?
+        var afterInf = false
+        for raw in text.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#EXT-X-STREAM-INF") { afterInf = true; continue }
+            if afterInf, !line.isEmpty, !line.hasPrefix("#") { mediaURL = URL(string: line); break }
+        }
+        guard let mediaURL, mediaURL.scheme?.hasPrefix("http") == true else { return }
+        var req = URLRequest(url: mediaURL, timeoutInterval: 15)
+        if let userAgent { req.setValue(userAgent, forHTTPHeaderField: "User-Agent") }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let playlist = String(data: data, encoding: .utf8) else {
+            DiagLog.log("media playlist not readable; seeks stay unsnapped", "youtube"); return
+        }
+        var starts: [Double] = [0]
+        var t = 0.0
+        var durations: [Double] = []
+        for raw in playlist.components(separatedBy: .newlines) where raw.hasPrefix("#EXTINF:") {
+            let num = raw.dropFirst("#EXTINF:".count).split(separator: ",").first.map(String.init) ?? ""
+            if let d = Double(num), d > 0 { durations.append(d); t += d; starts.append(t) }
+        }
+        guard durations.count > 1 else { return }
+        let sorted = durations.sorted()
+        let median = sorted[sorted.count / 2]
+        DiagLog.log(String(format: "media playlist: %d segments, median %.2f s, total %.0f s → seeks snap to segment starts", durations.count, median, t), "youtube")
+        options.seekSnap = { want in
+            // Largest segment start <= want (binary search); earlier rather than later so the
+            // user never lands past what they aimed at.
+            var lo = 0, hi = starts.count - 1
+            while lo < hi {
+                let mid = (lo + hi + 1) / 2
+                if starts[mid] <= want { lo = mid } else { hi = mid - 1 }
+            }
+            return starts[lo]
         }
     }
 
@@ -247,7 +300,10 @@ final class FFmpegSession: ObservableObject {
         if !sponsorSkipper.segments.isEmpty, layer.state == .bufferFinished || layer.state == .readyToPlay,
            let target = sponsorSkipper.skipTarget(at: player.currentPlaybackTime) {
             sponsorSkips += 1
+            let snap = options.seekSnap
+            options.seekSnap = nil          // snapping down would re-enter the sponsor segment
             layer.seek(time: target, autoPlay: true) { _ in }
+            options.seekSnap = snap
         }
         guard let me = player as? KSMEPlayer else { return }
         if let view = me.videoOutput as? MetalPlayView { installFrameSink(on: view) }
