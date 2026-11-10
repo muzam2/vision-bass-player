@@ -143,6 +143,15 @@ final class FFmpegSession: ObservableObject {
             // then fails and is retried ("keepalive request failed"), one wasted round trip per
             // segment and per seek.
             options.formatContextOptions["http_persistent"] = 0
+            // A connection reset mid-segment (seen 2026-11-10) made FFmpeg's "streamed"
+            // reconnect restart the segment from byte 0 behind the demuxer's back: duplicated
+            // bytes, 80 VP9 header errors, picture frozen for 12 s while audio ran on.
+            // googlevideo answers with Content-Length and ranges, so plain reconnect resumes at
+            // the offset; a failure then skips to the next segment instead of feeding garbage.
+            options.formatContextOptions["reconnect"] = 1
+            options.formatContextOptions["reconnect_streamed"] = 0
+            options.formatContextOptions["reconnect_on_network_error"] = 1
+            options.formatContextOptions["reconnect_delay_max"] = 2
             options.seekSnap = nil
             if let master = item.directURL, master.isFileURL {
                 Task { await learnSegments(master: master, userAgent: item.userAgent) }
