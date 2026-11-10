@@ -24,6 +24,9 @@ open class KSOptions {
     public var isSecondOpen = KSOptions.isSecondOpen
     /// 开启精确seek
     public var isAccurateSeek = KSOptions.isAccurateSeek
+    /// Bass Player patch: maps a requested seek time to the one actually used (e.g. snapped to an
+    /// HLS segment boundary, where the keyframe is). Applied in KSMEPlayer.seek; nil = as is.
+    public var seekSnap: ((TimeInterval) -> TimeInterval)?
     /// Applies to short videos only
     public var isLoopPlay = KSOptions.isLoopPlay
     /// 区间无缝循环 [lowerBound, upperBound]，单位秒（相对 file 内播放时间，不含 startTime offset）。

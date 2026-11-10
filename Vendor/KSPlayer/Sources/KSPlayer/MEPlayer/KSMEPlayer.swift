@@ -357,7 +357,8 @@ extension KSMEPlayer: MediaPlayerProtocol {
     }
 
     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
-        let time = max(time, 0)
+        var time = max(time, 0)
+        if let snap = options.seekSnap { time = max(snap(time), 0) }
         playbackState = .seeking
         runOnMainThread { [weak self] in
             self?.bufferingProgress = 0
