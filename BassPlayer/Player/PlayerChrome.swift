@@ -31,7 +31,9 @@ struct FFmpegPlayerChrome: View {
             SubtitleOverlay(model: playback.coordinator.subtitleModel, base: 26)
                 .padding(.bottom, showControls ? 150 : 60)
 
-            if immersive.isOpen {
+            if playback.state == .error {
+                errorPanel
+            } else if immersive.isOpen {
                 // Only visible for the instant before the cinema screen dismisses this window.
                 Label("Playing on the cinema screen", systemImage: "rectangle.inset.filled.on.rectangle")
                     .padding(20).glassBackgroundEffect()
@@ -65,6 +67,36 @@ struct FFmpegPlayerChrome: View {
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
             if playback.state == .bufferFinished { showControls = false }
+        }
+    }
+
+    /// The stream failed to open or died: say so instead of sitting on a black window.
+    private var errorPanel: some View {
+        VStack(spacing: 16) {
+            Label("Can't play this", systemImage: "exclamationmark.triangle")
+                .font(.title2.weight(.semibold))
+            Text(playback.lastError ?? "The stream could not be opened.")
+                .font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).frame(maxWidth: 520)
+            HStack(spacing: 14) {
+                Button("Try again") { retry() }.buttonStyle(.borderedProminent)
+                Button("Close") { stop() }
+            }
+        }
+        .padding(28)
+        .glassBackgroundEffect()
+    }
+
+    /// Re-open the item from scratch: close this window, then play it again (which re-resolves
+    /// stream URLs and reopens the player window).
+    private func retry() {
+        DiagLog.log("retry pressed", "player")
+        let again = item
+        playback.end()
+        dismiss()
+        Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            library.play(again)
         }
     }
 

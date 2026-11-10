@@ -211,10 +211,14 @@ final class LibraryStore: ObservableObject {
 
     /// Fetch anything the item needs just before playback (YouTube stream URLs expire).
     func resolve(_ item: MediaItem) async throws -> MediaItem {
-        guard item.needsResolve else { return item }
         switch item.source {
-        case .youtube: return try await youtube.resolve(item)
-        default: return item
+        case .youtube:
+            // Always: a YouTube item kept in recents carries stream URLs that expire within
+            // hours and a local playlist file that is gone after a relaunch, so playing it from
+            // Home failed silently until this re-resolved every time.
+            return try await youtube.resolve(item)
+        default:
+            return item
         }
     }
 

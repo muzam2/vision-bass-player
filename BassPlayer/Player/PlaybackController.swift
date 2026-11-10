@@ -19,6 +19,8 @@ final class PlaybackController: ObservableObject {
     @Published private(set) var url: URL?
     /// Mirror of the player layer's state, published (the coordinator's own is not).
     @Published private(set) var state: KSPlayerState = .initialized
+    /// Why the last open/playback failed (shown by the player chrome with a Retry button).
+    @Published private(set) var lastError: String?
     /// True while the player window has been dismissed in favour of the cinema screen; the
     /// player view's disappearance must not end playback then.
     var detachedForImmersive = false
@@ -42,6 +44,14 @@ final class PlaybackController: ObservableObject {
         coordinator.keepsPlayerWhenViewGoesAway = true
         coordinator.onStateChanged = { [weak self] layer, state in
             Task { @MainActor in self?.handle(state: state, layer: layer) }
+        }
+        coordinator.onFinish = { [weak self] _, error in
+            guard let error else { return }
+            let text = (error as NSError).localizedDescription
+            Task { @MainActor in
+                self?.lastError = text
+                DiagLog.log("player error: \(error)", "playback")
+            }
         }
         #if os(visionOS)
         let nc = NotificationCenter.default
@@ -104,6 +114,7 @@ final class PlaybackController: ObservableObject {
         self.library = library
         self.leadMs = leadMs
         state = .initialized
+        lastError = nil
         s.start(coordinator: coordinator, leadMs: leadMs, item: item, library: library)
         // Create the player here rather than waiting for a SwiftUI view to mount it: in the
         // cinema there is no window, and a view that appears later just adopts this player.
