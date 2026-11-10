@@ -421,6 +421,16 @@ Ordered by likelihood of needing a fix.
    waits for the running engine and re-reads every buffer's format). Judder fix confirmed:
    8 frame drops in a minute, all at cinema open / unpause / window reopen, none in steady
    state (was ~700/min). Cinema gaze-line placement, exit and library reopen all behaved.
+0b. **YouTube seek/perf, measured 2026-11-10** ("Diablo 2 … 8K", 2160p60 VP9 → VideoToolbox
+   refuses VP9 on the headset, software decode): three seeks resumed after 8.6 / 2.8 / 5.0 s —
+   the seek itself takes <1 ms (inaccurate seek lands on the segment keyframe), the wait is
+   fetching the segment plus KSPlayer's `preferredForwardBufferDuration` (was 4 s of 4K60
+   software decode) → now 1.5 s. Steady state dropped ~2 frames/s at a constant −75 ms lag
+   (decoder queue full, so the renderer/upload of 4K60 software frames is the limit) → the
+   variant picker now keeps software-decoded variants within a pixel-rate budget
+   (`HLSVariantPicker.softwareDecodePixelRateBudget`, 1440p60 / 2160p30 pass, 2160p60 does
+   not); H.264 variants are unaffected. "keepalive request failed" after seeks is FFmpeg's
+   HLS persistent-connection retry against googlevideo — harmless, one extra round trip.
 1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
    the SMB bridge (NAS browse + play), MVC 3D Blu-ray (needs a MakeMKV 3D MKV on the server;
    watch `video delay` lines for decode speed), the new icon, the judder fix (display link at

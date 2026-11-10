@@ -17,7 +17,10 @@ enum FFmpegConfig {
         KSOptions.asynchronousDecompression = false
         KSOptions.isAutoPlay = true
         KSOptions.isSecondOpen = true
-        KSOptions.preferredForwardBufferDuration = 4
+        // Seconds of buffered media KSPlayer wants before it starts / resumes after a seek. 4 s
+        // meant 3–9 s seek latency on 4K60 YouTube (fetch + software VP9 decode of 4 s of video
+        // before the first frame); 1.5 s is enough with the 60 s max buffer behind it.
+        KSOptions.preferredForwardBufferDuration = 1.5
         // The 90 Hz panel can't pace a display link at 23.976/24/25 Hz (it lands on 22.5 or
         // 18 Hz, the video falls ~0.2 s behind the audio clock and KSPlayer drops frames every
         // few hundred ms — the "jitter" seen on every film). Run the link at panel rate instead.

@@ -76,9 +76,19 @@ enum HLSVariantPicker {
     }
 
     /// Pure part, kept separate so it is easy to reason about: returns the new master text.
+    /// Pixel rate (w × h × fps) above which a *software-decoded* variant (VP9/AV1: VideoToolbox
+    /// refuses them on the headset) is passed over when a cheaper one exists. 2160p60 VP9
+    /// (497 Mpx/s) drops ~2 frames/s on the M2; 1440p60 (221) and 2160p30 (249) are fine.
+    static let softwareDecodePixelRateBudget = 260_000_000.0
+
     static func pick(master: String, maxHeight: Int, preferHDR: Bool) -> (playlist: String, label: String)? {
         let lines = master.components(separatedBy: .newlines)
-        struct Candidate { let height: Int; let fps: Double; let hdr: Bool; let avc: Bool; let bandwidth: Int; let inf: String; let uri: String; let audio: String?; let codecs: String }
+        struct Candidate {
+            let height: Int; let fps: Double; let hdr: Bool; let avc: Bool; let bandwidth: Int; let inf: String; let uri: String; let audio: String?; let codecs: String
+            let width: Int
+            /// True when this variant would be software-decoded faster than the headset can render it.
+            var overBudget: Bool { !avc && Double(width * height) * max(fps, 30) > HLSVariantPicker.softwareDecodePixelRateBudget }
+        }
         var best: Candidate?
         for (i, line) in lines.enumerated() where line.hasPrefix("#EXT-X-STREAM-INF:") && i + 1 < lines.count {
             let attrs = String(line.dropFirst("#EXT-X-STREAM-INF:".count))
@@ -97,10 +107,13 @@ enum HLSVariantPicker {
                 hdr: hdr,
                 avc: codecs.hasPrefix("avc1"),          // at equal size H.264 wins: guaranteed hardware decode
                 bandwidth: Int(attribute("BANDWIDTH", in: attrs) ?? "") ?? 0,
-                inf: line, uri: uri, audio: attribute("AUDIO", in: attrs), codecs: codecs)
+                inf: line, uri: uri, audio: attribute("AUDIO", in: attrs), codecs: codecs,
+                width: size.count == 2 ? size[0] : 0)
             if let b = best {
-                // Size first, then frame rate, then HDR (only offered when preferred), then H.264.
-                let better = (c.height, c.fps, c.hdr ? 1 : 0, c.avc ? 1 : 0, c.bandwidth) > (b.height, b.fps, b.hdr ? 1 : 0, b.avc ? 1 : 0, b.bandwidth)
+                // Within the decode budget first; then size, frame rate, HDR (only offered when
+                // preferred), H.264, bandwidth.
+                let better = (c.overBudget ? 0 : 1, c.height, c.fps, c.hdr ? 1 : 0, c.avc ? 1 : 0, c.bandwidth)
+                    > (b.overBudget ? 0 : 1, b.height, b.fps, b.hdr ? 1 : 0, b.avc ? 1 : 0, b.bandwidth)
                 if better { best = c }
             } else {
                 best = c
@@ -138,7 +151,9 @@ enum HLSVariantPicker {
 
         let codec = best.codecs.hasPrefix("avc1") ? "H.264" : best.codecs.hasPrefix("vp09") ? "VP9" : (best.codecs.split(separator: ".").first.map(String.init) ?? "?")
         let fps = best.fps > 31 ? "\(Int(best.fps.rounded()))" : ""
-        return (out.joined(separator: "\n") + "\n", "\(best.height)p\(fps) \(codec)\(best.hdr ? " HDR" : "")")
+        let label = "\(best.height)p\(fps) \(codec)\(best.hdr ? " HDR" : "")"
+        DiagLog.log("variant \(label) (\(best.width)x\(best.height), \(best.bandwidth / 1000) kb/s\(best.overBudget ? ", over software-decode budget" : "")); cap \(maxHeight)p, HDR \(preferHDR)", "youtube")
+        return (out.joined(separator: "\n") + "\n", label)
     }
 
     /// Value of `KEY=value` or `KEY="value"` in an HLS attribute list.
