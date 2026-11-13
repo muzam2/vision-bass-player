@@ -167,6 +167,54 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    // MARK: - Home rows (Plex / Jellyfin)
+
+    func shelves(for source: MediaSource) -> [Shelf] {
+        switch source {
+        case .jellyfin: return jellyfin.shelves
+        case .plex: return plex.shelves
+        default: return []
+        }
+    }
+
+    func isLoadingShelves(_ source: MediaSource) -> Bool {
+        switch source {
+        case .jellyfin: return jellyfin.isLoadingShelves
+        case .plex: return plex.isLoadingShelves
+        default: return false
+        }
+    }
+
+    private var shelvesLoadedAt: [MediaSource: Date] = [:]
+
+    /// Reload a server's Home rows; `ifOlderThan` skips the reload when they are fresh enough.
+    func refreshShelves(_ source: MediaSource, ifOlderThan age: TimeInterval = 0) async {
+        if age > 0, let t = shelvesLoadedAt[source], Date().timeIntervalSince(t) < age { return }
+        shelvesLoadedAt[source] = Date()
+        switch source {
+        case .jellyfin: await jellyfin.loadShelves()
+        case .plex: await plex.loadShelves()
+        default: break
+        }
+    }
+
+    /// A whole row for its "See all" page.
+    func shelfItems(_ link: ShelfLink, limit: Int = 300) async throws -> [MediaItem] {
+        switch link.source {
+        case .jellyfin: return try await jellyfin.shelfItems(link.kind, limit: limit)
+        case .plex: return try await plex.shelfItems(link.kind, limit: limit)
+        default: return []
+        }
+    }
+
+    /// Progress for a card: this device's saved position, else the server's resume point
+    /// (items in a server row were just fetched, so the server's value is current).
+    func displayProgress(for item: MediaItem) -> Double? {
+        if let p = progress(for: item) { return p }
+        guard let s = item.serverResumeSeconds, let m = item.runtimeMinutes, m > 0 else { return nil }
+        return min(1, s / (Double(m) * 60))
+    }
+
     // Convenience for the current `selectedSource` (older call sites).
     var currentIsSignedIn: Bool { isSignedIn(selectedSource) }
     var currentIsBusy: Bool { isBusy(selectedSource) }
@@ -259,6 +307,11 @@ final class LibraryStore: ObservableObject {
         case .plex:
             await plex.reportPlayback(ratingKey: String(item.id.dropFirst("plex:".count)), positionSeconds: position, durationSeconds: duration, state: state)
         default: break
+        }
+        // The server now knows the new position / watched state: Continue Watching and
+        // Recently Watched change, so fetch the rows again.
+        if state == .stopped, item.source == .plex || item.source == .jellyfin {
+            await refreshShelves(item.source)
         }
     }
 

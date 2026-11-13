@@ -7,8 +7,8 @@ enum DemoData {
 
     @MainActor
     static func apply(library: LibraryStore, jellyfin: JellyfinClient, plex: PlexClient, youtube: YouTubeClient) {
-        jellyfin.enableDemo(items: jellyfinItems, server: "http://192.168.1.10:8096")
-        plex.enableDemo(items: plexItems, serverName: "Homelab")
+        jellyfin.enableDemo(items: jellyfinItems, server: "http://192.168.1.10:8096", shelves: shelves(jellyfinItems))
+        plex.enableDemo(items: plexItems, serverName: "Homelab", shelves: shelves(plexItems))
         youtube.enableDemo(items: youtubeItems, query: "spacex launch")
         // A few things part-watched for the Continue Watching rows.
         for (item, fraction) in [(jellyfinItems[0], 0.42), (plexItems[1], 0.7), (jellyfinItems[3], 0.15)] {
@@ -17,6 +17,21 @@ enum DemoData {
             library.noteStarted(item)
         }
         library.noteStarted(youtubeItems[2])
+    }
+
+    /// Home rows for a demo server: something in progress, newest first, etc.
+    private static func shelves(_ items: [MediaItem]) -> [Shelf] {
+        let movies = items.filter { !$0.isEpisode }
+        let episodes = items.filter(\.isEpisode)
+        var rows: [Shelf] = [
+            Shelf(kind: .continueWatching, items: Array(items.prefix(2)) + episodes.prefix(1)),
+            Shelf(kind: .recentlyAddedMovies, items: Array(movies.reversed())),
+            Shelf(kind: .recentlyReleasedMovies, items: movies.sorted { ($0.subtitle ?? "") > ($1.subtitle ?? "") }),
+            Shelf(kind: .recentlyWatched, items: Array(movies.dropFirst(2).prefix(4))),
+        ]
+        if episodes.count > 1 { rows.insert(Shelf(kind: .upNext, items: Array(episodes.dropFirst())), at: 1) }
+        if !episodes.isEmpty { rows.insert(Shelf(kind: .recentlyReleasedEpisodes, items: episodes), at: rows.count - 1) }
+        return rows
     }
 
     private static func movie(_ source: MediaSource, _ id: String, _ title: String, _ year: Int, _ minutes: Int,
@@ -33,7 +48,8 @@ enum DemoData {
                   subtitle: String(format: "%@ · S%02dE%02d", show, s, e), overview: nil,
                   runtimeMinutes: 48, posterURL: nil, directURL: nil, avPlayerURL: nil,
                   container: "mkv", videoCodec: "h264", audioCodec: "eac3", audioChannels: 6, videoRange: "SDR",
-                  isEpisode: true, width: 1920, height: 1080, stereo: nil)
+                  isEpisode: true, width: 1920, height: 1080, stereo: nil,
+                  season: s, episodeNumber: e, showTitle: show)
     }
 
     static let jellyfinItems: [MediaItem] = [
