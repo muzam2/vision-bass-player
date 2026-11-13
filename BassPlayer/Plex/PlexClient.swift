@@ -26,6 +26,12 @@ final class PlexClient: ObservableObject, MediaServerClient {
     @Published private(set) var episodesByShow: [String: [MediaItem]] = [:]
     /// Bumped by each library load so a superseded load stops publishing.
     private var loadGeneration = 0
+    /// Home-page rows (Continue Watching, Recently Added, ...), see `loadShelves()`.
+    @Published private(set) var shelves: [Shelf] = []
+    @Published private(set) var isLoadingShelves = false
+    private var shelfGeneration = 0
+    /// Movie and TV sections of the connected server (cached by the library load).
+    private var sections: [PlexDirectory] = []
 
     // PIN flow state.
     @Published private(set) var pinCode: String?
@@ -56,10 +62,11 @@ final class PlexClient: ObservableObject, MediaServerClient {
 
     /// Simulator screenshots: show sample items without plex.tv (see DemoData).
     private(set) var demoMode = false
-    func enableDemo(items: [MediaItem], serverName: String) {
+    func enableDemo(items: [MediaItem], serverName: String, shelves: [Shelf] = []) {
         demoMode = true
         self.serverName = serverName
         self.items = items
+        self.shelves = shelves
     }
 
     private var plexHeaders: [String: String] {
@@ -150,6 +157,8 @@ final class PlexClient: ObservableObject, MediaServerClient {
         serverToken = ""
         servers = []
         items = []
+        shelves = []
+        sections = []
     }
 
     // MARK: - Servers
@@ -216,8 +225,10 @@ final class PlexClient: ObservableObject, MediaServerClient {
             errorMessage = "Plex: \(server.name) didn't answer on any of its addresses (\(hosts))."
             return
         }
+        if serverURL != candidates[index] { sections = []; shelves = [] }
         serverURL = candidates[index]
         await loadLibrary(rediscoverOnNetworkError: false)
+        await loadShelves()
     }
 
     nonisolated private static func answers(_ uri: String) async -> Bool {
@@ -251,6 +262,7 @@ final class PlexClient: ObservableObject, MediaServerClient {
         do {
             let sections = try await send(request(base.appendingPathComponent("library/sections")), as: PlexContainer<PlexDirectory>.self)
             let dirs = (sections.MediaContainer.Directory ?? []).filter { $0.type == "movie" || $0.type == "show" }
+            self.sections = dirs
             var all: [MediaItem] = []
             func publish() {
                 guard generation == loadGeneration else { return }
@@ -263,7 +275,7 @@ final class PlexClient: ObservableObject, MediaServerClient {
                 while true {
                     try Task.checkCancellation()
                     guard generation == loadGeneration else { return }
-                    let url = Self.listURL(base: base, section: dir.key, type: isShow ? 2 : 1, start: start, size: Self.pageSize)
+                    let url = Self.listURL(base: base, section: dir.key, type: isShow ? 2 : 1, sort: "titleSort", start: start, size: Self.pageSize)
                     let page = try await send(request(url), as: PlexContainer<PlexMetadata>.self)
                     let metas = page.MediaContainer.Metadata ?? []
                     for m in metas {
@@ -292,11 +304,11 @@ final class PlexClient: ObservableObject, MediaServerClient {
 
     /// `/library/sections/<key>/all` for one page, title-sorted, without the cast/genre/etc.
     /// elements the app never shows.
-    nonisolated private static func listURL(base: URL, section: String, type: Int, start: Int, size: Int) -> URL {
+    nonisolated private static func listURL(base: URL, section: String, type: Int, sort: String, start: Int, size: Int) -> URL {
         var comps = URLComponents(url: base.appendingPathComponent("library/sections/\(section)/all"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [
-            .init(name: "type", value: String(type)),          // 1 = movie, 2 = show
-            .init(name: "sort", value: "titleSort"),
+            .init(name: "type", value: String(type)),          // 1 = movie, 2 = show, 4 = episode
+            .init(name: "sort", value: sort),
             .init(name: "includeGuids", value: "0"),
             .init(name: "excludeElements", value: "Genre,Country,Director,Writer,Role,Collection,Label,Producer,Similar,Field,Image,UltraBlurColors,Guid"),
             .init(name: "X-Plex-Container-Start", value: String(start)),
@@ -321,6 +333,7 @@ final class PlexClient: ObservableObject, MediaServerClient {
             directURL: nil, avPlayerURL: nil, container: nil, videoCodec: nil, audioCodec: nil,
             audioChannels: nil, videoRange: nil, isEpisode: false, width: nil, height: nil, stereo: nil)
         mi.showKey = m.ratingKey
+        mi.artURL = m.art.flatMap { tokened($0, base: base) }
         return mi
     }
 
@@ -352,7 +365,8 @@ final class PlexClient: ObservableObject, MediaServerClient {
         guard let media = m.Media?.first, let part = media.Part?.first else { return nil }
         func tokened(_ path: String) -> URL? { self.tokened(path, base: base) }
         let direct = tokened(part.key)
-        let poster = m.thumb.flatMap { tokened($0) }
+        // Episodes: series poster for poster rows, the episode still as 16:9 art.
+        let poster = (m.type == "episode" ? (m.grandparentThumb ?? m.thumb) : m.thumb).flatMap { tokened($0) }
 
         var subtitle: String?
         if m.type == "episode" {
@@ -405,6 +419,10 @@ final class PlexClient: ObservableObject, MediaServerClient {
             mi.parentShowKey = m.grandparentRatingKey
             mi.season = m.parentIndex
             mi.episodeNumber = m.index
+            mi.showTitle = m.grandparentTitle
+            mi.artURL = m.thumb.flatMap { tokened($0) }
+        } else {
+            mi.artURL = m.art.flatMap { tokened($0) }
         }
         if let vo = m.viewOffset, vo > 0 { mi.serverResumeSeconds = Double(vo) / 1000 }
         return mi
@@ -424,6 +442,121 @@ final class PlexClient: ObservableObject, MediaServerClient {
         ]
         guard let url = comps.url else { return }
         _ = try? await URLSession.shared.data(for: request(url))
+    }
+}
+
+// MARK: - Home rows
+
+extension PlexClient {
+    nonisolated static let shelfSize = 24
+    static let shelfKinds: [Shelf.Kind] = [.continueWatching, .recentlyAddedMovies, .recentlyAddedShows,
+                                           .recentlyReleasedMovies, .recentlyReleasedEpisodes, .recentlyWatched]
+
+    /// Fill every Home row at once. A row whose request fails is left out (and logged) rather
+    /// than failing the page; the previous rows stay on screen until the new set is complete.
+    func loadShelves() async {
+        guard isSignedIn, !demoMode, URL(string: serverURL) != nil else { return }
+        shelfGeneration += 1
+        let generation = shelfGeneration
+        isLoadingShelves = true
+        defer { if generation == shelfGeneration { isLoadingShelves = false } }
+        var found: [Shelf.Kind: [MediaItem]] = [:]
+        await withTaskGroup(of: (Shelf.Kind, [MediaItem]?).self) { group in
+            for kind in Self.shelfKinds {
+                group.addTask { @MainActor in
+                    do { return (kind, try await self.shelfItems(kind, limit: Self.shelfSize)) } catch {
+                        DiagLog.log("Plex row \(kind.rawValue) failed: \(error.localizedDescription)", "plex")
+                        return (kind, nil)
+                    }
+                }
+            }
+            for await (kind, items) in group { if let items { found[kind] = items } }
+        }
+        guard generation == shelfGeneration else { return }
+        shelves = Self.shelfKinds.compactMap { kind in
+            guard let items = found[kind], !items.isEmpty else { return nil }
+            return Shelf(kind: kind, items: items)
+        }
+    }
+
+    /// The items of one row, newest first (`limit` 24 for the Home row, more for "See all").
+    func shelfItems(_ kind: Shelf.Kind, limit: Int) async throws -> [MediaItem] {
+        if demoMode { return shelves.first { $0.kind == kind }?.items ?? [] }
+        guard let base = URL(string: serverURL) else { return [] }
+        if sections.isEmpty {
+            let all = try await send(request(base.appendingPathComponent("library/sections")), as: PlexContainer<PlexDirectory>.self)
+            sections = (all.MediaContainer.Directory ?? []).filter { $0.type == "movie" || $0.type == "show" }
+        }
+        let movies = sections.filter { $0.type == "movie" }.map(\.key)
+        let shows = sections.filter { $0.type == "show" }.map(\.key)
+        let metas: [PlexMetadata]
+        switch kind {
+        case .continueWatching:
+            metas = try await continueWatching(base: base, limit: limit)
+        case .upNext:
+            metas = []                                   // Plex folds Up Next into Continue Watching
+        case .recentlyAddedMovies:
+            metas = try await merged(base: base, sections: movies, type: 1, sort: "addedAt:desc", limit: limit) { $0.addedAt }
+        case .recentlyAddedShows:
+            // Series ordered by their newest episode, as Plex's own "Recently Added TV" does.
+            metas = try await merged(base: base, sections: shows, type: 2, sort: "episode.addedAt:desc",
+                                     fallbackSort: "addedAt:desc", limit: limit, key: nil)
+        case .recentlyReleasedMovies:
+            metas = try await merged(base: base, sections: movies, type: 1, sort: "originallyAvailableAt:desc", limit: limit) { $0.releaseDay }
+        case .recentlyReleasedEpisodes:
+            metas = try await merged(base: base, sections: shows, type: 4, sort: "originallyAvailableAt:desc", limit: limit) { $0.releaseDay }
+        case .recentlyWatched:
+            let m = try await merged(base: base, sections: movies, type: 1, sort: "lastViewedAt:desc", limit: limit) { $0.lastViewedAt }
+            let e = try await merged(base: base, sections: shows, type: 4, sort: "lastViewedAt:desc", limit: limit) { $0.lastViewedAt }
+            metas = Array((m + e).sorted { ($0.lastViewedAt ?? 0) > ($1.lastViewedAt ?? 0) }.prefix(limit))
+        }
+        return metas.compactMap { m in m.type == "show" ? showItem(from: m, base: base) : mediaItem(from: m, base: base) }.uniquedByID
+    }
+
+    /// Continue Watching = in-progress items + next episodes (Plex's merged "On Deck"). Newer
+    /// servers expose it as a hub; `/library/onDeck` is the long-standing equivalent.
+    private func continueWatching(base: URL, limit: Int) async throws -> [PlexMetadata] {
+        var lastError: Error?
+        for (path, sizeParam) in [("hubs/continueWatching", "count"), ("library/onDeck", "X-Plex-Container-Size")] {
+            var comps = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+            comps.queryItems = [.init(name: sizeParam, value: String(limit)), .init(name: "includeGuids", value: "0")]
+            do {
+                let page = try await send(request(comps.url!), as: PlexHubContainer.self)
+                let metas = (page.MediaContainer.Metadata ?? []) + (page.MediaContainer.Hub ?? []).flatMap { $0.Metadata ?? [] }
+                let playable = metas.filter { $0.Media?.first?.Part?.first != nil }
+                if !playable.isEmpty { return Array(playable.prefix(limit)) }
+            } catch {
+                lastError = error
+            }
+        }
+        if let lastError { throw lastError }
+        return []
+    }
+
+    /// One sorted page per section, merged: by `key` (newest first, items without it dropped)
+    /// or, without a key, interleaved rank by rank.
+    private func merged(base: URL, sections keys: [String], type: Int, sort: String, fallbackSort: String? = nil,
+                        limit: Int, key: ((PlexMetadata) -> Int?)?) async throws -> [PlexMetadata] {
+        var lists: [[PlexMetadata]] = []
+        for section in keys {
+            let url = Self.listURL(base: base, section: section, type: type, sort: sort, start: 0, size: limit)
+            do {
+                lists.append(try await send(request(url), as: PlexContainer<PlexMetadata>.self).MediaContainer.Metadata ?? [])
+            } catch {
+                guard let fallbackSort else { throw error }
+                let url = Self.listURL(base: base, section: section, type: type, sort: fallbackSort, start: 0, size: limit)
+                lists.append(try await send(request(url), as: PlexContainer<PlexMetadata>.self).MediaContainer.Metadata ?? [])
+            }
+        }
+        if let key {
+            let dated = lists.joined().compactMap { m in key(m).map { (m, $0) } }
+            return Array(dated.sorted { $0.1 > $1.1 }.prefix(limit).map(\.0))
+        }
+        var out: [PlexMetadata] = []
+        for rank in 0..<(lists.map(\.count).max() ?? 0) {
+            for list in lists where rank < list.count { out.append(list[rank]) }
+        }
+        return Array(out.prefix(limit))
     }
 }
 
@@ -468,6 +601,16 @@ private struct PlexContainer<T: Decodable & Sendable>: Decodable, Sendable {
     }
 }
 
+/// A response that carries items directly (`/library/onDeck`) or inside hubs (`/hubs/...`).
+private struct PlexHubContainer: Decodable, Sendable {
+    let MediaContainer: Inner
+    struct Inner: Decodable, Sendable {
+        let Metadata: [PlexMetadata]?
+        let Hub: [Hub]?
+    }
+    struct Hub: Decodable, Sendable { let Metadata: [PlexMetadata]? }
+}
+
 private struct PlexDirectory: Decodable, Sendable {
     let key: String
     let title: String
@@ -488,7 +631,18 @@ private struct PlexMetadata: Decodable, Sendable {
     let parentIndex: Int?
     let index: Int?
     let viewOffset: Int?
+    let art: String?
+    let grandparentThumb: String?
+    let addedAt: Int?
+    let lastViewedAt: Int?
+    let originallyAvailableAt: String?
     let Media: [Media]?
+
+    /// "2024-03-01" → 20240301, for sorting merged sections by release date.
+    var releaseDay: Int? {
+        guard let d = originallyAvailableAt else { return nil }
+        return Int(d.prefix(10).replacingOccurrences(of: "-", with: ""))
+    }
 
     struct Media: Decodable, Sendable {
         let container: String?
