@@ -29,13 +29,70 @@ struct CardButton<Label: View>: View {
 
     var body: some View {
         Button(action: action, label: label)
-            .accessibilityIdentifier("card")
+            .cardButtonStyle()
+    }
+}
+
+extension View {
+    /// Grid-cell look for buttons and navigation links: tvOS card focus, visionOS hover.
+    func cardButtonStyle() -> some View {
         #if os(tvOS)
-            .buttonStyle(.card)
+        self.accessibilityIdentifier("card").buttonStyle(.card)
         #else
-            .buttonStyle(.plain)
-            .hoverEffect()
+        self.accessibilityIdentifier("card").buttonStyle(.plain).hoverEffect()
         #endif
+    }
+}
+
+/// A card that plays a film/episode, or opens a series' episode page (the enclosing
+/// NavigationStack must have a `MediaItem` destination).
+struct OpenItemButton<Label: View>: View {
+    let item: MediaItem
+    @ViewBuilder let label: () -> Label
+    @EnvironmentObject private var library: LibraryStore
+
+    var body: some View {
+        if item.isShow {
+            NavigationLink(value: item, label: label).cardButtonStyle()
+        } else {
+            CardButton(action: { library.play(item) }, label: label)
+        }
+    }
+}
+
+/// 16:9 card for Continue Watching / Up Next: backdrop or episode still, progress bar,
+/// title, and "S02E05 · 23m left".
+struct LandscapeCard: View {
+    let item: MediaItem
+    var progress: Double? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Artwork(url: item.artURL ?? item.posterURL, title: item.cardTitle, aspect: 16 / 9)
+                .overlay(alignment: .bottom) {
+                    if let progress {
+                        ProgressView(value: progress)
+                            .tint(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 10)
+                    }
+                }
+            Text(item.cardTitle).font(.headline).lineLimit(1)
+            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    private var detail: String {
+        var parts: [String] = []
+        if item.isEpisode { parts.append(item.season != nil ? "\(item.episodeCode) · \(item.title)" : item.title) }
+        else if let s = item.subtitle, !s.isEmpty { parts.append(s) }
+        if let p = progress, let m = item.runtimeMinutes, m > 0 {
+            let left = max(1, Int((1 - p) * Double(m)))
+            parts.append(left >= 60 ? "\(left / 60)h \(left % 60)m left" : "\(left)m left")
+        } else if let r = item.runtimeText {
+            parts.append(r)
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -108,8 +165,8 @@ struct PosterCard: View {
                             .padding(8)
                     }
                 }
-            Text(item.title).font(.headline).lineLimit(1)
-            Text(item.detailLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(item.cardTitle).font(.headline).lineLimit(1)
+            Text(item.cardDetail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
     }
 }
@@ -170,6 +227,14 @@ extension MediaItem {
     /// Year / show info plus runtime, e.g. "2019 · 2h 10m".
     var detailLine: String {
         [subtitle, runtimeText].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// Poster cards name the series for an episode (the artwork is the series poster).
+    var cardTitle: String { isEpisode ? (showTitle ?? title) : title }
+
+    var cardDetail: String {
+        guard isEpisode, showTitle != nil else { return detailLine }
+        return [season != nil ? "\(episodeCode) · \(title)" : title, runtimeText].compactMap { $0 }.joined(separator: " · ")
     }
 
     /// The one thing worth shouting about on the poster: 3D, HDR flavour, or 4K.
