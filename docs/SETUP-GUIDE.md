@@ -119,8 +119,11 @@ ID, it can renew Bass Player on the headset itself. You can have 3 sideloaded ap
 Open Bass Player → **Settings** tab (bottom of the side bar).
 
 **Jellyfin:** enter the server address (`http://192.168.x.x:8096`), username and password →
-Sign in. The Jellyfin tab fills with posters; the **All / Movies / Episodes** switch at the top
-filters, and search is always in the toolbar.
+Sign in. The Jellyfin tab opens on **Home**: rows like the Jellyfin/Plex apps (Continue
+Watching, Up Next, Recently Added Movies/TV, Recently Released, Recently Watched), each with
+**See all**. Switch the top control to **Library** for every poster with the **All / Movies / TV**
+filter; search is always in the toolbar. The Plex tab works the same way. Rows update when you
+stop a film, or pull down to refresh.
 
 **Plex:** tap **Sign in with plex.tv**. A 4-letter code appears. On your phone go to
 **plex.tv/link**, enter the code. Within ~10 s the app shows your servers; pick one. The app

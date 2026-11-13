@@ -20,6 +20,10 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
     /// Episodes fetched per series (`showKey` = Jellyfin series id).
     @Published private(set) var episodesByShow: [String: [MediaItem]] = [:]
     private var loadGeneration = 0
+    /// Home-page rows (Continue Watching, Next Up, Recently Added, ...), see `loadShelves()`.
+    @Published private(set) var shelves: [Shelf] = []
+    @Published private(set) var isLoadingShelves = false
+    private var shelfGeneration = 0
 
     init() {
         serverURL = defaults.string(forKey: "jf.server") ?? ""
@@ -38,10 +42,11 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
 
     /// Simulator screenshots: show sample items without a server (see DemoData).
     private(set) var demoMode = false
-    func enableDemo(items: [MediaItem], server: String) {
+    func enableDemo(items: [MediaItem], server: String, shelves: [Shelf] = []) {
         demoMode = true
         serverURL = server
         self.items = items
+        self.shelves = shelves
     }
     var accessToken: String? { storedToken.isEmpty ? nil : storedToken }
 
@@ -96,6 +101,7 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
             storedToken = result.AccessToken
             storedUserId = result.User.Id
             await loadLibrary()
+            await loadShelves()
         } catch {
             errorMessage = "Jellyfin sign-in failed: \(error.localizedDescription)"
         }
@@ -105,12 +111,15 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
         storedToken = ""
         storedUserId = ""
         items = []
+        shelves = []
     }
 
     // MARK: - Library
 
     static let pageSize = 500
     private static let itemFields = "MediaSources,Overview,ProductionYear,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber,Path,Video3DFormat,UserData"
+    /// Rows mix series and playable items, so they ask for both sets of fields.
+    private static let shelfFields = itemFields + ",ChildCount,RecursiveItemCount"
 
     /// Series come as one card each (episodes load when a series is opened); movies arrive in
     /// pages of 500 and are shown as they land. Fetching every episode of every show in one
@@ -181,7 +190,16 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
             directURL: nil, avPlayerURL: nil, container: nil, videoCodec: nil, audioCodec: nil,
             audioChannels: nil, videoRange: nil, isEpisode: false, width: nil, height: nil, stereo: nil)
         mi.showKey = item.Id
+        mi.artURL = backdropURL(for: item, base: base)
         return mi
+    }
+
+    /// The item's backdrop (or, for an episode without one, nothing: its still is the art).
+    private func backdropURL(for item: JellyfinItem, base: URL) -> URL? {
+        guard !(item.BackdropImageTags ?? []).isEmpty else { return nil }
+        var c = URLComponents(url: base.appendingPathComponent("Items/\(item.Id)/Images/Backdrop/0"), resolvingAgainstBaseURL: false)!
+        c.queryItems = [.init(name: "maxWidth", value: "960"), .init(name: "quality", value: "85")]
+        return c.url
     }
 
     /// Every episode of a series in season/episode order (cached; `refresh` refetches).
@@ -214,6 +232,13 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
 
         var poster = URLComponents(url: base.appendingPathComponent("Items/\(item.Id)/Images/Primary"), resolvingAgainstBaseURL: false)!
         poster.queryItems = [.init(name: "maxHeight", value: "450"), .init(name: "quality", value: "90")]
+        var still = URLComponents(url: base.appendingPathComponent("Items/\(item.Id)/Images/Primary"), resolvingAgainstBaseURL: false)!
+        still.queryItems = [.init(name: "maxWidth", value: "960"), .init(name: "quality", value: "85")]
+        // Episodes: the series poster in poster rows, the episode's own image as 16:9 art.
+        if item.Type == "Episode", let series = item.SeriesId {
+            poster = URLComponents(url: base.appendingPathComponent("Items/\(series)/Images/Primary"), resolvingAgainstBaseURL: false)!
+            poster.queryItems = [.init(name: "maxHeight", value: "450"), .init(name: "quality", value: "90")]
+        }
 
         // Direct play of the original file.
         var direct = URLComponents(url: base.appendingPathComponent("Videos/\(item.Id)/stream"), resolvingAgainstBaseURL: false)!
@@ -290,6 +315,10 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
             mi.parentShowKey = item.SeriesId
             mi.season = item.ParentIndexNumber
             mi.episodeNumber = item.IndexNumber
+            mi.showTitle = item.SeriesName
+            mi.artURL = still.url
+        } else {
+            mi.artURL = backdropURL(for: item, base: base)
         }
         if let ticks = item.UserData?.PlaybackPositionTicks, ticks > 0 { mi.serverResumeSeconds = Double(ticks) / 10_000_000 }
         return mi
@@ -312,6 +341,87 @@ final class JellyfinClient: ObservableObject, MediaServerClient {
     }
 }
 
+// MARK: - Home rows
+
+extension JellyfinClient {
+    static let shelfSize = 24
+    static let shelfKinds: [Shelf.Kind] = [.continueWatching, .upNext, .recentlyAddedMovies, .recentlyAddedShows,
+                                           .recentlyReleasedMovies, .recentlyReleasedEpisodes, .recentlyWatched]
+
+    /// Fill every Home row at once; a failing row is logged and left out.
+    func loadShelves() async {
+        guard isSignedIn, !demoMode else { return }
+        shelfGeneration += 1
+        let generation = shelfGeneration
+        isLoadingShelves = true
+        defer { if generation == shelfGeneration { isLoadingShelves = false } }
+        var found: [Shelf.Kind: [MediaItem]] = [:]
+        await withTaskGroup(of: (Shelf.Kind, [MediaItem]?).self) { group in
+            for kind in Self.shelfKinds {
+                group.addTask { @MainActor in
+                    do { return (kind, try await self.shelfItems(kind, limit: Self.shelfSize)) } catch {
+                        DiagLog.log("Jellyfin row \(kind.rawValue) failed: \(error.localizedDescription)", "jellyfin")
+                        return (kind, nil)
+                    }
+                }
+            }
+            for await (kind, items) in group { if let items { found[kind] = items } }
+        }
+        guard generation == shelfGeneration else { return }
+        // Next Up repeats what Continue Watching already shows (a half-watched episode).
+        let continuing = Set((found[.continueWatching] ?? []).map(\.id))
+        found[.upNext] = found[.upNext]?.filter { !continuing.contains($0.id) }
+        shelves = Self.shelfKinds.compactMap { kind in
+            guard let items = found[kind], !items.isEmpty else { return nil }
+            return Shelf(kind: kind, items: items)
+        }
+    }
+
+    /// The items of one row, newest first (`limit` 24 for the Home row, more for "See all").
+    func shelfItems(_ kind: Shelf.Kind, limit: Int) async throws -> [MediaItem] {
+        if demoMode { return shelves.first { $0.kind == kind }?.items ?? [] }
+        let now = ISO8601DateFormatter().string(from: Date())
+        let page: ItemsPage
+        switch kind {
+        case .continueWatching:
+            page = try await query(types: "Movie,Episode", sort: "DatePlayed", limit: limit, extra: [.init(name: "Filters", value: "IsResumable")])
+        case .upNext:
+            let req = try request("Shows/NextUp", query: [
+                .init(name: "userId", value: storedUserId),
+                .init(name: "Limit", value: String(limit)),
+                .init(name: "Fields", value: Self.shelfFields),
+                .init(name: "EnableResumable", value: "false"),
+                .init(name: "EnableRewatching", value: "false"),
+            ])
+            page = try await send(req, as: ItemsPage.self)
+        case .recentlyAddedMovies:
+            page = try await query(types: "Movie", sort: "DateCreated", limit: limit)
+        case .recentlyAddedShows:
+            page = try await query(types: "Series", sort: "DateLastContentAdded", limit: limit)
+        case .recentlyReleasedMovies:
+            page = try await query(types: "Movie", sort: "PremiereDate", limit: limit, extra: [.init(name: "MaxPremiereDate", value: now)])
+        case .recentlyReleasedEpisodes:
+            page = try await query(types: "Episode", sort: "PremiereDate", limit: limit, extra: [.init(name: "MaxPremiereDate", value: now)])
+        case .recentlyWatched:
+            page = try await query(types: "Movie,Episode", sort: "DatePlayed", limit: limit, extra: [.init(name: "Filters", value: "IsPlayed")])
+        }
+        return page.Items.compactMap { $0.Type == "Series" ? showItem(from: $0) : mediaItem(from: $0) }.uniquedByID
+    }
+
+    private func query(types: String, sort: String, limit: Int, extra: [URLQueryItem] = []) async throws -> ItemsPage {
+        let req = try request("Users/\(storedUserId)/Items", query: [
+            .init(name: "IncludeItemTypes", value: types),
+            .init(name: "Recursive", value: "true"),
+            .init(name: "SortBy", value: sort),
+            .init(name: "SortOrder", value: "Descending"),
+            .init(name: "Limit", value: String(limit)),
+            .init(name: "Fields", value: Self.shelfFields),
+            .init(name: "EnableTotalRecordCount", value: "false"),
+        ] + extra)
+        return try await send(req, as: ItemsPage.self)
+    }
+}
+
 // MARK: - Wire models
 
 struct JellyfinItem: Decodable, Sendable {
@@ -330,6 +440,7 @@ struct JellyfinItem: Decodable, Sendable {
     let IndexNumber: Int?
     let Path: String?
     let Video3DFormat: String?
+    let BackdropImageTags: [String]?
     let UserData: UserData?
     let MediaSources: [MediaSource]?
 

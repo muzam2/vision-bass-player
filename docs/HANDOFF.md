@@ -80,7 +80,7 @@ BassPlayer/Player               PlayerView (resolve → backend switch, 3D/proje
 BassPlayer/Audio                BassExtractor (DSP), BassEngineTap (AVAudioEngine tap + lead delay), BassTapProcessor (MTAudioProcessingTap)
 BassPlayer/BLE                  BassLink: CoreBluetooth central, config/status characteristics
 BassPlayer/Immersive            visionOS-only: model, flat/curved/VR meshes, ScreenTextureFeeder, ImmersiveScreenView, StereoScreen.usda
-BassPlayer/Views                RootView (TabView .sidebarAdaptable: Home/Jellyfin/Plex/YouTube/NAS/Settings), HomeView, LibraryGridView (poster grid + search/filter), YouTubeView (search bar always present), SettingsView, PlayerScreen (player window / fullScreenCover), Cards (PosterCard, VideoCard, Artwork placeholder, Metrics)
+BassPlayer/Views                RootView (TabView .sidebarAdaptable: Home/Jellyfin/Plex/YouTube/NAS/Settings), HomeView, LibraryGridView (Home rows of `Shelf`s + "See all" `ShelfGridView`, Library poster grid + search/filter), YouTubeView (search bar always present), SettingsView, PlayerScreen (player window / fullScreenCover), Cards (PosterCard, VideoCard, Artwork placeholder, Metrics)
 firmware/esp32-bass-receiver    PlatformIO; NimBLE GATT server, 2-device arbitration, jitter buffer, drift control, I²S, ES8388 init
 .github/workflows/build.yml     visionOS + tvOS unsigned IPAs (matrix), FFmpegKit zips fetched + checksum-verified, SPM cache, "FFmpeg: linked" check
 .github/workflows/ui-screenshots.yml  Simulator builds (visionOS + tvOS), launches each screen with demo data, uploads PNGs (artifact screenshots-<os>)
@@ -88,6 +88,26 @@ firmware/esp32-bass-receiver    PlatformIO; NimBLE GATT server, 2-device arbitra
 .github/workflows/firmware.yml  Both ESP32 envs, uploads .bin + bootloader + partitions
 docs/SETUP-GUIDE.md             End-user step-by-step (hardware, flashing, sideloading, sources, tuning)
 ```
+
+### Server Home rows (2026-11-13, `Media/Shelf.swift`)
+The Plex and Jellyfin tabs open on native-app-style rows. Each client has `shelves`,
+`loadShelves()` (all rows in parallel; a failing row is logged as `plex|jellyfin` and
+omitted) and `shelfItems(kind, limit:)` (24 for the row, 300 for See all).
+- Plex: Continue Watching = `/hubs/continueWatching?count=` → fallback `/library/onDeck`
+  (first one with playable items); the rest are `/library/sections/<k>/all` with `sort=`
+  `addedAt:desc`, `episode.addedAt:desc` (shows; falls back to `addedAt:desc`),
+  `originallyAvailableAt:desc` (type 1 / type 4) and `lastViewedAt:desc` (unviewed dropped),
+  merged across sections by that date. Plex has no separate Up Next (it is in On Deck).
+- Jellyfin: `Users/<id>/Items` with `Filters=IsResumable` / `IsPlayed`, `SortBy=DatePlayed`,
+  `DateCreated`, `DateLastContentAdded` (series), `PremiereDate` + `MaxPremiereDate=now`;
+  Up Next = `Shows/NextUp` minus anything already in Continue Watching.
+- Rows refresh after a `.stopped` report (`LibraryStore.report`) and when the tab reappears
+  after 60 s. Cards use `displayProgress` (local position, else the server's resume point).
+- `MediaItem.artURL` (episode still / backdrop) and `showTitle` were added; episode
+  `posterURL` is now the **series** poster (Plex `grandparentThumb`, Jellyfin
+  `Items/<SeriesId>/Images/Primary`); `EpisodeCard` uses `artURL`.
+- **Unverified against a real server** at the time of writing: the Plex hub endpoint and
+  `episode.addedAt` sort are the likeliest to differ by PMS version; each has a fallback.
 
 ### Data flow
 1. A source client builds `MediaItem`s: `directURL` (original file; FFmpeg), `avPlayerURL`,

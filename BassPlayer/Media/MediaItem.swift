@@ -56,6 +56,11 @@ struct MediaItem: Identifiable, Hashable, Codable {
     var parentShowKey: String? = nil
     var season: Int? = nil
     var episodeNumber: Int? = nil
+    /// 16:9 artwork: an episode's still, a film's or series' backdrop (Continue Watching cards,
+    /// episode lists). Episodes keep the series poster in `posterURL`.
+    var artURL: URL? = nil
+    /// Episodes: the series name (card title in poster rows).
+    var showTitle: String? = nil
 
     var isShow: Bool { showKey != nil }
 
