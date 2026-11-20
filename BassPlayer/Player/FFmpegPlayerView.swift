@@ -65,6 +65,44 @@ final class BassPlayerOptions: KSOptions {
 }
 
 /// Owns the bass pipeline for one FFmpeg playback and exposes decoded frames for the immersive screen.
+/// Measures how long the main thread takes to get round to a queued block: a timer on another
+/// thread queues one every 20 ms and the block notes how late it ran. Tells "the main thread
+/// was busy" apart from "the display link was not fired" when frames go missing.
+final class MainThreadProbe: @unchecked Sendable {
+    private var timer: DispatchSourceTimer?      // main thread only
+    private var worst = 0.0                      // main thread only, as are the two below
+    private var over50 = 0
+    private var total = 0
+
+    func start() {
+        guard timer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
+        t.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(20), leeway: .milliseconds(2))
+        t.setEventHandler { [weak self] in
+            let queued = CACurrentMediaTime()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let waited = CACurrentMediaTime() - queued
+                self.total += 1
+                if waited > self.worst { self.worst = waited }
+                if waited > 0.05 { self.over50 += 1 }
+            }
+        }
+        timer = t
+        t.resume()
+    }
+
+    func stop() {
+        timer?.cancel()
+        timer = nil
+    }
+
+    func take() -> (worst: Double, over50: Int, total: Int) {
+        defer { worst = 0; over50 = 0; total = 0 }
+        return (worst, over50, total)
+    }
+}
+
 /// The sub-bass level shown in the player's status line (see `FFmpegSession.bassMeter`).
 @MainActor
 final class BassMeter: ObservableObject {
@@ -107,6 +145,7 @@ final class FFmpegSession: ObservableObject {
     private var pollWorst = 0.0
     private var pollTotal = 0.0
     private var pollCount = 0
+    private let mainProbe = MainThreadProbe()
 
     private weak var coordinator: KSVideoPlayer.Coordinator?
     private var pollTimer: Timer?
@@ -260,6 +299,7 @@ final class FFmpegSession: ObservableObject {
         sleepFired = false
         stallFrameCount = -1
         stallRecoveries = []
+        mainProbe.start()
         lastRenderLog = Date()
         lastDroppedFrames = 0
         if let item, let library {
@@ -307,6 +347,7 @@ final class FFmpegSession: ObservableObject {
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        mainProbe.stop()
         tap.detach()
         tapInstalled = false
         if let item, let library, lastKnownPosition > 0 {
@@ -401,13 +442,15 @@ final class FFmpegSession: ObservableObject {
         let dropped = player.dynamicInfo?.droppedVideoFrameCount ?? 0
         let newDrops = dropped >= lastDroppedFrames ? dropped - lastDroppedFrames : dropped
         lastDroppedFrames = dropped
-        let worst = pollWorst, average = pollCount > 0 ? pollTotal / Double(pollCount) : 0
+        let worst = pollWorst
         pollWorst = 0; pollTotal = 0; pollCount = 0
+        let main = mainProbe.take()
         guard r.ticks > 1, r.span > 0, layer.state == .bufferFinished else { return }
-        DiagLog.log(String(format: "render: %d ticks in %.1f s (%.1f/s, link %.0f Hz) · longest gap %.0f ms · longest draw %.1f ms · %d frames shown · %d dropped · sync %+.0f ms · poll worst %.1f ms avg %.1f ms",
+        DiagLog.log(String(format: "render: %d ticks in %.1f s (%.1f/s, link %.0f Hz) · %d gaps over 25 ms, longest %.0f ms · longest draw %.1f ms · %d frames shown · %d dropped · sync %+.0f ms · main thread: worst wait %.0f ms, %d of %d probes over 50 ms · poll worst %.1f ms",
                            r.ticks, r.span, Double(r.ticks - 1) / r.span, r.linkInterval > 0 ? 1 / r.linkInterval : 0,
-                           r.longestGap * 1000, r.longestDraw * 1000, r.presented, Int(newDrops),
-                           (player.dynamicInfo?.audioVideoSyncDiff ?? 0) * 1000, worst * 1000, average * 1000), "player")
+                           r.lateTicks, r.longestGap * 1000, r.longestDraw * 1000, r.presented, Int(newDrops),
+                           (player.dynamicInfo?.audioVideoSyncDiff ?? 0) * 1000,
+                           main.worst * 1000, main.over50, main.total, worst * 1000), "player")
     }
 
     private func poll() {
