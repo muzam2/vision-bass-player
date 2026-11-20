@@ -28,7 +28,14 @@ probes every address incl. a plain `http://IP:port` twin, and the router got a `
 exception), NAS (a host-only SMB address listed nothing: shares came back as their own entry
 type and were filtered as non-video files), YouTube ("unexpected response": the anonymous
 Trending page is gone, and the search box only existed once a list had items). The UI was then
-rebuilt around tabs (§2). The ESP32 board hasn't arrived; nothing has reached the sub yet.
+rebuilt around tabs (§2).
+
+**Receiver, 2026-11-20:** the ESP32-A1S (ES8388) arrived and runs the firmware. Flashed from the
+owner's Windows PC (COM3, CP2102; PlatformIO and esptool are installed there). The first CI image
+reboot-looped in `NimBLEDevice::init` (risk 11 has the cause and fix). With the fix the board
+boots, advertises as BassSub and passed a PC-side BLE test in the app's wire format: 150 packets,
+none dropped, buffer steady near 50 ms. Still untested: the headset or Apple TV as the sender,
+and the line out into a real sub.
 
 ## 1. The owner and their constraints
 
@@ -366,6 +373,13 @@ Ordered by likelihood of needing a fix.
 11. **Firmware drift control** nudges one sample per second when off by >15; scale with error
     if the buffer still drifts. **A1S line-out level** may clip some subs: lower registers
     0x2E–0x31 in `codecInit()` (0x1E ≈ 0 dB, ~1.5 dB per step). **AC101 variant** unsupported.
+    **BLE memory (fixed 2026-11-20):** `platform = espressif32` is unpinned and now resolves to
+    8.0.0 (Arduino core 3.3.x, ESP-IDF 5.5). That core's `initArduino()` frees the Bluetooth
+    controller memory unless a BLE library registers through `esp32-hal-alloc-ble-mem.h`;
+    NimBLE-Arduino 1.4.3 does not, so `esp_bt_controller_init()` returned
+    `ESP_ERR_INVALID_STATE` and the board reboot-looped. `main.cpp` now includes that header
+    itself. Keep the include if NimBLE or the platform is bumped, until NimBLE registers on
+    its own. A CI build cannot catch this; it only fails at boot.
 12. ~~Free-ID signing prompts~~ — Local Network permission was present after the first
     install (2026-11-08). Bluetooth prompt still to be seen once the receiver exists.
 13. **New UI untested on hardware** (built 2026-11-08, checked only in the simulator via
@@ -414,6 +428,10 @@ Ordered by likelihood of needing a fix.
   `AVPlayer/KSOptions.swift`, `MEPlayer/AudioEnginePlayer.swift`, `MEPlayer/KSMEPlayer.swift`,
   `AVPlayer/KSVideoPlayer.swift`, `SwiftUI/KSVideoPlayerView.swift`, `MEPlayer/MetalPlayView.swift`.
 - Firmware can be built locally with PlatformIO if the registry is reachable; otherwise CI.
+  On the owner's Windows PC: `python -m platformio run -e esp32-a1s -t upload --upload-port COM3`
+  from `firmware/esp32-bass-receiver` (first build downloads the toolchain, about 8 minutes;
+  later builds about 30 s). The boot log is at 115200 baud and should show
+  `[codec] ES8388 init ok` then `[boot] BassSub advertising`.
 - **Seeing the UI without a headset:** `gh workflow run ui-screenshots.yml --ref <branch>`
   (also runs on pushes to `ui-redesign`). It builds for the visionOS and tvOS simulators,
   launches with `BASSPLAYER_DEMO=1` + `BASSPLAYER_SCREEN=<tab>` and uploads one PNG per screen.
