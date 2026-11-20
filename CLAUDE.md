@@ -10,8 +10,9 @@ BLE to an ESP32 receiver wired to a powered subwoofer. Sources: Jellyfin, Plex, 
 Owner has **no Mac**: everything is compiled by GitHub Actions and sideloaded with a free
 Apple ID (Vision Pro: SideStore 0.7.2 installs the IPA downloaded in Safari from the LAN
 helper `tools/diag_receiver.py`; HANDOFF §0 has the exact loop). Installed on the headset
-2026-11-08 and iterated all day with a live log stream; the ESP32 receiver hasn't arrived,
-so the bass path is untested.
+2026-11-08 and iterated all day with a live log stream. The ESP32-A1S receiver arrived
+2026-11-20 and plays PC-sent test audio through the owner's sub (`tools/receiver_test.py`,
+record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untested.
 
 ## Build & verify
 - Never try to build Swift locally; push and read Actions. `build.yml` (visionOS + tvOS unsigned
@@ -95,6 +96,12 @@ so the bass path is untested.
   as directories).
 - `MediaItem` is `Codable` (recents); new fields need defaults so the memberwise init stays
   compatible with the four source clients.
+- Firmware: Arduino core 3.3+ (PlatformIO `espressif32` 8.x) frees the BT controller memory
+  at start-up unless a BLE library registers via `esp32-hal-alloc-ble-mem.h`. NimBLE-Arduino
+  1.4.x doesn't, so `main.cpp` includes that header; removing it brings back a boot loop in
+  `NimBLEDevice::init` (`esp_bt_controller_init` → `ESP_ERR_INVALID_STATE`). Firmware bugs
+  like this only show on the board, never in CI. `platformio.ini` pins the board-tested pair
+  (espressif32 8.0.0, NimBLE-Arduino 1.4.3); bump one at a time and test on hardware.
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and
   git-ignored. `.usda` is excluded from the folder source and added as a resource for visionOS.
 
