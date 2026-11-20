@@ -102,6 +102,10 @@ record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untest
   `NimBLEDevice::init` (`esp_bt_controller_init` → `ESP_ERR_INVALID_STATE`). Firmware bugs
   like this only show on the board, never in CI. `platformio.ini` pins the board-tested pair
   (espressif32 8.0.0, NimBLE-Arduino 1.4.3); bump one at a time and test on hardware.
+- FFmpeg's HLS demuxer does not pass `formatContextOptions` on to its segment connections;
+  HTTP options for segments go through `KSOptions.reconnectNestedHTTP` (an `io_open` wrapper
+  in `MEPlayerItem`). A segment read error is silently treated as end of segment, which
+  corrupts fMP4 parsing; `FFmpegSession.watchForVideoStall` is the safety net for YouTube.
 - BLE sending: the engine tap delivers 100 ms buffers, i.e. five bass packets at once, and
   CoreBluetooth accepts one write-without-response per turn of its delegate queue. `BassLink`
   therefore queues packets and paces them out every 20 ms; sending a burst directly loses four

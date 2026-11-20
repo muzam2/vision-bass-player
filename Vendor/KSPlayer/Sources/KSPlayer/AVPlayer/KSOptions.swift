@@ -27,6 +27,11 @@ open class KSOptions {
     /// Bass Player patch: maps a requested seek time to the one actually used (e.g. snapped to an
     /// HLS segment boundary, where the keyframe is). Applied in KSMEPlayer.seek; nil = as is.
     public var seekSnap: ((TimeInterval) -> TimeInterval)?
+    /// Bass Player patch: make the HTTP connections FFmpeg opens *inside* a demuxer (HLS
+    /// segments, playlists, keys) resume at the byte offset after a dropped connection. The
+    /// `reconnect*` entries in `formatContextOptions` only reach the top-level URL; the HLS
+    /// demuxer hands its segment connections a fixed short list of options and nothing else.
+    public var reconnectNestedHTTP = false
     /// Applies to short videos only
     public var isLoopPlay = KSOptions.isLoopPlay
     /// 区间无缝循环 [lowerBound, upperBound]，单位秒（相对 file 内播放时间，不含 startTime offset）。

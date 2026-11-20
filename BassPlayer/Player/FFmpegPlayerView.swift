@@ -93,6 +93,15 @@ final class FFmpegSession: ObservableObject {
     private var sleepFired = false
 
     private lazy var doviRenderer = DoviFrameRenderer()
+
+    /// Frames handed to the renderer; the sink runs on the main thread, as does `poll`.
+    private final class FrameCounter { var count = 0 }
+    private let frameCounter = FrameCounter()
+    private var stallFrameCount = -1
+    private var stallSince = Date()
+    private var stallPosition = 0.0
+    private var stallRecoveries: [Date] = []
+    private var stallGiveUpLogged = Date.distantPast
     private weak var sinkView: MetalPlayView?
 
     /// Mirror every rendered frame to the immersive screen while it is open. Dolby Vision
@@ -100,7 +109,9 @@ final class FFmpegSession: ObservableObject {
     private func installFrameSink(on view: MetalPlayView) {
         guard sinkView !== view else { return }
         sinkView = view
+        let counter = frameCounter
         view.frameSink = { [weak self] frame, pixelBuffer, time in
+            counter.count &+= 1
             guard let push = ImmersiveScreenBridge.shared.pushFrame else { return }
             var dovi: MTLTexture?
             if DoviFrameRenderer.needsMapping(frame), let self {
@@ -143,15 +154,17 @@ final class FFmpegSession: ObservableObject {
             // then fails and is retried ("keepalive request failed"), one wasted round trip per
             // segment and per seek.
             options.formatContextOptions["http_persistent"] = 0
-            // A connection reset mid-segment (seen 2026-11-10) made FFmpeg's "streamed"
-            // reconnect restart the segment from byte 0 behind the demuxer's back: duplicated
-            // bytes, 80 VP9 header errors, picture frozen for 12 s while audio ran on.
-            // googlevideo answers with Content-Length and ranges, so plain reconnect resumes at
-            // the offset; a failure then skips to the next segment instead of feeding garbage.
-            options.formatContextOptions["reconnect"] = 1
-            options.formatContextOptions["reconnect_streamed"] = 0
-            options.formatContextOptions["reconnect_on_network_error"] = 1
-            options.formatContextOptions["reconnect_delay_max"] = 2
+            // A connection reset in the middle of a segment (2026-11-10 and 2026-11-20). FFmpeg's
+            // HLS demuxer treats any read error as the end of the segment and moves on, so the
+            // fMP4 parser is fed a cut-off fragment followed by the next segment: a burst of VP9
+            // header errors, then no video frames at all while the audio (its own connection)
+            // plays on. The `reconnect*` format options set here before never reached the
+            // segment connections (HLS passes them a fixed list of options), so they did nothing.
+            // Two layers now: FFmpeg resumes the cut-off download itself where the server allows
+            // it, and `watchForVideoStall` reopens the stream if the picture stops anyway.
+            options.reconnectNestedHTTP = true
+            // A segment that fails to *open* is retried instead of skipped (5 s of film).
+            options.formatContextOptions["seg_max_retry"] = 2
             options.seekSnap = nil
             if let master = item.directURL, master.isFileURL {
                 Task { await learnSegments(master: master, userAgent: item.userAgent) }
@@ -214,6 +227,8 @@ final class FFmpegSession: ObservableObject {
         finished = false
         reportedStart = false
         sleepFired = false
+        stallFrameCount = -1
+        stallRecoveries = []
         if let item, let library {
             library.noteStarted(item)
             // YouTube resume needs the backported mov/hls seek fixes in Vendor/FFmpegKit.
@@ -300,6 +315,44 @@ final class FFmpegSession: ObservableObject {
         }
     }
 
+    /// YouTube only. The picture can stop for good while the sound carries on (see
+    /// `configure`): no frame reaches the renderer although the player says it is playing and
+    /// its clock keeps moving. A seek to the current position makes the HLS demuxer drop its
+    /// connections and parser state and fetch the segment again, which clears the damage; it
+    /// lands on the segment start (`seekSnap`), so the film steps back a few seconds at most.
+    private func watchForVideoStall(layer: KSPlayerLayer, player: KSMEPlayer) {
+        guard item?.source == .youtube else { return }
+        let now = Date()
+        let frames = frameCounter.count
+        let position = player.currentPlaybackTime
+        guard layer.state == .bufferFinished, sinkView != nil, position.isFinite,
+              UIApplication.shared.applicationState == .active,
+              frames == stallFrameCount, position >= stallPosition else {
+            // Not playing, not on screen (nothing is drawn then), frames are arriving, or the
+            // position jumped back: start over.
+            stallFrameCount = frames
+            stallSince = now
+            stallPosition = position.isFinite ? position : 0
+            return
+        }
+        let frozenFor = now.timeIntervalSince(stallSince)
+        guard frozenFor >= 3, position - stallPosition >= 2 else { return }
+        stallRecoveries.removeAll { now.timeIntervalSince($0) > 120 }
+        guard stallRecoveries.count < 3 else {
+            if now.timeIntervalSince(stallGiveUpLogged) > 60 {
+                stallGiveUpLogged = now
+                DiagLog.log(String(format: "video stalled again at %.1f s; three recoveries in two minutes did not hold, leaving it alone for now", position), "player")
+            }
+            return
+        }
+        stallRecoveries.append(now)
+        DiagLog.log(String(format: "video stalled at %.1f s: no frame for %.1f s while the clock moved %.1f s; reopening the stream there (recovery %d)",
+                           position, frozenFor, position - stallPosition, stallRecoveries.count), "player")
+        stallSince = now
+        stallPosition = position
+        layer.seek(time: position, autoPlay: true) { _ in }
+    }
+
     private func poll() {
         guard let layer = coordinator?.playerLayer else { return }
         let player = layer.player
@@ -316,6 +369,7 @@ final class FFmpegSession: ObservableObject {
         }
         guard let me = player as? KSMEPlayer else { return }
         if let view = me.videoOutput as? MetalPlayView { installFrameSink(on: view) }
+        watchForVideoStall(layer: layer, player: me)
         let mvc = me.tracks(mediaType: .video).contains { ($0 as? FFmpegAssetTrack)?.decodesStereoSideBySide == true }
         if mvc != mvcStereo {
             mvcStereo = mvc

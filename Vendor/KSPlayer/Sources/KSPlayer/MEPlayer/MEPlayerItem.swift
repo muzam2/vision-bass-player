@@ -11,6 +11,11 @@ import Libavcodec
 import Libavfilter
 import Libavformat
 
+/// Bass Player patch: FFmpeg's default `io_open`, saved by `MEPlayerItem` before it installs the
+/// wrapper that adds reconnect options to nested HTTP opens (`KSOptions.reconnectNestedHTTP`).
+/// The default is one process-wide function, so a single slot serves every player.
+nonisolated(unsafe) private var ksInnerIOOpen = AVFormatContext().io_open
+
 public final class MEPlayerItem: Sendable {
     private let url: URL
     private let options: KSOptions
@@ -191,6 +196,22 @@ extension MEPlayerItem {
             }
         }
         formatCtx.pointee.interrupt_callback = interruptCB
+        if options.reconnectNestedHTTP {
+            // Bass Player patch. A freshly allocated context still has FFmpeg's default opener;
+            // keep it and wrap it so every nested HTTP open carries the reconnect options.
+            ksInnerIOOpen = formatCtx.pointee.io_open
+            formatCtx.pointee.io_open = { s, pb, url, flags, opts in
+                if let url, flags & AVIO_FLAG_WRITE == 0, strncmp(url, "http", 4) == 0 {
+                    // Resume a cut-off response with a Range request (needs Content-Length and
+                    // range support from the server; otherwise the read fails as before).
+                    av_dict_set(opts, "reconnect", "1", 0)
+                    av_dict_set(opts, "reconnect_on_network_error", "1", 0)
+                    av_dict_set(opts, "reconnect_delay_max", "2", 0)
+                }
+                guard let inner = ksInnerIOOpen else { return -EIO }
+                return inner(s, pb, url, flags, opts)
+            }
+        }
         // avformat_close_input这个函数会调用io_close2。但是自定义协议是不会调用io_close2这个函数
 //        formatCtx.pointee.io_close2 = { _, _ -> Int32 in
 //            0
