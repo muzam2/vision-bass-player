@@ -527,9 +527,19 @@ Ordered by likelihood of needing a fix.
    reconnect at N` in the log). Also `seg_max_retry=2` for segments that fail to open.
    (2) `FFmpegSession.watchForVideoStall` (YouTube only): no frame at the renderer for 3 s
    while playing, on screen and the clock moved 2 s → seek to the current position, at most
-   three times in two minutes; logs `video stalled at …`. **Neither layer has been seen
-   working: a reset cannot be provoked on demand.** Whether googlevideo honours Range on HLS
-   segments is not confirmed, and the watchdog does not cover a reset on the audio connection.
+   three times in two minutes; logs `video stalled at …`.
+   **First real reset with that build, 2026-11-20 23:39:** layer 1 did nothing (no `Will
+   reconnect at` / `Will retry at` line after `IO error: Connection reset by peer`; unknown
+   whether the options are not reaching the connection or googlevideo's reply is treated as
+   non-seekable), the picture stopped 38 s later with a single VP9 header error, the watchdog
+   fired on time, and **three seeks did not bring one frame back** (state went buffering →
+   playing each time). Branch `fix/stall-reopen`: the watchdog now calls
+   `KSPlayerLayer.reopen()` (new, vendored patch: stop, `player.replace` with the same URL,
+   prepare; `set(url:)` is a no-op for an unchanged URL) with `startPlayTime` at the segment
+   start, i.e. a fresh demuxer and decoders in the same player. `MEPlayerItem` also logs the
+   first two nested opens (`nested open N with reconnect options: <host>`) so the next log
+   shows whether layer 1 is applied at all. Not yet seen working. The watchdog does not cover
+   a reset on the audio connection, and whether the bass tap survives a reopen is unchecked.
    **Look to Scroll** (visionOS 26): `View.lookToScroll()` on RootView and PlayerScreen; the
    user must also enable it in the headset's Settings.
 1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
