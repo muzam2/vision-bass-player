@@ -100,7 +100,8 @@ record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untest
   at start-up unless a BLE library registers via `esp32-hal-alloc-ble-mem.h`. NimBLE-Arduino
   1.4.x doesn't, so `main.cpp` includes that header; removing it brings back a boot loop in
   `NimBLEDevice::init` (`esp_bt_controller_init` → `ESP_ERR_INVALID_STATE`). Firmware bugs
-  like this only show on the board, never in CI.
+  like this only show on the board, never in CI. `platformio.ini` pins the board-tested pair
+  (espressif32 8.0.0, NimBLE-Arduino 1.4.3); bump one at a time and test on hardware.
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and
   git-ignored. `.usda` is excluded from the folder source and added as a resource for visionOS.
 

@@ -377,8 +377,8 @@ Ordered by likelihood of needing a fix.
 11. **Firmware drift control** nudges one sample per second when off by >15; scale with error
     if the buffer still drifts. **A1S line-out level** may clip some subs: lower registers
     0x2E–0x31 in `codecInit()` (0x1E ≈ 0 dB, ~1.5 dB per step). **AC101 variant** unsupported.
-    **BLE memory (fixed 2026-11-20):** `platform = espressif32` is unpinned and now resolves to
-    8.0.0 (Arduino core 3.3.x, ESP-IDF 5.5). That core's `initArduino()` frees the Bluetooth
+    **BLE memory (fixed 2026-11-20):** `platform = espressif32` was unpinned and had moved to
+    8.0.0 (Arduino core 3.3.x, ESP-IDF 5.5); it is now pinned there, with NimBLE-Arduino at 1.4.3. That core's `initArduino()` frees the Bluetooth
     controller memory unless a BLE library registers through `esp32-hal-alloc-ble-mem.h`;
     NimBLE-Arduino 1.4.3 does not, so `esp_bt_controller_init()` returned
     `ESP_ERR_INVALID_STATE` and the board reboot-looped. `main.cpp` now includes that header

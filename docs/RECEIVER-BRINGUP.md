@@ -99,8 +99,9 @@ The guard keeps older cores building; they don't have the header and don't need 
 `esp32-a1s` and `esp32dev` build. Commit `142122c` on branch `fix/a1s-ble-controller-memory`.
 
 Keep the include when bumping NimBLE-Arduino or the platform, until NimBLE registers on its
-own. The platform and library versions are still unpinned; pinning them to the pair tested
-here (espressif32 8.0.0, NimBLE-Arduino 1.4.3) would stop the next silent drift.
+own. `platformio.ini` now pins the pair tested here (espressif32 8.0.0, NimBLE-Arduino 1.4.3),
+the same versions CI run 42438883636 had resolved on its own, so the platform can't drift
+again without a deliberate edit. Bump one at a time and test on the board.
 
 ## What was verified on the board
 
