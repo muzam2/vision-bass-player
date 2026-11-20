@@ -69,6 +69,22 @@ the link's refresh rate, longest gap between ticks, frames shown/dropped and the
 **Read those lines before changing anything else**; if (B) persists with long gaps, split
 `BassLink`'s fast counters into their own object the same way.
 
+**First measurements, 2026-11-20 23:29–23:47 (build `c7e0418`).** Cinema: 68–83 ticks/s,
+0 dropped at 30 and 60 fps. Window, 4K 30 fps: 56–61 ticks/s with a ~95 ms gap in every
+10 s, 0 dropped (the same video dropped ~255 events/min before). Window, 1440p60: **20–40
+ticks/s falling over three minutes, gaps of 250–350 ms, ~30 of 60 frames dropped every
+second, A/V sync sliding to −8 s**, with the decoded queue full (12–13) and the tick itself
+taking ~1 ms. So the display link's callback is being starved or not delivered, not slow.
+Branch `fix/judder-round2` removes the three things known to run on or block the main thread
+at a steady rate: `BassLink`'s counters move to `BassLinkStats` (views wrap them in
+`BassStatsReader`), `DiagLog.write` hands lines to a queue instead of taking its lock on the
+caller's thread, and KSPlayer no longer logs a line per dropped frame from the frame loop.
+The `render:` line gains the number of gaps over 25 ms and a main-thread probe (a block
+queued every 20 ms from another thread: worst wait and how many waited over 50 ms). **If the
+probe shows short waits while ticks stay sparse, the display link itself is being throttled
+and the frame loop has to move off it** (enqueue frames ahead with timestamps on the display
+layer's timebase, or run the link on its own thread).
+
 ## 1. The owner and their constraints
 
 - Physician, hobbyist developer, comfortable with Linux, Docker, PlatformIO, OpenWrt.

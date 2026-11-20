@@ -54,8 +54,17 @@ final class DiagLog: LogHandler, @unchecked Sendable {
         shared.write("\(category) | \(message)")
     }
 
+    /// Lines are stored on this queue, not on the caller's thread: callers include the video
+    /// frame loop on the main thread and FFmpeg's decoder threads, and the lock below is also
+    /// held by the uploader and by readers.
+    private let writeQueue = DispatchQueue(label: "diaglog.write", qos: .utility)
+
     private func write(_ line: String) {
         let stamped = "\(formatter.string(from: Date())) \(line)"
+        writeQueue.async { [self] in store(stamped) }
+    }
+
+    private func store(_ stamped: String) {
         print(stamped)
         lock.lock()
         lines.append(stamped)

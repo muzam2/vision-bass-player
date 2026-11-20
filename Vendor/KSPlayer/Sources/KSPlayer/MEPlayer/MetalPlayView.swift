@@ -47,6 +47,8 @@ public final class MetalPlayView: UIView, VideoOutput {
         /// Seconds between the first and the last tick.
         public var span = 0.0
         public var longestGap = 0.0
+        /// Ticks that arrived more than 25 ms after the previous one (two refreshes at 90 Hz).
+        public var lateTicks = 0
         /// Longest single tick, i.e. time spent choosing and handing over a frame.
         public var longestDraw = 0.0
         /// Seconds per refresh as the display link reports it (0 where not available).
@@ -221,6 +223,7 @@ extension MetalPlayView {
         let now = CACurrentMediaTime()
         if lastTickTime > 0 {
             renderStats.longestGap = max(renderStats.longestGap, now - lastTickTime)
+            if now - lastTickTime > 0.025 { renderStats.lateTicks += 1 }
         } else {
             firstTickTime = now
         }
