@@ -198,6 +198,7 @@ struct SettingsView: View {
         Section {
             LabeledContent("Packets sent", value: "\(bassLink.packetsSent)")
             LabeledContent("Packets dropped (link busy)", value: "\(bassLink.packetsDropped)")
+            LabeledContent("Send queue peak", value: "\(bassLink.sendQueuePeak) packets")
             LabeledContent("Receiver buffer", value: "\(bassLink.receiverBufferFill) samples")
             LabeledContent("Receiver underruns", value: "\(bassLink.receiverUnderruns)")
             #if !os(tvOS)

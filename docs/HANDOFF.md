@@ -39,6 +39,17 @@ packets dropped. With the default 60 ms buffer one PC-driven run underran mid-st
 Receiver delay 80 ms it did not. **Still untested: the headset or Apple TV as the sender.**
 Full record, crash log and repeat steps: `docs/RECEIVER-BRINGUP.md`.
 
+**Headset as sender, first try 2026-11-20:** the Vision Pro found BassSub, connected and the tap
+ran (bass peak up to −3 dB), but the owner heard no bass. The log showed `sent 407 dropped 1628`:
+exactly one packet sent per tap buffer. The engine tap delivers 100 ms buffers (4800 frames at
+48 kHz), so `BassExtractor` emits five packets back to back, and `canSendWriteWithoutResponse`
+goes false after the first write until CoreBluetooth's delegate has run on the same queue. The
+receiver got 20 ms of audio every 100 ms. Fix (branch `fix/ble-send-pacing`): `BassLink` queues
+packets and a 20 ms timer sends them one at a time, with `peripheralIsReady` draining any
+backlog; the 10 s log line now adds `queue peak` and the receiver's buffer / underruns / dropped.
+The pacing puts about 80–100 ms into the bass path, so expect Bass lead near 180 ms (estimate).
+**Not yet confirmed on the headset.**
+
 ## 1. The owner and their constraints
 
 - Physician, hobbyist developer, comfortable with Linux, Docker, PlatformIO, OpenWrt.

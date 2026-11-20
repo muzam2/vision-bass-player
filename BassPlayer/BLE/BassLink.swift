@@ -21,6 +21,8 @@ final class BassLink: NSObject, ObservableObject {
     @Published private(set) var peripheralName: String?
     @Published private(set) var packetsSent = 0
     @Published private(set) var packetsDropped = 0
+    /// Most packets ever waiting to be sent since the link came up (5 to 6 is normal).
+    @Published private(set) var sendQueuePeak = 0
     @Published private(set) var receiverBufferFill = 0
     @Published private(set) var receiverUnderruns = 0
     @Published private(set) var receiverDropped = 0
@@ -43,6 +45,21 @@ final class BassLink: NSObject, ObservableObject {
     private var sentCount = 0
     private var droppedCount = 0
     private var flushScheduled = false
+
+    // Packets arrive in bursts: the engine tap hands over 100 ms of audio at a time, which is
+    // five 20 ms packets at once. CoreBluetooth takes one write-without-response and then
+    // reports "not ready" until its delegate has run on this same queue, so pushing a burst
+    // straight through sent one packet and lost four (seen on the headset, 2026-11-20). The
+    // packets wait here instead and leave one per 20 ms, which is also the steady stream the
+    // receiver's jitter buffer and drift control are built for.
+    private var outbox: [Data] = []
+    private var outboxPeak = 0
+    private var pacer: DispatchSourceTimer?
+    private var idleTicks = 0
+    private static let packetIntervalMs = 20
+    private static let outboxLimit = 15      // 300 ms; anything older is too late to be worth playing
+    private static let catchUpDepth = 7      // one burst leaves at most about 6 waiting
+    private static let idleTicksToStop = 50  // 1 s with nothing to send: paused or finished
 
     override init() {
         super.init()
@@ -71,15 +88,58 @@ final class BassLink: NSObject, ObservableObject {
     /// Called on the audio thread by BassExtractor. Hop to the BLE queue; never block the renderer.
     func send(_ packet: Data) {
         queue.async { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.audioChar, self.linkUp else { return }
-            if p.canSendWriteWithoutResponse {
-                p.writeValue(packet, for: c, type: .withoutResponse)
-                self.sentCount += 1
-            } else {
-                // Link is saturated; dropping 20 ms of sub-bass is inaudible, stalling the renderer is not.
-                self.droppedCount += 1
+            guard let self, self.linkUp, self.peripheral != nil, self.audioChar != nil else { return }
+            self.outbox.append(packet)
+            if self.outbox.count > Self.outboxLimit {
+                // The link can't keep up. Drop the oldest audio so the bass stays near real time;
+                // stalling the renderer is not an option.
+                let excess = self.outbox.count - Self.outboxLimit
+                self.outbox.removeFirst(excess)
+                self.droppedCount += excess
             }
+            self.outboxPeak = max(self.outboxPeak, self.outbox.count)
+            if self.pacer == nil { self.startPacer() }
             self.scheduleCounterFlush()
+        }
+    }
+
+    // MARK: - Paced sending (all on `queue`)
+
+    private func startPacer() {
+        idleTicks = 0
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now(), repeating: .milliseconds(Self.packetIntervalMs), leeway: .milliseconds(2))
+        t.setEventHandler { [weak self] in self?.pacerTick() }
+        pacer = t
+        t.resume()
+    }
+
+    private func stopPacer() {
+        pacer?.cancel()
+        pacer = nil
+    }
+
+    private func pacerTick() {
+        guard linkUp else { outbox.removeAll(); stopPacer(); return }
+        if outbox.isEmpty {
+            idleTicks += 1
+            if idleTicks >= Self.idleTicksToStop { stopPacer() }
+            return
+        }
+        idleTicks = 0
+        sendQueued(upTo: outbox.count > Self.catchUpDepth ? 2 : 1)
+    }
+
+    private func sendQueued(upTo budget: Int) {
+        guard let p = peripheral, let c = audioChar else { return }
+        var n = 0
+        while n < budget, !outbox.isEmpty, p.canSendWriteWithoutResponse {
+            p.writeValue(outbox.removeFirst(), for: c, type: .withoutResponse)
+            n += 1
+        }
+        if n > 0 {
+            sentCount += n
+            scheduleCounterFlush()
         }
     }
 
@@ -118,7 +178,12 @@ final class BassLink: NSObject, ObservableObject {
             DiagLog.log("BLE \(s.rawValue)\(s == .connected ? " to \(peripheral?.name ?? "?")" : "")", "bass")
         }
         linkUp = s == .connected
-        if s != .connected { sentCount = 0; droppedCount = 0; scheduleCounterFlush() }
+        if s != .connected {
+            sentCount = 0; droppedCount = 0; outboxPeak = 0
+            outbox.removeAll()
+            stopPacer()
+            scheduleCounterFlush()
+        }
         DispatchQueue.main.async { self.state = s }
     }
 
@@ -129,10 +194,11 @@ final class BassLink: NSObject, ObservableObject {
         queue.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self] in
             guard let self else { return }
             self.flushScheduled = false
-            let sent = self.sentCount, dropped = self.droppedCount
+            let sent = self.sentCount, dropped = self.droppedCount, peak = self.outboxPeak
             DispatchQueue.main.async {
                 self.packetsSent = sent
                 self.packetsDropped = dropped
+                self.sendQueuePeak = peak
             }
         }
     }
@@ -198,6 +264,13 @@ extension BassLink: CBPeripheralDelegate {
             setState(.connected)
             pushConfig()
         }
+    }
+
+    /// CoreBluetooth can take another write. Normally the 20 ms pacer does the sending; this
+    /// only steps in when packets have piled up (a "not ready" tick, or the audio clock running
+    /// ahead of the timer), so the backlog drains instead of ending in dropped audio.
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        if outbox.count > Self.catchUpDepth { sendQueued(upTo: 1) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
