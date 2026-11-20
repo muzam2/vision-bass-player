@@ -1,0 +1,167 @@
+# Compiles FFmpeg ourselves for the slices the app ships (visionOS + tvOS, device + simulator)
+# when kingslay/FFmpegKit has no tag for the FFmpeg version we want (its build plugin is no
+# longer public, so there is nothing to run and nothing to repackage). The build reproduces
+# FFmpegKit 9.0.2: same configure line (recovered from its binaries and asserted against them),
+# FFmpegKit's FFmpeg patches (Vendor/FFmpegKit/ffmpeg-build/patches, applied strictly), and the
+# stock 9.0.2 dependency xcframeworks. Only the seven Lib*.xcframeworks are new; everything
+# else in the release is copied byte for byte from the base release.
+#
+# The result is published once as release RELEASE_TAG of this repo when PUBLISH is "true"
+# (skipped if the tag exists; bump the suffix to republish, never overwrite). Artifact
+# "ffmpegkit-package" carries Package.swift + checksums.json + MANIFEST.txt to commit into
+# Vendor/FFmpegKit together with RELEASE_TAG. See docs/HANDOFF.md §3 "FFmpeg 9.1".
+name: FFmpegKit build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/ffmpegkit-build.yml
+      - Vendor/FFmpegKit/ffmpeg-build/**
+
+env:
+  FFMPEG_TAG: "n9.1"
+  FFMPEG_COMMIT: "74e4393595cf2b5857f0da925c4e0dd74ea306e5"
+  # FFmpegKit tag whose Vulkan headers (Sources/FFmpegKit/private) the build uses; the
+  # dependency binaries come from the release named in ffmpeg-build/base-release.json.
+  FFMPEGKIT_TAG: "9.0.2"
+  FFMPEGKIT_COMMIT: "20e3ba2a4c36978fed7b12a56839fadd92e901ea"
+  RELEASE_TAG: "ffmpegkit-9.1-vt1"
+  PUBLISH: "false"
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: xros, arch: arm64 }
+          - { platform: xrsimulator, arch: arm64 }
+          - { platform: tvos, arch: arm64 }
+          - { platform: tvsimulator, arch: arm64 }
+          - { platform: tvsimulator, arch: x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build tools
+        run: |
+          command -v pkg-config >/dev/null || brew install pkgconf
+          command -v nasm >/dev/null || brew install nasm
+          pkg-config --version; nasm --version; xcodebuild -version
+
+      - name: Dependency xcframeworks (stock FFmpegKit ${{ env.FFMPEGKIT_TAG }})
+        run: Vendor/FFmpegKit/ffmpeg-build/fetch_base.sh deps base-zips deps
+
+      - name: Vulkan headers (FFmpegKit's copy)
+        run: |
+          git clone -q --depth 1 --branch "$FFMPEGKIT_TAG" --filter=blob:none --sparse \
+            https://github.com/kingslay/FFmpegKit.git fk
+          test "$(git -C fk rev-parse HEAD)" = "$FFMPEGKIT_COMMIT"
+          git -C fk sparse-checkout set --no-cone '/Sources/FFmpegKit/private/**'
+          grep -m1 "define VK_HEADER_VERSION " fk/Sources/FFmpegKit/private/vulkan/vulkan_core.h
+
+      - name: FFmpeg ${{ env.FFMPEG_TAG }} + FFmpegKit's patches
+        run: |
+          git clone -q --depth 1 --branch "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg.git ffmpeg
+          test "$(git -C ffmpeg rev-parse HEAD)" = "$FFMPEG_COMMIT"
+          Vendor/FFmpegKit/ffmpeg-build/apply_patches.sh ffmpeg Vendor/FFmpegKit/ffmpeg-build/patches
+
+      - name: Configure, build, collect
+        run: |
+          Vendor/FFmpegKit/ffmpeg-build/build_slice.sh "${{ matrix.platform }}" "${{ matrix.arch }}" \
+            ffmpeg deps fk/Sources/FFmpegKit/private "built/${{ matrix.platform }}-${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-${{ matrix.platform }}-${{ matrix.arch }}
+          path: built/
+          retention-days: 7
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            ffwork/*/configure.out
+            ffwork/*/make.out
+            ffwork/*/scratch/ffbuild/config.log
+            ffwork/*/pkgconfig/
+
+  package:
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ffmpeg-*
+          path: built
+          merge-multiple: true
+
+      - name: Base release (templates, reference binaries, pass-through assets)
+        run: Vendor/FFmpegKit/ffmpeg-build/fetch_base.sh base base-zips all
+
+      - name: Assemble xcframeworks and check them against the base release
+        run: |
+          ls built
+          python3 Vendor/FFmpegKit/ffmpeg-build/assemble_frameworks.py built base base-zips pkg pkg/Package.swift "$FFMPEG_TAG"
+          du -ch pkg/*.zip | tail -1
+
+      - name: Compile and link against the new frameworks (all slices)
+        run: |
+          mkdir -p shim && ditto -x -k base-zips/FFmpegKit-sources.zip shim
+          Vendor/FFmpegKit/ffmpeg-build/link_test.sh pkg/stage base shim/FFmpegKit/include
+
+      - name: Publish release (once per tag, only when PUBLISH is "true")
+        run: |
+          if [ "$PUBLISH" != "true" ]; then
+            echo "PUBLISH is not \"true\": dry run, nothing published."
+            exit 0
+          fi
+          if gh release view "$RELEASE_TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG exists; not touching its assets. Bump RELEASE_TAG to republish."
+            exit 0
+          fi
+          {
+            echo "FFmpeg $FFMPEG_TAG for Bass Player (visionOS + tvOS, device + simulator), compiled by run"
+            echo "${{ github.run_id }} at ${{ github.sha }} from https://github.com/FFmpeg/FFmpeg/tree/$FFMPEG_TAG"
+            echo "(commit $FFMPEG_COMMIT) with FFmpegKit's 13 FFmpeg patches (three re-made for $FFMPEG_TAG, see"
+            echo "Vendor/FFmpegKit/ffmpeg-build/patches/README.md) and the configure line of FFmpegKit $FFMPEGKIT_TAG."
+            echo "All other xcframeworks and FFmpegKit-sources.zip are unchanged from ffmpegkit-$FFMPEGKIT_TAG-vt1."
+            echo "FFmpegKit is GPLv3 (https://github.com/kingslay/FFmpegKit); FFmpeg is GPL/LGPL."
+            echo
+            echo '```'
+            cat pkg/MANIFEST.txt
+            echo '```'
+          } > notes.md
+          gh release create "$RELEASE_TAG" -R "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "FFmpeg ${FFMPEG_TAG#n} built with FFmpegKit $FFMPEGKIT_TAG's configuration (visionOS + tvOS slices)" \
+            --notes-file notes.md --prerelease --latest=false pkg/*.zip pkg/checksums.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ffmpegkit-package
+          path: |
+            pkg/Package.swift
+            pkg/checksums.json
+            pkg/MANIFEST.txt
