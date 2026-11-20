@@ -19,7 +19,8 @@
 set -euo pipefail
 
 platform="$1"; arch="$2"; src="$(cd "$3" && pwd)"; deps="$(cd "$4" && pwd)"
-vulkan_inc="$(cd "$5" && pwd)"; out="$6"
+vulkan_inc="$(cd "$5" && pwd)"
+mkdir -p "$6"; out="$(cd "$6" && pwd)"          # absolute: the build runs in another directory
 here="$(cd "$(dirname "$0")" && pwd)"
 
 case "$platform" in
