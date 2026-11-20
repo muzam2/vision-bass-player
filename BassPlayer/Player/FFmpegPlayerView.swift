@@ -350,9 +350,10 @@ final class FFmpegSession: ObservableObject {
 
     /// YouTube only. The picture can stop for good while the sound carries on (see
     /// `configure`): no frame reaches the renderer although the player says it is playing and
-    /// its clock keeps moving. A seek to the current position makes the HLS demuxer drop its
-    /// connections and parser state and fetch the segment again, which clears the damage; it
-    /// lands on the segment start (`seekSnap`), so the film steps back a few seconds at most.
+    /// its clock keeps moving. A seek does not bring it back (tried on the headset 2026-11-20:
+    /// three seeks, state went buffering → playing each time, still no frame), so the stream is
+    /// opened again from scratch at the start of the current segment: a new demuxer and
+    /// decoders in the same player. The film steps back a few seconds at most.
     private func watchForVideoStall(layer: KSPlayerLayer, player: KSMEPlayer) {
         guard item?.source == .youtube else { return }
         let now = Date()
@@ -379,11 +380,13 @@ final class FFmpegSession: ObservableObject {
             return
         }
         stallRecoveries.append(now)
-        DiagLog.log(String(format: "video stalled at %.1f s: no frame for %.1f s while the clock moved %.1f s; reopening the stream there (recovery %d)",
-                           position, frozenFor, position - stallPosition, stallRecoveries.count), "player")
+        let restart = max(0, options.seekSnap?(position) ?? position)
+        DiagLog.log(String(format: "video stalled at %.1f s: no frame for %.1f s while the clock moved %.1f s; opening the stream again at %.1f s (recovery %d)",
+                           position, frozenFor, position - stallPosition, restart, stallRecoveries.count), "player")
         stallSince = now
         stallPosition = position
-        layer.seek(time: position, autoPlay: true) { _ in }
+        options.startPlayTime = restart
+        layer.reopen()
     }
 
     /// Every 10 s while playing: how often the display link really fired, the longest gap
