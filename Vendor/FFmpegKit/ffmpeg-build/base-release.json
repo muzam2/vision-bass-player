@@ -1,0 +1,39 @@
+{
+  "release": "ffmpegkit-9.0.2-vt1",
+  "ffmpegkit_tag": "9.0.2",
+  "ffmpegkit_commit": "20e3ba2a4c36978fed7b12a56839fadd92e901ea",
+  "ffmpeg_frameworks": [
+    "Libavcodec",
+    "Libavdevice",
+    "Libavfilter",
+    "Libavformat",
+    "Libavutil",
+    "Libswresample",
+    "Libswscale"
+  ],
+  "checksums": {
+    "MoltenVK": "fb58d63d6faa6d2ec1c9454944eed43932b4dd878c54aea7b98afde77ec684b9",
+    "lcms2": "b2b506bfe1abd6692ac4abaed4000b87165829c2b0b417e03c42ef8b406bec83",
+    "libplacebo": "4e7d4af989317ca2dee56131bb05e09374249d1c287f7547903bd085a6ea5aa1",
+    "libdav1d": "5fe1316250c2bafc7b1ffc27e8574d02b1ae313100ce85ec5d19667665e4c19f",
+    "libdovi": "23392a16d177b8f3f10f5c8375ba2afe782a09778d53a1dc045bd3c3fd4d5208",
+    "Libavcodec": "b2fcf02a8af3dff1e9e199b927246a758fc7e17a70972d55735cdfa2cb8113c3",
+    "Libavdevice": "dc936949c7392db2dd568adda1fcfd56a8d75eebbcd1870dd6febcc0c04eacbe",
+    "Libavfilter": "2ed34716e04f36fa601f61a93323d2364504acd09d3a59d1f5e40b76993393e8",
+    "Libavformat": "2c35b2860302b1dcb52032b44f65e28af7120a8a22bcde1b772c9fc34ca6317c",
+    "Libavutil": "d6f6eff382373ab6daff80c3655d11ab53f00b982274f6d07bbd217da25a70a3",
+    "Libswresample": "1c92625eaee0ca832322cb5338d5a59a6740d5fb8ab1188703a1a976f4c294a3",
+    "Libswscale": "f8431cabf11d06d5b49d99f864eb5d2c1057a131b9eb36a445a404a7652176f7",
+    "libsrt": "6d04ce93a95e00e525cbf396dc2cf1ca8c24fc3ad31842debb1de8da765a892b",
+    "libzvbi": "d1e81e0f1d6cf98d7ce1321c2a75b6a06fd3f4220caf3ca5b6f171620291bc2f",
+    "libfreetype": "7d9be814e56b363b0ba56dd5966e3c68d81fb872f81348dcbb8f74f977ec7620",
+    "libfribidi": "ca3a1dc3a5d6694f467230b2de84f74aabd506e6719793f32334790324b6cd06",
+    "libharfbuzz": "3042568d1776c17f4db21b9691b319ab73a9fef86408423364f046e527245f76",
+    "libass": "c0f4e9f05c26f96094e1e23c1d4c5af39d75c761d188a0b26d142277db529b49",
+    "libopus": "09f8819131b4cd20719022210c25f38e97bec0c970d703aee91e9170c7713585",
+    "libfontconfig": "130e19b72606dbb1820993edfddf0174abcab2d4c9c7f6c8960e4a5a2b6dff85",
+    "libssl": "77d2efa430a508965ae91fc79a4feb7d06f6c3f768c4c47bb56b08dbcc0d05f4",
+    "libcrypto": "237be48844e02d059264000381cc2154a5c8a889ce1cc662e4b493fbbd9c7754",
+    "FFmpegKit-sources": "d5094114f3acec5e5787900585837a7b1adf8d8e05b64af3010ec19524c4c48d"
+  }
+}

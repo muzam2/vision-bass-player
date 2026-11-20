@@ -1,0 +1,14 @@
+diff --git forkSrcPrefix/libavcodec/h264_slice.c forkDstPrefix/libavcodec/h264_slice.c
+index 8534881a29d67721893c5463f05a0499d574fc3e..731abbd09f24357181a1ad7320059e766371c431 100644
+--- forkSrcPrefix/libavcodec/h264_slice.c
++++ forkDstPrefix/libavcodec/h264_slice.c
+@@ -1178,8 +1178,7 @@
+         if (flush_changes)
+             ff_h264_flush_change(h);
+ 
+-        if ((ret = get_pixel_format(h, must_reinit || needs_reinit,
+-                                    sl->data_partitioning)) < 0)
++        if ((ret = get_pixel_format(h, 1, sl->data_partitioning)) < 0)
+             return ret;
+         h->avctx->pix_fmt = ret;
+ 
