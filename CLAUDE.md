@@ -102,6 +102,10 @@ record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untest
   `NimBLEDevice::init` (`esp_bt_controller_init` → `ESP_ERR_INVALID_STATE`). Firmware bugs
   like this only show on the board, never in CI. `platformio.ini` pins the board-tested pair
   (espressif32 8.0.0, NimBLE-Arduino 1.4.3); bump one at a time and test on hardware.
+- BLE sending: the engine tap delivers 100 ms buffers, i.e. five bass packets at once, and
+  CoreBluetooth accepts one write-without-response per turn of its delegate queue. `BassLink`
+  therefore queues packets and paces them out every 20 ms; sending a burst directly loses four
+  packets in five ("sent N dropped 4N" in the log, no audible bass).
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and
   git-ignored. `.usda` is excluded from the folder source and added as a resource for visionOS.
 

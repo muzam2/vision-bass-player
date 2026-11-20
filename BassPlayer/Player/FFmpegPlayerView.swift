@@ -337,9 +337,10 @@ final class FFmpegSession: ObservableObject {
         bassLevelDb = s.bassPeakDb
         if Date().timeIntervalSince(lastBassLog) > 10 {
             lastBassLog = Date()
-            DiagLog.log(String(format: "tap %@: %d buffers, %d frames, %d packets · input peak %.0f dB · bass peak %.0f dB · BLE %@ sent %d dropped %d",
+            DiagLog.log(String(format: "tap %@: %d buffers, %d frames, %d packets · input peak %.0f dB · bass peak %.0f dB · BLE %@ sent %d dropped %d queue peak %d · receiver buffer %d underruns %d dropped %d",
                                tap.tapInstalled ? "on" : "off", s.buffers, s.frames, s.packets, s.inputPeakDb, s.bassPeakDb,
-                               bassLink.state.rawValue, bassLink.packetsSent, bassLink.packetsDropped), "bass")
+                               bassLink.state.rawValue, bassLink.packetsSent, bassLink.packetsDropped, bassLink.sendQueuePeak,
+                               bassLink.receiverBufferFill, bassLink.receiverUnderruns, bassLink.receiverDropped), "bass")
         }
     }
 }
