@@ -49,10 +49,12 @@ You only do this once.
 3. Plug the A1S into the computer with the **data** micro-USB cable, using the USB port
    nearest the two small buttons (that's the serial one; the other port is power only).
 4. Find the port: Windows → Device Manager → Ports (e.g. `COM5`); Linux → `ls /dev/ttyUSB*`;
-   Mac → `ls /dev/cu.usb*`.
-5. Flash (replace `COM5` with your port):
+   Mac → `ls /dev/cu.usb*`. On Windows, if the board shows as "CP2102 USB to UART Bridge
+   Controller" with a warning and no COM port, install the Silicon Labs **CP210x Universal
+   Windows Driver** (right-click `silabser.inf` → Install) and look again.
+5. Flash (replace `COM5` with your port; esptool 4 spells it `write_flash`):
    ```
-   esptool --chip esp32 --port COM5 --baud 460800 write_flash \
+   esptool --chip esp32 --port COM5 --baud 460800 write-flash \
      0x1000  bootloader-esp32-a1s.bin \
      0x8000  partitions-esp32-a1s.bin \
      0x10000 bass-receiver-esp32-a1s.bin
@@ -63,6 +65,11 @@ You only do this once.
 
 > Prefer building yourself? `pip install platformio`, then in `firmware/esp32-bass-receiver`:
 > `pio run -e esp32-a1s -t upload`.
+
+**Test it before the headset.** With the sub wired up (step 3) and Bluetooth on the computer:
+`pip install bleak`, then `python tools/receiver_test.py tone` plays a quiet 40 Hz tone and
+`python tools/receiver_test.py thumps` plays kick-drum hits. No sound? Check the sub's input
+and gain, and that the cable is in the board's 3.5 mm jack.
 
 ---
 
