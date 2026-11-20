@@ -65,6 +65,29 @@ final class BassPlayerOptions: KSOptions {
 }
 
 /// Owns the bass pipeline for one FFmpeg playback and exposes decoded frames for the immersive screen.
+/// The sub-bass level shown in the player's status line (see `FFmpegSession.bassMeter`).
+@MainActor
+final class BassMeter: ObservableObject {
+    /// dBFS, whole decibels; -120 = silence.
+    @Published private(set) var levelDb: Float = -120
+
+    func set(_ db: Float) {
+        let rounded = db.rounded()
+        if rounded != levelDb { levelDb = rounded }
+    }
+}
+
+/// "Bass tap · 48 kHz · 2 ch · -12 dB", or "Bass tap off".
+struct BassTapLabel: View {
+    let installed: Bool
+    let audioFormat: String
+    @ObservedObject var meter: BassMeter
+
+    var body: some View {
+        Text(installed ? "Bass tap · \(audioFormat) · \(meter.levelDb <= -119 ? "silent" : String(format: "%.0f dB", meter.levelDb))" : "Bass tap off")
+    }
+}
+
 @MainActor
 final class FFmpegSession: ObservableObject {
     let options = FFmpegConfig.makeOptions()
@@ -73,9 +96,17 @@ final class FFmpegSession: ObservableObject {
     @Published private(set) var tapInstalled = false
     @Published private(set) var backendName = "—"
     @Published private(set) var audioFormat = "—"
-    /// Peak of the extracted sub-bass over the last poll interval, in dBFS (-120 = silence).
-    @Published private(set) var bassLevelDb: Float = -120
+    /// Peak of the extracted sub-bass over the last poll interval. It changes on almost every
+    /// poll, so it is published by its own object: only `BassTapLabel` redraws, not every view
+    /// that observes the session (which redrew the whole player twice a second and cost the
+    /// render loop a display tick each time; see `logRenderStats`).
+    let bassMeter = BassMeter()
     private var lastBassLog: Date = .distantPast
+    private var lastRenderLog = Date()
+    private var lastDroppedFrames: UInt32 = 0
+    private var pollWorst = 0.0
+    private var pollTotal = 0.0
+    private var pollCount = 0
 
     private weak var coordinator: KSVideoPlayer.Coordinator?
     private var pollTimer: Timer?
@@ -229,6 +260,8 @@ final class FFmpegSession: ObservableObject {
         sleepFired = false
         stallFrameCount = -1
         stallRecoveries = []
+        lastRenderLog = Date()
+        lastDroppedFrames = 0
         if let item, let library {
             library.noteStarted(item)
             // YouTube resume needs the backported mov/hls seek fixes in Vendor/FFmpegKit.
@@ -353,10 +386,41 @@ final class FFmpegSession: ObservableObject {
         layer.seek(time: position, autoPlay: true) { _ in }
     }
 
+    /// Every 10 s while playing: how often the display link really fired, the longest gap
+    /// between ticks, frames shown and dropped, and what this poll costs. A 60 fps video
+    /// needs at least 60 ticks a second with no gap much over 17 ms; anything less shows as
+    /// judder however fast the decoder is.
+    private func logRenderStats(layer: KSPlayerLayer, player: KSMEPlayer) {
+        let now = Date()
+        guard now.timeIntervalSince(lastRenderLog) >= 10, let view = player.videoOutput as? MetalPlayView else { return }
+        lastRenderLog = now
+        let r = view.takeRenderStats()
+        let dropped = player.dynamicInfo?.droppedVideoFrameCount ?? 0
+        let newDrops = dropped >= lastDroppedFrames ? dropped - lastDroppedFrames : dropped
+        lastDroppedFrames = dropped
+        let worst = pollWorst, average = pollCount > 0 ? pollTotal / Double(pollCount) : 0
+        pollWorst = 0; pollTotal = 0; pollCount = 0
+        guard r.ticks > 1, r.span > 0, layer.state == .bufferFinished else { return }
+        DiagLog.log(String(format: "render: %d ticks in %.1f s (%.1f/s, link %.0f Hz) · longest gap %.0f ms · longest draw %.1f ms · %d frames shown · %d dropped · sync %+.0f ms · poll worst %.1f ms avg %.1f ms",
+                           r.ticks, r.span, Double(r.ticks - 1) / r.span, r.linkInterval > 0 ? 1 / r.linkInterval : 0,
+                           r.longestGap * 1000, r.longestDraw * 1000, r.presented, Int(newDrops),
+                           (player.dynamicInfo?.audioVideoSyncDiff ?? 0) * 1000, worst * 1000, average * 1000), "player")
+    }
+
     private func poll() {
         guard let layer = coordinator?.playerLayer else { return }
         let player = layer.player
-        backendName = player is KSMEPlayer ? "FFmpeg" : "AVPlayer"
+        let pollStart = CACurrentMediaTime()
+        defer {
+            let took = CACurrentMediaTime() - pollStart
+            pollWorst = max(pollWorst, took)
+            pollTotal += took
+            pollCount += 1
+        }
+        // Publish only what changed: every assignment to a @Published property redraws the
+        // views observing the session, changed or not.
+        let backend = player is KSMEPlayer ? "FFmpeg" : "AVPlayer"
+        if backendName != backend { backendName = backend }
         trackProgress(layer: layer)
         // SponsorBlock: jump over marked segments.
         if !sponsorSkipper.segments.isEmpty, layer.state == .bufferFinished || layer.state == .readyToPlay,
@@ -370,6 +434,7 @@ final class FFmpegSession: ObservableObject {
         guard let me = player as? KSMEPlayer else { return }
         if let view = me.videoOutput as? MetalPlayView { installFrameSink(on: view) }
         watchForVideoStall(layer: layer, player: me)
+        logRenderStats(layer: layer, player: me)
         let mvc = me.tracks(mediaType: .video).contains { ($0 as? FFmpegAssetTrack)?.decodesStereoSideBySide == true }
         if mvc != mvcStereo {
             mvcStereo = mvc
@@ -382,13 +447,14 @@ final class FFmpegSession: ObservableObject {
         if let engine = (me.audioOutput as? AudioEnginePlayer)?.engine {
             let f = engine.mainMixerNode.outputFormat(forBus: 0)
             if f.sampleRate > 0 {
-                audioFormat = "\(Int(f.sampleRate) / 1000) kHz · \(f.channelCount) ch"
+                let format = "\(Int(f.sampleRate) / 1000) kHz · \(f.channelCount) ch"
+                if audioFormat != format { audioFormat = format }
             }
         }
         // "Installed" means the mixer tap really exists; the level proves samples flow through it.
         let s = extractor.stats()
-        tapInstalled = tap.tapInstalled
-        bassLevelDb = s.bassPeakDb
+        if tapInstalled != tap.tapInstalled { tapInstalled = tap.tapInstalled }
+        bassMeter.set(s.bassPeakDb)
         if Date().timeIntervalSince(lastBassLog) > 10 {
             lastBassLog = Date()
             DiagLog.log(String(format: "tap %@: %d buffers, %d frames, %d packets · input peak %.0f dB · bass peak %.0f dB · BLE %@ sent %d dropped %d queue peak %d · receiver buffer %d underruns %d dropped %d",
@@ -478,7 +544,7 @@ struct FFmpegPlayerView: View {
     private func statusChip(_ session: FFmpegSession) -> some View {
         HStack(spacing: 8) {
             Image(systemName: session.tapInstalled ? "waveform" : "waveform.slash")
-            Text(session.tapInstalled ? "Bass tap · \(session.audioFormat) · \(session.bassLevelDb <= -119 ? "silent" : String(format: "%.0f dB", session.bassLevelDb))" : "Bass tap off")
+            BassTapLabel(installed: session.tapInstalled, audioFormat: session.audioFormat, meter: session.bassMeter)
             Text("·")
             Text(session.backendName)
             if let dv = session.doviStatus { Text("·"); Text(dv) }

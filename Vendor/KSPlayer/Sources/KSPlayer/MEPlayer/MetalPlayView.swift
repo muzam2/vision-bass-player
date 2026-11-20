@@ -37,6 +37,32 @@ public final class MetalPlayView: UIView, VideoOutput {
     /// (hardware CVPixelBuffer or software planes), so a second consumer — the immersive
     /// cinema screen — can display the same frames.
     public var frameSink: ((VideoVTBFrame, PixelBufferProtocol, CMTime) -> Void)?
+    /// Bass Player patch: what the display link did since the last `takeRenderStats()`. Tells a
+    /// starved render loop (few ticks, long gaps between them) apart from frames that were
+    /// simply late: the loop runs on the main thread and shows at most one frame per tick.
+    public struct RenderStats {
+        public var ticks = 0
+        /// Frames handed to the renderer.
+        public var presented = 0
+        /// Seconds between the first and the last tick.
+        public var span = 0.0
+        public var longestGap = 0.0
+        /// Longest single tick, i.e. time spent choosing and handing over a frame.
+        public var longestDraw = 0.0
+        /// Seconds per refresh as the display link reports it (0 where not available).
+        public var linkInterval = 0.0
+    }
+
+    private var renderStats = RenderStats()
+    private var firstTickTime = 0.0
+    private var lastTickTime = 0.0
+    public func takeRenderStats() -> RenderStats {
+        var stats = renderStats
+        stats.span = lastTickTime - firstTickTime
+        renderStats = RenderStats()
+        firstTickTime = lastTickTime
+        return stats
+    }
     /// Visible portion of the frame (unit rect, origin top-left). Used to show one eye of a
     /// side-by-side / top-bottom 3D frame on a flat display. Pair with `KSOptions.customizeDar`.
     public var contentsCrop = CGRect(x: 0, y: 0, width: 1, height: 1) {
@@ -113,6 +139,9 @@ public final class MetalPlayView: UIView, VideoOutput {
 
     public func pause() {
         displayLink.isPaused = true
+        // A pause is not a gap between ticks.
+        lastTickTime = 0
+        firstTickTime = 0
     }
 
     @available(*, unavailable)
@@ -189,7 +218,19 @@ public final class MetalPlayView: UIView, VideoOutput {
 
 extension MetalPlayView {
     @objc private func renderFrame() {
+        let now = CACurrentMediaTime()
+        if lastTickTime > 0 {
+            renderStats.longestGap = max(renderStats.longestGap, now - lastTickTime)
+        } else {
+            firstTickTime = now
+        }
+        lastTickTime = now
+        renderStats.ticks += 1
+        #if !os(macOS)
+        renderStats.linkInterval = displayLink.targetTimestamp - displayLink.timestamp
+        #endif
         draw(force: false)
+        renderStats.longestDraw = max(renderStats.longestDraw, CACurrentMediaTime() - now)
     }
 
     private func draw(force: Bool) {
@@ -209,6 +250,7 @@ extension MetalPlayView {
             // Dolby Vision profile 5 must go through our Metal shader; the display layer can't map IPT.
             let dovi = frame.dovi?.needsMapping == true ? frame.dovi : nil
             currentFrame = frame
+            renderStats.presented += 1
             frameSink?(frame, pixelBuffer, cmtime)
             if dovi == nil, let pixelBuffer = pixelBuffer.cvPixelBuffer, options.isUseDisplayLayer() {
                 if displayView.isHidden {
