@@ -11,8 +11,8 @@ Owner has **no Mac**: everything is compiled by GitHub Actions and sideloaded wi
 Apple ID (Vision Pro: SideStore 0.7.2 installs the IPA downloaded in Safari from the LAN
 helper `tools/diag_receiver.py`; HANDOFF §0 has the exact loop). Installed on the headset
 2026-11-08 and iterated all day with a live log stream. The ESP32-A1S receiver arrived
-2026-11-20 and boots, advertises and takes test packets from a PC; the headset-to-sub path
-is still untested end to end.
+2026-11-20 and plays PC-sent test audio through the owner's sub (`tools/receiver_test.py`,
+record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untested.
 
 ## Build & verify
 - Never try to build Swift locally; push and read Actions. `build.yml` (visionOS + tvOS unsigned

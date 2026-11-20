@@ -33,9 +33,11 @@ rebuilt around tabs (§2).
 **Receiver, 2026-11-20:** the ESP32-A1S (ES8388) arrived and runs the firmware. Flashed from the
 owner's Windows PC (COM3, CP2102; PlatformIO and esptool are installed there). The first CI image
 reboot-looped in `NimBLEDevice::init` (risk 11 has the cause and fix). With the fix the board
-boots, advertises as BassSub and passed a PC-side BLE test in the app's wire format: 150 packets,
-none dropped, buffer steady near 50 ms. Still untested: the headset or Apple TV as the sender,
-and the line out into a real sub.
+boots, advertises as BassSub and plays PC-sent test audio (the app's wire format, via
+`tools/receiver_test.py`) through the line out into the owner's sub: tones and thumps heard, no
+packets dropped. With the default 60 ms buffer one PC-driven run underran mid-stream; with
+Receiver delay 80 ms it did not. **Still untested: the headset or Apple TV as the sender.**
+Full record, crash log and repeat steps: `docs/RECEIVER-BRINGUP.md`.
 
 ## 1. The owner and their constraints
 
@@ -94,6 +96,8 @@ firmware/esp32-bass-receiver    PlatformIO; NimBLE GATT server, 2-device arbitra
 .github/workflows/ffmpegkit-backports.yml  Rebuilds mov.o+hls.o with the patches, re-zips FFmpegKit, publishes release RELEASE_TAG once
 .github/workflows/firmware.yml  Both ESP32 envs, uploads .bin + bootloader + partitions
 docs/SETUP-GUIDE.md             End-user step-by-step (hardware, flashing, sideloading, sources, tuning)
+docs/RECEIVER-BRINGUP.md        First power-on of the A1S (2026-11-20): boot-loop crash, cause, fix, what was tested on hardware
+tools/receiver_test.py          Test the receiver from a computer: serial boot log, BLE scan, tone / thumps through the sub
 ```
 
 ### Server Home rows (2026-11-13, `Media/Shelf.swift`)
