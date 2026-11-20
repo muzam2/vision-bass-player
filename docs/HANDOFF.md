@@ -493,8 +493,24 @@ Ordered by likelihood of needing a fix.
    buffer requirement 1.0 s. Expect ~1–1.5 s.
    Seen once: a TCP reset from googlevideo mid-segment → FFmpeg's `reconnect_streamed` restarted
    the segment at byte 0 → duplicated bytes → VP9 header errors → video frozen 12 s, audio on
-   (self-recovered at the next keyframe). YouTube sessions now set `reconnect=1,
-   reconnect_streamed=0, reconnect_on_network_error=1, reconnect_delay_max=2`.
+   (self-recovered at the next keyframe). YouTube sessions then set `reconnect=1,
+   reconnect_streamed=0, reconnect_on_network_error=1, reconnect_delay_max=2`. **That did
+   nothing:** FFmpeg's HLS demuxer gives its segment connections only a fixed list of options
+   (`ffio_copy_url_options` plus `seekable`), so `reconnect*` in `formatContextOptions` never
+   reaches them. It happened again on 2026-11-20 (`IO error: Connection reset by peer` while
+   buffering ahead; 34 s later ~450 VP9 header errors in 2 s, then no video frames at all with
+   audio and the bass tap running on). Cause in `hls.c`: a segment read error is treated as the
+   end of the segment, so the fMP4 parser gets a cut-off fragment followed by the next segment.
+   Fix on branch `fix/youtube-stall-recovery`, two layers. (1) `KSOptions.reconnectNestedHTTP`:
+   `MEPlayerItem` wraps the format context's `io_open` and adds `reconnect`,
+   `reconnect_on_network_error`, `reconnect_delay_max=2` to every nested HTTP open, so `http.c`
+   resumes with a Range request (needs Content-Length and range support; look for `Will
+   reconnect at N` in the log). Also `seg_max_retry=2` for segments that fail to open.
+   (2) `FFmpegSession.watchForVideoStall` (YouTube only): no frame at the renderer for 3 s
+   while playing, on screen and the clock moved 2 s → seek to the current position, at most
+   three times in two minutes; logs `video stalled at …`. **Neither layer has been seen
+   working: a reset cannot be provoked on demand.** Whether googlevideo honours Range on HLS
+   segments is not confirmed, and the watchdog does not cover a reset on the audio connection.
    **Look to Scroll** (visionOS 26): `View.lookToScroll()` on RootView and PlayerScreen; the
    user must also enable it in the headset's Settings.
 1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
