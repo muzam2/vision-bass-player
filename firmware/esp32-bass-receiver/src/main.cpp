@@ -20,6 +20,14 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <driver/i2s.h>
+// Arduino core 3.3+ frees the Bluetooth controller's memory in initArduino() unless a BLE
+// library registers itself through this header. NimBLE-Arduino 1.4.x predates that scheme, so
+// the firmware registers instead; without it esp_bt_controller_init() returns
+// ESP_ERR_INVALID_STATE and NimBLEDevice::init() aborts on every boot. Older cores lack the
+// header and keep the memory through NimBLE's own btStarted() reference.
+#if __has_include(<esp32-hal-alloc-ble-mem.h>)
+#include <esp32-hal-alloc-ble-mem.h>
+#endif
 #ifdef BOARD_A1S
 #include <Wire.h>
 #endif

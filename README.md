@@ -32,6 +32,8 @@ receiver, so one sub serves the headset and the TV.
 | `BassPlayer/BLE` | `BassLink` CoreBluetooth central |
 | `BassPlayer/Views` | Library, settings, status ornament |
 | `firmware/esp32-bass-receiver` | PlatformIO project for the ESP32 receiver |
+| `tools/receiver_test.py` | Test the receiver from a computer: serial boot log, BLE scan, test tone / thumps through the sub |
+| `docs/RECEIVER-BRINGUP.md` | First power-on of the receiver: the boot-loop crash, its fix, and what was tested |
 | `.github/workflows/build.yml` | Builds the unsigned IPA on a macOS runner |
 
 ## Status
