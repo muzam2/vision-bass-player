@@ -106,6 +106,11 @@ record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untest
   HTTP options for segments go through `KSOptions.reconnectNestedHTTP` (an `io_open` wrapper
   in `MEPlayerItem`). A segment read error is silently treated as end of segment, which
   corrupts fMP4 parsing; `FFmpegSession.watchForVideoStall` is the safety net for YouTube.
+- Judder is main-thread starvation, not decoding: `MetalPlayView`'s display link runs on the
+  main run loop and shows one frame per tick, so anything that redraws SwiftUI at a steady
+  rate (a `@Published` assigned on a timer, even with an unchanged value) drops frames on
+  60 fps video. Fast-changing values get their own small `ObservableObject` observed by a leaf
+  view (`BassMeter`/`BassTapLabel`). The `render:` log line every 10 s is the measurement.
 - BLE sending: the engine tap delivers 100 ms buffers, i.e. five bass packets at once, and
   CoreBluetooth accepts one write-without-response per turn of its delegate queue. `BassLink`
   therefore queues packets and paces them out every 20 ms; sending a burst directly loses four

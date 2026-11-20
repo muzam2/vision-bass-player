@@ -50,6 +50,25 @@ backlog; the 10 s log line now adds `queue peak` and the receiver's buffer / und
 The pacing puts about 80–100 ms into the bass path, so expect Bass lead near 180 ms (estimate).
 **Not yet confirmed on the headset.**
 
+**Judder (analysed 2026-11-20 from the live log, all sessions since 2026-11-08):** KSPlayer's
+`drop next frame` warnings are not a decoder problem. At every drop 12–16 decoded frames were
+queued, hardware-decoded Plex/Jellyfin/H.264 content drops too, and the same 1440p60 VP9 format
+also plays for minutes with none. The frame loop (`MetalPlayView.renderFrame`, a `CADisplayLink`
+on the main run loop) shows at most one frame per tick, so at 60 fps a missed tick is a lost
+frame once the lag reaches four frames (`KSOptions.videoClockSync`). Two patterns: (A) 60 fps
+video, 2.1–2.7 drops/s, 0.07–0.08 s late, phase-locked to a 0.5 s period (concentration
+0.97–0.99 over four sessions) = `FFmpegSession.poll`, which assigned four `@Published`
+properties every time and so redrew everything observing the session; (B) 2026-11-20 only,
+windowed playback after 22:02: up to ~18 drop events/s, runs of 170–296 late frames, lag
+growing past 1 s, 24/30 fps content affected too, clean in the cinema (no windows). Cause of
+(B) not established; new that day were the BLE link publishing counters and receiver status to
+the UI (~6/s, `BassLink` is an `@EnvironmentObject` of RootView and the player) and live log
+streaming. Branch `fix/judder-measure`: the poll publishes only on change, the bass level moved
+to `BassMeter` (only `BassTapLabel` redraws), and a `render:` log line every 10 s gives ticks/s,
+the link's refresh rate, longest gap between ticks, frames shown/dropped and the poll's cost.
+**Read those lines before changing anything else**; if (B) persists with long gaps, split
+`BassLink`'s fast counters into their own object the same way.
+
 ## 1. The owner and their constraints
 
 - Physician, hobbyist developer, comfortable with Linux, Docker, PlatformIO, OpenWrt.
