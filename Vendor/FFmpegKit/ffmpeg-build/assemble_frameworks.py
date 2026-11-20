@@ -102,7 +102,8 @@ def exported(binary: Path) -> set[str]:
 
 
 def header_version(include: Path, lib: str) -> str:
-    text = (include / lib / "version_major.h").read_text() + (include / lib / "version.h").read_text()
+    # libavutil keeps all three numbers in version.h; the others split off version_major.h
+    text = "".join(p.read_text() for p in (include / lib / "version_major.h", include / lib / "version.h") if p.is_file())
     up = lib.upper()
     return ".".join(re.search(rf"#define\s+{up}_VERSION_{part}\s+(\d+)", text).group(1)
                     for part in ("MAJOR", "MINOR", "MICRO"))
