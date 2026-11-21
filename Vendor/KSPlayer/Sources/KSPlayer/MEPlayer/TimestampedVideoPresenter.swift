@@ -140,6 +140,13 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
         /// How long a start waits for the audio output's first clock reading before running
         /// from the first picture instead.
         static let audioWait = 0.5
+        /// The audio output's first readings after a start are taken while it is still filling
+        /// its own buffers; anchor on the newest once this many have arrived or this much
+        /// time has passed since the first.
+        static let anchorReadings = 4
+        static let anchorSettle = 0.12
+        /// A renderer that stays failed is flushed at most this often.
+        static let flushInterval = 0.5
         /// The clock follower: every `controlInterval` the average of (timebase − audio
         /// target) over that interval decides the rate trim.
         static let controlInterval = 0.5
@@ -195,6 +202,9 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
     private var epochHost = 0.0
     private var audioCursor = UInt64(0)
     private var freshSample: AudioClockSample?
+    private var freshCount = 0
+    private var firstFreshHost = 0.0
+    private var lastFlushHost = 0.0
     private var errorSum = 0.0
     private var errorCount = 0
     private var lastControlHost = 0.0
@@ -396,6 +406,7 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
             // reading says where it really is. Frames already enqueued stay enqueued.
             anchored = false
             freshSample = nil
+            freshCount = 0
             epochHost = hostNow
             trim = 0
             lastPassHost = 0
@@ -448,6 +459,7 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
         lastPTS = nil
         trim = 0
         freshSample = nil
+        freshCount = 0
         epochHost = CACurrentMediaTime()
         stats.timelineResets += 1
     }
@@ -460,6 +472,7 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
         // Readings taken before this moment were measured against another anchor or rate.
         epochHost = hostNow
         freshSample = nil
+        freshCount = 0
     }
 
     // MARK: Pump queue: one pass
@@ -475,7 +488,8 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
 
         // The documented recovery: a failed renderer, or one whose decoder resources were
         // taken away, resumes after a flush. What was enqueued is gone; carry on from here.
-        if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
+        if renderer.status == .failed || renderer.requiresFlushToResumeDecoding, hostNow - lastFlushHost >= Tuning.flushInterval {
+            lastFlushHost = hostNow
             renderer.flush()
             stats.rendererFlushes += 1
         }
@@ -483,8 +497,12 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
         let clock = source.audioClockSamples(after: audioCursor)
         audioCursor = clock.cursor
         let delay = options?.videoDelay ?? 0
-        if let newest = clock.samples.last(where: { $0.host >= epochHost }) {
-            freshSample = newest
+        for sample in clock.samples where sample.host >= epochHost {
+            if freshCount == 0 {
+                firstFreshHost = sample.host
+            }
+            freshCount += 1
+            freshSample = sample
         }
 
         if !anchored {
@@ -500,7 +518,7 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
     /// carried forward to now, less `videoDelay`), otherwise the first picture's timestamp.
     private func anchor(isAudioMaster: Bool, delay: Double, hostNow: Double) {
         if isAudioMaster {
-            if let sample = freshSample {
+            if let sample = freshSample, freshCount >= Tuning.anchorReadings || hostNow - firstFreshHost >= Tuning.anchorSettle {
                 let target = sample.media + (hostNow - sample.host) * rate - delay
                 CMTimebaseSetTime(timebase, time: CMTime(seconds: target, preferredTimescale: 1_000_000))
                 CMTimebaseSetRate(timebase, rate: rate)
@@ -510,8 +528,8 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
                 restartFollower(hostNow: hostNow)
                 return
             }
-            if hostNow - epochHost < Tuning.audioWait {
-                // The audio output has not reported yet. Keep a picture up meanwhile.
+            if freshSample != nil || hostNow - epochHost < Tuning.audioWait {
+                // The audio output has not reported yet, or only just. Keep a picture up meanwhile.
                 showStillIfNeeded()
                 return
             }
@@ -606,14 +624,19 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
         guard effectiveRate > 0 else { return }
         var taken = 0
         while taken < Tuning.maxFramesPerPass {
-            // Back-pressure: the renderer says when it has enough; never enqueue past that.
-            guard renderer.isReadyForMoreMediaData else {
+            // Back-pressure: the renderer says when it has enough, and the pump stops there. The
+            // one exception keeps a picture on screen: if nothing has gone in for a quarter of
+            // a second, a single frame is enqueued anyway (the API allows it, "not without
+            // bound"; this is at most four a second).
+            let starving = hostNow - lastEnqueueHost > Tuning.starvation
+            if !renderer.isReadyForMoreMediaData {
                 stats.notReady += 1
-                return
+                if !starving {
+                    return
+                }
             }
             let timebaseNow = CMTimebaseGetTime(timebase).seconds
             let last = lastPTS
-            let starving = hostNow - lastEnqueueHost > Tuning.starvation
             let mayFinish = last.map { $0 <= timebaseNow + Tuning.finishMargin } ?? true
             var verdict = Verdict.none
             // The closure runs under the frame queue's lock and only decides.
