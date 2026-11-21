@@ -2,14 +2,18 @@
 # when kingslay/FFmpegKit has no tag for the FFmpeg version we want (its build plugin is no
 # longer public, so there is nothing to run and nothing to repackage). The build reproduces
 # FFmpegKit 9.0.2: same configure line (recovered from its binaries and asserted against them),
-# FFmpegKit's FFmpeg patches (Vendor/FFmpegKit/ffmpeg-build/patches, applied strictly), and the
-# stock 9.0.2 dependency xcframeworks. Only the seven Lib*.xcframeworks are new; everything
-# else in the release is copied byte for byte from the base release.
+# FFmpegKit's FFmpeg patches (Vendor/FFmpegKit/ffmpeg-build/patches, applied strictly), the
+# stock 9.0.2 dependency xcframeworks and the Vulkan headers of the MoltenVK it ships. Only the
+# seven Lib*.xcframeworks are new; everything else in the release is copied byte for byte from
+# the base release.
 #
-# The result is published once as release RELEASE_TAG of this repo when PUBLISH is "true"
-# (skipped if the tag exists; bump the suffix to republish, never overwrite). Artifact
-# "ffmpegkit-package" carries Package.swift + checksums.json + MANIFEST.txt to commit into
-# Vendor/FFmpegKit together with RELEASE_TAG. See docs/HANDOFF.md §3 "FFmpeg 9.1".
+# Every run builds and checks (package job: configure line, version strings, load commands,
+# components and headers against the base release; a compile + link test). A run publishes
+# release RELEASE_TAG of this repo only when PUBLISH is "true" and that release does not exist
+# yet (never overwritten; bump the suffix to publish again). Artifact "ffmpegkit-package" then
+# carries Package.swift, checksums.json and RELEASE_TAG to commit into Vendor/FFmpegKit; in any
+# other run it carries DRY-RUN.txt instead of RELEASE_TAG and its checksums belong to no
+# release. See docs/HANDOFF.md §3 "FFmpeg 9.1".
 name: FFmpegKit build
 
 on:
@@ -22,10 +26,15 @@ on:
 env:
   FFMPEG_TAG: "n9.1"
   FFMPEG_COMMIT: "74e4393595cf2b5857f0da925c4e0dd74ea306e5"
-  # FFmpegKit tag whose Vulkan headers (Sources/FFmpegKit/private) the build uses; the
-  # dependency binaries come from the release named in ffmpeg-build/base-release.json.
+  # FFmpegKit tag the patches were taken from (checked in the package job); the dependency
+  # binaries come from the release named in ffmpeg-build/base-release.json.
   FFMPEGKIT_TAG: "9.0.2"
   FFMPEGKIT_COMMIT: "20e3ba2a4c36978fed7b12a56839fadd92e901ea"
+  # KhronosGroup/Vulkan-Headers revision pinned by MoltenVK v1.4.0 (header version 323), the
+  # MoltenVK in FFmpegKit 9.0.2, whose include directory FFmpegKit builds FFmpeg against. The
+  # 9.0.2 binaries have the Vulkan VP9 hwaccel and extensions that need headers >= 1.4.317;
+  # the older copy in FFmpegKit's Sources/FFmpegKit/private (1.3.280) does not reproduce them.
+  VULKAN_HEADERS_COMMIT: "088a00d81d1fc30ff77aacf31485871aebec7cb2"
   RELEASE_TAG: "ffmpegkit-9.1-vt1"
   PUBLISH: "false"
   GH_TOKEN: ${{ github.token }}
@@ -61,13 +70,13 @@ jobs:
       - name: Dependency xcframeworks (stock FFmpegKit ${{ env.FFMPEGKIT_TAG }})
         run: Vendor/FFmpegKit/ffmpeg-build/fetch_base.sh deps base-zips deps
 
-      - name: Vulkan headers (FFmpegKit's copy)
+      - name: Vulkan headers (header only)
         run: |
-          git clone -q --depth 1 --branch "$FFMPEGKIT_TAG" --filter=blob:none --sparse \
-            https://github.com/kingslay/FFmpegKit.git fk
-          test "$(git -C fk rev-parse HEAD)" = "$FFMPEGKIT_COMMIT"
-          git -C fk sparse-checkout set --no-cone '/Sources/FFmpegKit/private/**'
-          grep -m1 "define VK_HEADER_VERSION " fk/Sources/FFmpegKit/private/vulkan/vulkan_core.h
+          git init -q vulkan-headers
+          git -C vulkan-headers fetch -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git "$VULKAN_HEADERS_COMMIT"
+          git -C vulkan-headers checkout -q FETCH_HEAD
+          test "$(git -C vulkan-headers rev-parse HEAD)" = "$VULKAN_HEADERS_COMMIT"
+          grep -m1 "define VK_HEADER_VERSION " vulkan-headers/include/vulkan/vulkan_core.h
 
       - name: FFmpeg ${{ env.FFMPEG_TAG }} + FFmpegKit's patches
         run: |
@@ -78,7 +87,7 @@ jobs:
       - name: Configure, build, collect
         run: |
           Vendor/FFmpegKit/ffmpeg-build/build_slice.sh "${{ matrix.platform }}" "${{ matrix.arch }}" \
-            ffmpeg deps fk/Sources/FFmpegKit/private "built/${{ matrix.platform }}-${{ matrix.arch }}"
+            ffmpeg deps vulkan-headers/include "built/${{ matrix.platform }}-${{ matrix.arch }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -117,6 +126,14 @@ jobs:
           path: built
           merge-multiple: true
 
+      - name: Patches are FFmpegKit ${{ env.FFMPEGKIT_TAG }}'s (ten identical, three re-made)
+        run: |
+          git clone -q --depth 1 --branch "$FFMPEGKIT_TAG" --filter=blob:none --sparse \
+            https://github.com/kingslay/FFmpegKit.git fk
+          test "$(git -C fk rev-parse HEAD)" = "$FFMPEGKIT_COMMIT"
+          git -C fk sparse-checkout set --no-cone '/Plugins/BuildFFmpeg/patch/FFmpeg/**'
+          Vendor/FFmpegKit/ffmpeg-build/check_patch_origin.sh fk/Plugins/BuildFFmpeg/patch/FFmpeg Vendor/FFmpegKit/ffmpeg-build/patches
+
       - name: Base release (templates, reference binaries, pass-through assets)
         run: Vendor/FFmpegKit/ffmpeg-build/fetch_base.sh base base-zips all
 
@@ -132,13 +149,14 @@ jobs:
           Vendor/FFmpegKit/ffmpeg-build/link_test.sh pkg/stage base shim/FFmpegKit/include
 
       - name: Publish release (once per tag, only when PUBLISH is "true")
+        id: publish
         run: |
           if [ "$PUBLISH" != "true" ]; then
-            echo "PUBLISH is not \"true\": dry run, nothing published."
+            echo "PUBLISH is not \"true\": dry run, nothing published." | tee pkg/DRY-RUN.txt
             exit 0
           fi
           if gh release view "$RELEASE_TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG exists; not touching its assets. Bump RELEASE_TAG to republish."
+            echo "Release $RELEASE_TAG exists; not touching it, and this run's checksums are not its checksums. Bump RELEASE_TAG to publish again." | tee pkg/DRY-RUN.txt
             exit 0
           fi
           {
@@ -153,9 +171,20 @@ jobs:
             cat pkg/MANIFEST.txt
             echo '```'
           } > notes.md
-          gh release create "$RELEASE_TAG" -R "${{ github.repository }}" --target "${{ github.sha }}" \
+          # Draft first: the tag and the public release appear only once every asset is up, so
+          # a failed upload leaves nothing behind that would have to be overwritten.
+          trap 'gh release delete "$RELEASE_TAG" -R "${{ github.repository }}" --yes >/dev/null 2>&1 || true' ERR
+          gh release create "$RELEASE_TAG" -R "${{ github.repository }}" --target "${{ github.sha }}" --draft \
             --title "FFmpeg ${FFMPEG_TAG#n} built with FFmpegKit $FFMPEGKIT_TAG's configuration (visionOS + tvOS slices)" \
             --notes-file notes.md --prerelease --latest=false pkg/*.zip pkg/checksums.json
+          want="$(ls pkg/*.zip pkg/checksums.json | wc -l | tr -d ' ')"
+          got="$(gh release view "$RELEASE_TAG" -R "${{ github.repository }}" --json assets --jq '[.assets[] | select(.state == "uploaded")] | length')"
+          echo "assets uploaded: $got of $want"
+          test "$got" = "$want"
+          trap - ERR
+          gh release edit "$RELEASE_TAG" -R "${{ github.repository }}" --draft=false --prerelease --latest=false
+          echo "$RELEASE_TAG" > pkg/RELEASE_TAG
+          echo "Published $RELEASE_TAG."
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -165,3 +194,5 @@ jobs:
             pkg/Package.swift
             pkg/checksums.json
             pkg/MANIFEST.txt
+            pkg/RELEASE_TAG
+            pkg/DRY-RUN.txt

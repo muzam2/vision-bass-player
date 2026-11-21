@@ -3,7 +3,9 @@
 These are the 13 patches kingslay/FFmpegKit applies to FFmpeg, taken from
 `Plugins/BuildFFmpeg/patch/FFmpeg/` at its tag `9.0.2` (commit `20e3ba2`). The numbering,
 including the missing `06`, is upstream's. `apply_patches.sh` applies them in name order with
-`git apply` and stops the build if any of them does not apply.
+`git apply` and stops the build if any of them does not apply. `check_patch_origin.sh` (package
+job of the workflow) compares this folder with FFmpegKit's at that tag: the ten files below must
+be identical, the three re-made ones must differ.
 
 Ten files are byte-for-byte copies; they apply to n9.1 with line offsets only:
 
@@ -46,7 +48,7 @@ upstream's; only what is listed below differs. None of them was upstreamed into 
 ## Bumping FFmpeg
 Take FFmpegKit's patch folder at the matching tag if one exists. Otherwise run
 `apply_patches.sh` against the new FFmpeg tree; for a patch that fails, check whether FFmpeg
-has taken the change itself (then delete the file) or the context moved (then re-make it and
-record it here). `13-tls-verify` turns TLS certificate verification off by default; that is
-upstream's choice and is kept only because verification needs a CA bundle the app does not
-ship yet.
+has taken the change itself (then delete the file) or the context moved (then re-make it,
+record it here and add it to `REMADE` in `check_patch_origin.sh`). Only re-context: the change
+a patch makes stays FFmpegKit's, and a file that still applies is not edited
+(`13-tls-verify` included; the owner keeps it as shipped).
