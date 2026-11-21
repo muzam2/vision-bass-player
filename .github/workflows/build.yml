@@ -45,6 +45,34 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -Ei "xros|appletvos" || true
 
+      # TEMPORARY (frame-pacing-timestamped): what the SDK really declares for the queued
+      # sample-buffer renderers, so the code is written against facts. Removed before merge.
+      - name: Probe SDK declarations (temporary)
+        if: matrix.suffix == 'visionos'
+        run: |
+          mkdir -p sdk-probe
+          for sdk in xros appletvos; do
+            P=$(xcrun --sdk $sdk --show-sdk-path)
+            echo "$sdk: $P"
+            H="$P/System/Library/Frameworks/AVFoundation.framework/Headers"
+            for f in AVSampleBufferVideoRenderer.h AVQueuedSampleBufferRendering.h AVSampleBufferRenderSynchronizer.h AVSampleBufferDisplayLayer.h AVVideoPerformanceMetrics.h; do
+              cp "$H/$f" "sdk-probe/$sdk-$f" 2>/dev/null || echo "missing $f in $sdk"
+            done
+            find "$P/System/Library/Frameworks/AVFoundation.framework" "$P/usr/lib/swift/AVFoundation.swiftmodule" -name "*.swiftinterface" 2>/dev/null | head -4 | while read -r i; do
+              cp "$i" "sdk-probe/$sdk-$(basename "$(dirname "$i")")-$(basename "$i")"
+            done
+            H2="$P/System/Library/Frameworks/CoreMedia.framework/Headers"
+            cp "$H2/CMSync.h" "sdk-probe/$sdk-CMSync.h" 2>/dev/null || true
+          done
+          ls -la sdk-probe
+
+      - name: Upload SDK probe (temporary)
+        if: matrix.suffix == 'visionos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-probe
+          path: sdk-probe/
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -108,6 +136,22 @@ jobs:
             DEVELOPMENT_TEAM="" \
             build 2>&1 | tee build-${{ matrix.suffix }}.log | grep -E "error:|BUILD" || true
           grep -q "BUILD SUCCEEDED" build-${{ matrix.suffix }}.log
+
+      # TEMPORARY (frame-pacing-timestamped): the compiler's view of the new code.
+      - name: Warnings in the frame-pacing code (temporary)
+        if: always()
+        run: |
+          grep -E "warning:" build-${{ matrix.suffix }}.log | grep -E "TimestampedVideoPresenter|MetalPlayView|FramePacing" | sed -E 's#^.*/(Vendor|BassPlayer)/#\1/#' | sort -u > pacing-warnings-${{ matrix.suffix }}.txt || true
+          wc -l pacing-warnings-${{ matrix.suffix }}.txt
+          cat pacing-warnings-${{ matrix.suffix }}.txt | cut -c1-400
+
+      - name: Upload warnings (temporary)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pacing-warnings-${{ matrix.suffix }}
+          path: pacing-warnings-${{ matrix.suffix }}.txt
+          if-no-files-found: ignore
 
       - name: Package IPA
         run: |
