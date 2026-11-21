@@ -145,7 +145,7 @@ struct SubStatusCard: View {
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Subwoofer").font(.headline)
-                Text(statusText).font(.caption).foregroundStyle(.secondary)
+                BassStatsReader(stats: bassLink.stats) { Text(statusText) }.font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             switch bassLink.state {

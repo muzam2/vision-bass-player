@@ -196,11 +196,13 @@ struct SettingsView: View {
 
     private var diagnostics: some View {
         Section {
-            LabeledContent("Packets sent", value: "\(bassLink.packetsSent)")
-            LabeledContent("Packets dropped (link busy)", value: "\(bassLink.packetsDropped)")
-            LabeledContent("Send queue peak", value: "\(bassLink.sendQueuePeak) packets")
-            LabeledContent("Receiver buffer", value: "\(bassLink.receiverBufferFill) samples")
-            LabeledContent("Receiver underruns", value: "\(bassLink.receiverUnderruns)")
+            BassStatsReader(stats: bassLink.stats) {
+                LabeledContent("Packets sent", value: "\(bassLink.packetsSent)")
+                LabeledContent("Packets dropped (link busy)", value: "\(bassLink.packetsDropped)")
+                LabeledContent("Send queue peak", value: "\(bassLink.sendQueuePeak) packets")
+                LabeledContent("Receiver buffer", value: "\(bassLink.receiverBufferFill) samples")
+                LabeledContent("Receiver underruns", value: "\(bassLink.receiverUnderruns)")
+            }
             #if !os(tvOS)
             TextField("Log receiver, e.g. http://192.168.0.191:8799/log", text: $diagUploadURL)
                 .textInputAutocapitalization(.never).keyboardType(.URL).autocorrectionDisabled()

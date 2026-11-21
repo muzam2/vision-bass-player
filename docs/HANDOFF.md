@@ -69,6 +69,44 @@ the link's refresh rate, longest gap between ticks, frames shown/dropped and the
 **Read those lines before changing anything else**; if (B) persists with long gaps, split
 `BassLink`'s fast counters into their own object the same way.
 
+**First measurements, 2026-11-20 23:29–23:47 (build `c7e0418`).** Cinema: 68–83 ticks/s,
+0 dropped at 30 and 60 fps. Window, 4K 30 fps: 56–61 ticks/s with a ~95 ms gap in every
+10 s, 0 dropped (the same video dropped ~255 events/min before). Window, 1440p60: **20–40
+ticks/s falling over three minutes, gaps of 250–350 ms, ~30 of 60 frames dropped every
+second, A/V sync sliding to −8 s**, with the decoded queue full (12–13) and the tick itself
+taking ~1 ms. So the display link's callback is being starved or not delivered, not slow.
+Branch `fix/judder-round2` removes the three things known to run on or block the main thread
+at a steady rate: `BassLink`'s counters move to `BassLinkStats` (views wrap them in
+`BassStatsReader`), `DiagLog.write` hands lines to a queue instead of taking its lock on the
+caller's thread, and KSPlayer no longer logs a line per dropped frame from the frame loop.
+The `render:` line gains the number of gaps over 25 ms and a main-thread probe (a block
+queued every 20 ms from another thread: worst wait and how many waited over 50 ms). **If the
+probe shows short waits while ticks stay sparse, the display link itself is being throttled
+and the frame loop has to move off it** (enqueue frames ahead with timestamps on the display
+layer's timebase, or run the link on its own thread).
+
+**Headset results, night of 2026-11-20 to 21 (build `8045ac0`, all merged to `main`).**
+- *Bass:* the Vision Pro as sender works. The owner hears it; ~10,000 packets per video sent,
+  0 dropped, send queue peak 5–8, receiver buffer 40–80 samples, 0–2 underruns a minute (raise
+  Receiver delay 20–40 ms if gaps are audible). The receiver's `dropped` figure jumps when a new
+  stream starts (sequence restarts at 0, 16-bit counter); it is steady during a stream.
+- *Judder:* 1440p60 VP9 in a window went from 20–40 display-link ticks/s and half the frames
+  lost to 89.9 ticks/s, no gap over 25 ms, 600 of 600 frames, 0 dropped, main-thread waits of
+  2–10 ms. The cause was the app starving its own main thread; the three round-2 changes went
+  in together, so which mattered most is unknown. Research report with a prioritised redesign
+  (timestamped enqueue-ahead off the main thread, as Apple documents and VLC 4 does):
+  `/home/remoteuser/reports/visionOS video player judder.md` on the Linux box, notes beside it
+  in `research_notes/`. That redesign is the next piece of work.
+- *YouTube freeze:* a real reset at 00:07:50 was recovered by the watchdog's reopen: picture
+  stopped 00:08:23.9, reopen at 00:08:27.5, playing again 1.4 s later, bass tap survived, no
+  repeat for the remaining four minutes. Seeking never recovers this state (the owner's manual
+  seeks and three automatic ones all failed on the earlier build). **Layer 1 (HTTP resume) has
+  never fired** in two resets although the log proves the options reach nested opens
+  (`nested open N with reconnect options: manifest.googlevideo.com`), so googlevideo's segment
+  replies are evidently not treated as resumable; the real cure would be patching `hls.c` to
+  retry a segment whose read fails instead of moving on.
+- *Not exercised:* a reset on the audio connection; Apple TV with any of this.
+
 ## 1. The owner and their constraints
 
 - Physician, hobbyist developer, comfortable with Linux, Docker, PlatformIO, OpenWrt.
@@ -678,9 +716,19 @@ Ordered by likelihood of needing a fix.
    reconnect at N` in the log). Also `seg_max_retry=2` for segments that fail to open.
    (2) `FFmpegSession.watchForVideoStall` (YouTube only): no frame at the renderer for 3 s
    while playing, on screen and the clock moved 2 s → seek to the current position, at most
-   three times in two minutes; logs `video stalled at …`. **Neither layer has been seen
-   working: a reset cannot be provoked on demand.** Whether googlevideo honours Range on HLS
-   segments is not confirmed, and the watchdog does not cover a reset on the audio connection.
+   three times in two minutes; logs `video stalled at …`.
+   **First real reset with that build, 2026-11-20 23:39:** layer 1 did nothing (no `Will
+   reconnect at` / `Will retry at` line after `IO error: Connection reset by peer`; unknown
+   whether the options are not reaching the connection or googlevideo's reply is treated as
+   non-seekable), the picture stopped 38 s later with a single VP9 header error, the watchdog
+   fired on time, and **three seeks did not bring one frame back** (state went buffering →
+   playing each time). Branch `fix/stall-reopen`: the watchdog now calls
+   `KSPlayerLayer.reopen()` (new, vendored patch: stop, `player.replace` with the same URL,
+   prepare; `set(url:)` is a no-op for an unchanged URL) with `startPlayTime` at the segment
+   start, i.e. a fresh demuxer and decoders in the same player. `MEPlayerItem` also logs the
+   first two nested opens (`nested open N with reconnect options: <host>`) so the next log
+   shows whether layer 1 is applied at all. Not yet seen working. The watchdog does not cover
+   a reset on the audio connection, and whether the bass tap survives a reopen is unchecked.
    **Look to Scroll** (visionOS 26): `View.lookToScroll()` on RootView and PlayerScreen; the
    user must also enable it in the headset's Settings.
 1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpeg 9.1 on branch `ffmpeg-9.1` (§3 "FFmpeg 9.1"; nothing of it has run on hardware: play one item per source, seek, check YouTube for "keepalive" / reconnect lines in the log), FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),

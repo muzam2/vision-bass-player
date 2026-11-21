@@ -265,6 +265,19 @@ open class KSPlayerLayer: NSObject {
         }
     }
 
+    /// Bass Player patch: open the current URL again from scratch (new demuxer and decoders;
+    /// same player, views and audio output), starting at `options.startPlayTime`. `set(url:)`
+    /// only resumes playback when the URL is unchanged.
+    public func reopen() {
+        runOnMainThread { [weak self] in
+            guard let self else { return }
+            self.stop()
+            self.player.replace(url: self.url, options: self.options)
+            self.isAutoPlay = true
+            self.prepareToPlay()
+        }
+    }
+
     public func set(urls: [URL], options: KSOptions) {
         self.options = options
         self.urls.removeAll()
