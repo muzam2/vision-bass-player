@@ -518,7 +518,8 @@ final class FFmpegSession: ObservableObject {
         guard layer.state == .bufferFinished else { return }
         if view.activePresentationMode == .timestamped {
             view.takeTimestampedStats { [weak self] t in
-                guard let t, t.span > 0 else { return }
+                // Less than a second of running is the still shown before playback starts.
+                guard let t, t.span >= 1 else { return }
                 let system: String
                 if let frames = t.systemFrames, let systemDropped = t.systemDropped {
                     system = String(format: "system: %d frames, %d dropped, %d corrupted, frame delay %+.1f ms",
