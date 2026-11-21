@@ -1,8 +1,10 @@
 # Drives the app in the visionOS simulator with XCUITest (BassPlayerUITests/E2ETests.swift):
-# YouTube search + playback against the real YouTube, NAS browsing + playback against a Samba
-# share started on the runner, and Plex (sign-in via a token from the PLEX_TOKEN repository
-# secret, through plex.tv remote access) when the secret exists. Screenshots, the app log and
-# any crash reports are uploaded as artifacts.
+# YouTube search + playback against the real YouTube and NAS browsing + playback against a Samba
+# share started on the runner. Screenshots, the app log and any crash reports are uploaded as
+# artifacts, and on a public repository anyone signed in to GitHub can download those. That is
+# why the Plex test gets no token here and skips itself: with the owner's token it signed in to
+# the owner's server and the artifacts then showed their library (removed 2026-11-21). Run the
+# Plex test only somewhere its screenshots and recordings stay private.
 name: E2E simulator tests
 
 on:
@@ -117,7 +119,6 @@ jobs:
           TEST_RUNNER_E2E_SMB_HOST: 127.0.0.1
           TEST_RUNNER_E2E_SMB_SHARE: VIDEO
           TEST_RUNNER_E2E_SMB_FILE: sample.mp4
-          TEST_RUNNER_E2E_PLEX_TOKEN: ${{ secrets.PLEX_TOKEN }}
           ONLY_TESTS: ${{ github.event.inputs.only }}
         run: |
           set -o pipefail
