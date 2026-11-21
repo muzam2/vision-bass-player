@@ -36,7 +36,7 @@ env:
   # the older copy in FFmpegKit's Sources/FFmpegKit/private (1.3.280) does not reproduce them.
   VULKAN_HEADERS_COMMIT: "088a00d81d1fc30ff77aacf31485871aebec7cb2"
   RELEASE_TAG: "ffmpegkit-9.1-vt1"
-  PUBLISH: "false"
+  PUBLISH: "true"
   GH_TOKEN: ${{ github.token }}
 
 jobs:

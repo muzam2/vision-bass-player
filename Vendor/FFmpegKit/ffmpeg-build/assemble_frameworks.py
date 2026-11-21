@@ -110,10 +110,18 @@ def build_version(binary: Path) -> tuple[str, str, str]:
     return get("platform", "cmd"), get("minos", "version"), get("sdk")
 
 
-def exported(binary: Path) -> set[str]:
-    # "<address> <type> <name>", re-exports as "<address> I <name> (indirect for <name>)"
-    out = run("nm", "-gU", str(binary))
-    return {ln.split()[2] for ln in out.splitlines() if len(ln.split()) >= 3}
+def exported(binary: Path) -> tuple[set[str], set[str]]:
+    """(symbols defined and exported, symbols re-exported from another library).
+
+    FFmpeg links with -exported_symbols_list and wildcards (av*, ...), so a library also
+    re-exports every matching symbol it imports from another FFmpeg library; nm lists those
+    without an address as "I <name> (indirect for <name>)"."""
+    defined, reexported = set(), set()
+    for ln in run("nm", "-gU", str(binary)).splitlines():
+        m = re.match(r"\s*(?:[0-9a-fA-F]+\s+)?([A-Za-z])\s+(\S+)", ln)
+        if m:
+            (reexported if m.group(1) == "I" else defined).add(m.group(2))
+    return defined, reexported
 
 
 def header_version(include: Path, lib: str) -> str:
@@ -188,6 +196,8 @@ def main() -> None:
     checksums: dict[str, str] = {}
     manifest_rows: list[str] = []
     components: dict[str, dict[str, list[str]]] = {}       # kind -> {report line: [slice/arch, ...]}
+    defined_anywhere = {(s, a): set().union(*(exported(d / "bin" / lib)[0] for lib in FF_LIBS))
+                        for s, archs in builds.items() for a, d in archs.items()}
 
     for lib in FF_LIBS:
         low = lib.lower()                              # Libavcodec -> libavcodec
@@ -257,14 +267,18 @@ def main() -> None:
                 if (np, nmin) != (op, omin):
                     fail(f"{tag}: platform/minos {np} {nmin}, base {op} {omin}")
 
-                new_syms, old_syms = exported(new_bin), exported(old_bin)
-                gone = sorted(old_syms - new_syms)
-                added = len(new_syms - old_syms)
+                (new_def, new_re), (old_def, old_re) = exported(new_bin), exported(old_bin)
+                missing = (old_def | old_re) - (new_def | new_re)
+                # no longer re-exported here but still defined by one of the new libraries
+                moved = sorted(missing & defined_anywhere[(slice_id, arch)])
+                gone = sorted(missing - defined_anywhere[(slice_id, arch)])
                 note(f"{tag}: version {m.group(3) if m else '?'} (base {mo.group(3)}), {np} minos {nmin} sdk {nsdk} (base sdk {osdk}), "
                      f"size {new_bin.stat().st_size / 1e6:.2f} MB (base {old_bin.stat().st_size / 1e6:.2f}), "
-                     f"exports {len(new_syms)} (base {len(old_syms)}, +{added}, -{len(gone)})")
+                     f"exports {len(new_def)} + {len(new_re)} re-exported (base {len(old_def)} + {len(old_re)})")
+                if moved:
+                    note(f"    re-exported by the base, here only in the library that defines them: {' '.join(moved)}")
                 if gone:
-                    note(f"    exported by the base but not here: {' '.join(gone)}")
+                    note(f"    exported by the base and by no library here: {' '.join(gone)}")
                     print(f"::warning::{tag}: {len(gone)} symbols exported by the base are gone: {' '.join(gone[:12])}")
                 if sys_added or sys_gone:
                     note(f"    system load commands: added {sys_added or '-'}, removed {sys_gone or '-'}")
