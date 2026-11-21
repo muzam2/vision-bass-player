@@ -17,6 +17,10 @@ class FFmpegDecode: DecodeProtocol {
     private let frameChange: FrameChange
     private let filter: MEFilter
     private let seekByBytes: Bool
+    // Bass Player diagnostic: what the codec was given and gave back since the last flush.
+    private var sendsSinceFlush = 0
+    private var sendFailuresLogged = 0
+    private var framesSinceFlush = 0
     required init(assetTrack: FFmpegAssetTrack, options: KSOptions) {
         self.options = options
         seekByBytes = assetTrack.seekByBytes
@@ -35,13 +39,27 @@ class FFmpegDecode: DecodeProtocol {
     }
 
     func decodeFrame(from packet: Packet, completionHandler: @escaping (Result<MEFrame, Error>) -> Void) {
-        guard let codecContext, avcodec_send_packet(codecContext, packet.corePacket) == 0 else {
+        guard let codecContext else {
+            return
+        }
+        let isVideo = packet.assetTrack.mediaType == .video
+        let sendResult = avcodec_send_packet(codecContext, packet.corePacket)
+        sendsSinceFlush += 1
+        guard sendResult == 0 else {
+            if isVideo, sendFailuresLogged < 40 {
+                sendFailuresLogged += 1
+                KSLog("seektrace codec: send_packet returned \(sendResult) for packet \(sendsSinceFlush) since the flush (key \(packet.isKeyFrame), ts \(packet.timestamp)); receive_frame not called")
+            }
             return
         }
 
         while true {
             let result = avcodec_receive_frame(codecContext, coreFrame)
             if result == 0, let inputFrame = coreFrame {
+                if isVideo, framesSinceFlush < 3, ksSeekTracing() {
+                    framesSinceFlush += 1
+                    KSLog("seektrace codec: frame \(framesSinceFlush) out since the flush, pts \(inputFrame.pointee.pts), after \(sendsSinceFlush) packets")
+                }
                 var displayData: MasteringDisplayMetadata?
                 var contentData: ContentLightMetadata?
                 var ambientViewingEnvironment: AmbientViewingEnvironment?
@@ -177,6 +195,7 @@ class FFmpegDecode: DecodeProtocol {
                 }
             } else {
                 if result == AVError.eof.code {
+                    KSLog("seektrace codec: receive_frame returned end of stream after \(sendsSinceFlush) packets (video \(isVideo)); flushing the codec")
                     avcodec_flush_buffers(codecContext)
                     break
                 } else if result == AVError.tryAgain.code {
@@ -191,6 +210,9 @@ class FFmpegDecode: DecodeProtocol {
     }
 
     func doFlushCodec() {
+        sendsSinceFlush = 0
+        sendFailuresLogged = 0
+        framesSinceFlush = 0
         bestEffortTimestamp = Int64(0)
         // seek之后要清空下，不然解码可能还会有缓存，导致返回的数据是之前seek的。
         avcodec_flush_buffers(codecContext)

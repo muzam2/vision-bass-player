@@ -182,6 +182,19 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     // 无缝播放使用的PacketQueue
     private var loopPacketQueue: CircularBuffer<Packet>?
     var packetQueue = CircularBuffer<Packet>()
+    // Bass Player patch: seek epoch. `seek` bumps it before it empties the queue and every
+    // packet carries the epoch it was queued in, so the decode thread can tell a packet of the
+    // new position from a leftover whatever `state` says at that moment.
+    private let epochLock = NSLock()
+    private var epochValue = 0
+    private var epoch: Int {
+        epochLock.lock()
+        defer { epochLock.unlock() }
+        return epochValue
+    }
+
+    /// Bass Player diagnostic: packets logged since the last flush (decode thread only).
+    private var tracedPackets = 0
     override var packetCount: Int { packetQueue.count }
     override var isLoopModel: Bool {
         didSet {
@@ -209,6 +222,7 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     }
 
     override func putPacket(packet: Packet) {
+        packet.epoch = epoch
         if isLoopModel {
             loopPacketQueue?.push(packet)
         } else {
@@ -245,12 +259,39 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
             case .flush:
                 decoderMap.values.forEach { $0.doFlushCodec() }
                 state = .decoding
+                tracedPackets = 0
+                if mediaType == .video, ksSeekTracing() {
+                    KSLog("seektrace decode: flush handled at the top of the loop, \(packetQueue.count) packets queued")
+                }
             case .decoding:
                 if isEndOfFile, packetQueue.count == 0 {
                     state = .finished
                 } else {
-                    guard let packet = packetQueue.pop(wait: true), state != .flush, state != .closed else {
+                    guard let packet = packetQueue.pop(wait: true), state != .closed else {
                         continue
+                    }
+                    if state == .flush {
+                        // Bass Player patch: `seek` empties the queue (which wakes this thread)
+                        // before it sets `state`, so this thread can be back in `pop` with a
+                        // flush still pending. The packet that then arrives is the first one of
+                        // the new position, usually the keyframe; upstream dropped it here.
+                        decoderMap.values.forEach { $0.doFlushCodec() }
+                        state = .decoding
+                        tracedPackets = 0
+                        if mediaType == .video {
+                            KSLog("seektrace decode: packet arrived with a flush pending (key \(packet.isKeyFrame), ts \(packet.timestamp), epoch \(packet.epoch) of \(epoch)); codec flushed, packet kept")
+                        }
+                    }
+                    guard packet.epoch == epoch else {
+                        // Queued before the latest seek emptied the queue.
+                        if mediaType == .video, ksSeekTracing() {
+                            KSLog("seektrace decode: leftover packet dropped (key \(packet.isKeyFrame), ts \(packet.timestamp), epoch \(packet.epoch) of \(epoch))")
+                        }
+                        continue
+                    }
+                    if mediaType == .video, tracedPackets < 6, ksSeekTracing() {
+                        tracedPackets += 1
+                        KSLog("seektrace decode: packet \(tracedPackets) to the decoder: key \(packet.isKeyFrame), ts \(packet.timestamp), size \(packet.size)")
                     }
                     autoreleasepool {
                         doDecode(packet: packet)
@@ -263,6 +304,13 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     override func seek(time: TimeInterval) {
         if decodeOperation.isFinished {
             decode()
+        }
+        epochLock.lock()
+        epochValue += 1
+        let newEpoch = epochValue
+        epochLock.unlock()
+        if mediaType == .video, ksSeekTracing() {
+            KSLog("seektrace track: seek on the \(Thread.isMainThread ? "main" : "read") thread, decoder state \(state), \(packetQueue.count) packets queued, epoch now \(newEpoch)")
         }
         packetQueue.flush()
         super.seek(time: time)
