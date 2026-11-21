@@ -21,7 +21,9 @@ nonisolated(unsafe) private var ksNestedOpenCount = 0
 /// `ksSeekTraceLines` more lines, FFmpeg's info/verbose/debug messages from demuxers are logged
 /// as well, so a seek that goes wrong on the headset shows which segment it mapped to and what
 /// the demuxer did next.
-nonisolated(unsafe) private var ksSeekTraceUntil = 0.0
+nonisolated(unsafe) var ksSeekTraceUntil = 0.0
+/// Bass Player diagnostic: true for a short while after a seek was asked for.
+func ksSeekTracing() -> Bool { CACurrentMediaTime() < ksSeekTraceUntil }
 nonisolated(unsafe) private var ksSeekTraceLines = 0
 
 /// Long URLs carry signatures and bury the log; keep their start only.
@@ -814,6 +816,9 @@ extension MEPlayerItem: MediaPlayback {
     }
 
     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
+        // Bass Player diagnostic: the tracks are flushed here, before the read thread seeks.
+        ksSeekTraceUntil = CACurrentMediaTime() + 2.5
+        KSLog("seektrace item: seek(\(time)) asked on the \(Thread.isMainThread ? "main" : "other") thread, source state \(state)")
         if state == .reading || state == .paused {
             seekTime = time
             state = .seeking

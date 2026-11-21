@@ -243,6 +243,8 @@ extension Timebase {
 }
 
 final class Packet: ObjectQueueItem {
+    /// Bass Player patch: the seek epoch of the track at the moment the packet was queued.
+    var epoch = 0
     var duration: Int64 = 0
     var timestamp: Int64 = 0
     var position: Int64 = 0
