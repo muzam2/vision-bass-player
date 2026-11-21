@@ -763,6 +763,17 @@ Ordered by likelihood of needing a fix.
 - Branch → `gh workflow run build.yml --ref <branch>` → poll every 30 s → fix → merge
   `--no-ff` into `main`. Firmware changes trigger `firmware.yml` on `main`; for a branch, use
   `gh workflow run firmware.yml --ref <branch>`.
+- **Public releases (2026-11-21).** Visitors are sent to the latest release, not to Actions
+  artifacts (those need a sign-in and expire after 90 days). `git tag vX.Y.Z && git push origin
+  vX.Y.Z` on a green `main` makes the release: `build.yml` attaches both IPAs, `firmware.yml`
+  the six `.bin` files (path filters do not apply to tag pushes). Then attach the two
+  calibration videos (`tools/make_bass_sync_videos.py`) and write the notes with
+  `gh release edit`. The Vision Pro installer is the iloader fork's release
+  (`muzam2/iloader`, tag `vp-2.4.1-1`, built on the workstation with
+  `npx tauri build --bundles deb` and the updater artifacts switched off); its SideStore
+  button installs `muzam2/SideStore` `visionos-0.7.3-autorenew`, and it no longer checks
+  upstream for updates. Forks build because `fetch_binaries.sh` always downloads from
+  `muzam2/vision-bass-player`. The repo is GPL-3.0 (`LICENSE`).
 - Failed job errors: `gh run view <id> --log-failed | grep "error:"`. The build step greps the
   xcodebuild output so the Actions UI shows only `error:` and `BUILD` lines; the full log is
   uploaded as an artifact on failure.
