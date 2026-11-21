@@ -15,6 +15,10 @@ struct BassPlayerApp: App {
     #endif
 
     init() {
+        if let previous = CrashCapture.install() {
+            DiagLog.log("previous run crashed:", "crash")
+            for line in previous.split(separator: "\n").prefix(45) { DiagLog.log(String(line), "crash") }
+        }
         // UI tests start from a clean slate (no saved servers, shares, recents or positions).
         if ProcessInfo.processInfo.environment["BASSPLAYER_UITEST"] == "1", let id = Bundle.main.bundleIdentifier {
             UserDefaults.standard.removePersistentDomain(forName: id)

@@ -614,8 +614,16 @@ Ordered by likelihood of needing a fix.
    `engine.mainMixerNode.outputFormat(forBus:0).sampleRate > 0`. If the chip stays "Bass tap
    off", log the format and `layer.state`; check `KSOptions.audioPlayerType` took effect
    (tvOS may prefer `AudioRendererPlayer`).
-3. **Lead delay rewiring** (`BassEngineTap.applyLead`) reconnects the mixer at runtime. If it
-   glitches: keep `videoDelay` only, or insert the delay before `engine.start()`.
+3. ~~**Lead delay rewiring**~~ **crashed the app** the first time the owner set a Bass lead
+   (2026-11-21, YouTube, build `3013b19`): `BassEngineTap.applyLead` re-plumbed mixer → delay →
+   output on the running engine. Fixed on branch `fix/bass-lead-crash`: KSPlayer's
+   `AudioEnginePlayer` owns an `AVAudioUnitDelay` wired between the main mixer and the output in
+   `prepare(audioFormat:)`, while the engine is stopped and reset, for mono/stereo mixes only;
+   afterwards only `leadDelay` (delay time; dry-only at 0) changes. The tap stays on the mixer,
+   ahead of the delay. `options.videoDelay` now follows `tap.effectiveLeadSeconds`, so a format
+   without the delay node (more than two channels) delays neither sound nor picture. The exact
+   exception was not captured; `CrashCapture` (App/) now writes uncaught exceptions and fatal
+   signals to `Caches/lastcrash.txt`, and the next launch logs it under category `crash`.
 4. **Stereo material fails to load** (`StereoScreen.usda`, hand-written MaterialX with
    `ND_realitykit_cameraindexswitch_color3`). Log says "stereo material unavailable";
    fallback is left-eye-only. Fix: rebuild the same graph in Reality Composer Pro on any Mac

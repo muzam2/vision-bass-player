@@ -337,7 +337,7 @@ final class FFmpegSession: ObservableObject {
         self.item = item
         self.library = library
         tap.leadMs = leadMs
-        options.videoDelay = Double(leadMs) / 1000
+        options.videoDelay = 0          // set from the lead actually applied, in poll()
         sponsorSkipper = SponsorSkipper()
         finished = false
         reportedStart = false
@@ -373,7 +373,13 @@ final class FFmpegSession: ObservableObject {
 
     func setLead(ms: Int) {
         tap.leadMs = ms
-        options.videoDelay = Double(ms) / 1000
+        syncVideoDelay()
+    }
+
+    /// The picture waits exactly as long as the headset's audio is held back.
+    private func syncVideoDelay() {
+        let lead = tap.effectiveLeadSeconds
+        if options.videoDelay != lead { options.videoDelay = lead }
     }
 
     /// Apply the 3D mode. `immersiveStereo` = the cinema screen is showing both eyes, so the
@@ -588,6 +594,7 @@ final class FFmpegSession: ObservableObject {
         guard layer.state == .readyToPlay || layer.state == .bufferFinished || layer.state == .buffering || layer.state == .paused else { return }
         applyCrop()
         tap.attach(to: me.audioOutput)
+        syncVideoDelay()
         if let engine = (me.audioOutput as? AudioEnginePlayer)?.engine {
             let f = engine.mainMixerNode.outputFormat(forBus: 0)
             if f.sampleRate > 0 {

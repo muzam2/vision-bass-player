@@ -110,6 +110,26 @@ public class AudioEnginePlayer: AudioOutput {
 //    private let distortion = AVAudioUnitDistortion()
 //    private let delay = AVAudioUnitDelay()
     private let timePitch = AVAudioUnitTimePitch()
+    /// Bass Player patch: holds the headset's own audio back so the Bluetooth sub, fed from a
+    /// tap on the main mixer, can keep up. It sits between the main mixer and the output and is
+    /// wired only in `prepare(audioFormat:)`, while the engine is stopped and reset; afterwards
+    /// only its delay and mix change. (Inserting it into the running graph from the app, as the
+    /// app first did, crashed the app as soon as a lead was set, 2026-11-21.)
+    private let leadDelayNode = AVAudioUnitDelay()
+    /// Whether the lead delay is in the graph: only for mono and stereo mixes (an effect node
+    /// with more channels is not something we have verified).
+    public private(set) var leadDelayInGraph = false
+    /// Seconds the headset's audio is held back (0 = straight through). Main thread.
+    public var leadDelay: TimeInterval = 0 {
+        didSet { applyLeadDelay() }
+    }
+
+    private func applyLeadDelay() {
+        let seconds = max(0, min(2, leadDelay))
+        leadDelayNode.delayTime = seconds
+        // Dry only at zero, so no lead means the signal is untouched.
+        leadDelayNode.wetDryMix = seconds > 0 ? 100 : 0
+    }
     private var sampleSize = UInt32(MemoryLayout<Float>.size)
     private var currentRenderReadOffset = UInt32(0)
     private var outputLatency = TimeInterval(0)
@@ -151,6 +171,10 @@ public class AudioEnginePlayer: AudioOutput {
 
     public required init() {
         engine.attach(timePitch)
+        leadDelayNode.feedback = 0
+        leadDelayNode.lowPassCutoff = 20000
+        applyLeadDelay()
+        engine.attach(leadDelayNode)
         if let audioUnit = engine.outputNode.audioUnit {
             addRenderNotify(audioUnit: audioUnit)
         }
@@ -195,6 +219,17 @@ public class AudioEnginePlayer: AudioOutput {
         }
         // 一定要传入format，这样多音轨音响才不会有问题。
         engine.connect(nodes: nodes, format: audioFormat)
+        // Bass Player patch: main mixer → lead delay → output, wired here while the engine is
+        // stopped (see `leadDelayNode`).
+        let mixerFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+        if audioFormat.channelCount <= 2, mixerFormat.sampleRate > 0, mixerFormat.channelCount > 0, mixerFormat.channelCount <= 2 {
+            engine.connect(engine.mainMixerNode, to: leadDelayNode, format: mixerFormat)
+            engine.connect(leadDelayNode, to: engine.outputNode, format: mixerFormat)
+            leadDelayInGraph = true
+        } else {
+            leadDelayInGraph = false
+            KSLog("[audio] lead delay not in the graph for a \(mixerFormat.channelCount)-channel mix")
+        }
         engine.prepare()
         if isRunning {
             try? engine.start()
