@@ -23,7 +23,8 @@ record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untest
 - When polling Actions, wait 30 s between checks, not 10.
 - Compile errors: `gh run view <id> --log-failed | grep "error:"`. Expect Xcode 26 / visionOS
   SDK on `macos-15` + `setup-xcode@latest-stable`.
-- The IPA packaging step prints app size, `FFmpeg: linked` and one `embedded: X` line per
+- The IPA packaging step prints app size, `FFmpeg: linked`, the `FFmpeg version` string of the
+  embedded Libavutil and one `embedded: X` line per
   dynamic framework the binary loads; it **fails** if a loaded framework is missing from
   `Frameworks/` (a dynamic SwiftPM product that the generated project did not embed = dyld
   crash at launch; that is why AMSMB2 is vendored as a static library).
@@ -77,16 +78,24 @@ record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untest
   without which YouTube bot-checks. FFmpeg gets a local one-variant master
   (`HLSVariantPicker`: no AV1, HDR only if `yt.preferHDR`; `protocol_whitelist` set in
   `FFmpegSession.configure`).
-- FFmpeg comes from `Vendor/FFmpegKit`: **stock FFmpegKit 9.0.2 (= FFmpeg 9.0.2)**, its
-  xcframeworks (dynamic, embedded in the app — hence the ~20 MB IPA) stripped to visionOS +
-  tvOS slices and hosted as release `ffmpegkit-9.0.2-vt1` of this repo by workflow
-  `ffmpegkit-repack.yml` (`tools/repack_release.py`; upstream commits the binaries into its git
-  tag and has no release assets). `tools/fetch_binaries.sh` downloads + verifies everything in
-  CI, including `FFmpegKit-sources.zip` (the C shim target), so `Sources/` is not in git. To
-  bump: edit the two tags in the workflow, run it, commit `Package.swift` + `checksums.json` +
-  `RELEASE_TAG` from its artifact, fix API fallout in `Vendor/KSPlayer`. The 6.1.4 backport
-  pipeline (`ffmpegkit-backports.yml`, `Vendor/FFmpegKit-patches`) is retired; its fixes are
-  upstream.
+- FFmpeg comes from `Vendor/FFmpegKit`: **FFmpeg n9.1 + FFmpegKit's 13 FFmpeg patches, compiled
+  by our own workflow** (kingslay/FFmpegKit has no 9.1 tag and no public build plugin any
+  more). `ffmpegkit-build.yml` builds the five slices (visionOS + tvOS, device + simulator)
+  with the configure line recovered from the 9.0.2 binaries, the patches in
+  `Vendor/FFmpegKit/ffmpeg-build/patches` (ten are FFmpegKit's files unchanged, three re-made
+  for n9.1, see the README there; a patch that does not apply fails the build) and the Vulkan
+  headers of FFmpegKit's MoltenVK, checks the result against the 9.0.2 libraries (configure
+  line, version strings, load commands, components) and publishes release `ffmpegkit-9.1-vt1`.
+  Only the seven `Lib*` xcframeworks are ours; the other 15 (dependencies; the dynamic ones are
+  embedded in the app, hence the ~20 MB IPA) and `FFmpegKit-sources.zip` (the C shim target)
+  are byte-identical to `ffmpegkit-9.0.2-vt1`, the stock FFmpegKit 9.0.2 repack
+  (`ffmpegkit-repack.yml`, `tools/repack_release.py`). `tools/fetch_binaries.sh` downloads +
+  verifies everything in CI, so `Sources/` is not in git. **"Stock FFmpeg 9.0.2" in older notes
+  means n9.0.2 plus those same 13 FFmpegKit patches, never plain FFmpeg.** To rebuild or bump:
+  HANDOFF §3 "FFmpeg 9.1" (never overwrite a release, bump the `-vtN` suffix; commit
+  `Package.swift` + `checksums.json` + `RELEASE_TAG` from the publishing run's artifact; fix API
+  fallout in `Vendor/KSPlayer`). The 6.1.4 backport pipeline (`ffmpegkit-backports.yml`,
+  `Vendor/FFmpegKit-patches`) is retired; its fixes are upstream.
 - UI: `RootView` is a `TabView` (`.sidebarAdaptable`) of `AppTab`s; sources are shown by
   `LibraryGridView(source:)` / `YouTubeView` / `NASBrowserView`; everything plays through
   `library.play(item)`, which opens the `PlayerWindow` scene on visionOS and a

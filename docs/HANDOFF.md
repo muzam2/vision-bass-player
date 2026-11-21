@@ -106,7 +106,7 @@ original session, so IPAs and firmware are **Actions artifacts** until someone p
 ```
 project.yml                     XcodeGen spec: BassPlayer (visionOS 2) + BassPlayerTV (tvOS 18), same sources, KSPlayer from Vendor/
 Vendor/KSPlayer                 KSPlayer GPLv3 source, vendored + patched (see §3). UPSTREAM_COMMIT = base commit
-Vendor/FFmpegKit                Local FFmpegKit 6.1.4 package: shims + generated Package.swift → release zips (see §3)
+Vendor/FFmpegKit                Local FFmpegKit package: generated Package.swift → release zips (RELEASE_TAG, checksums.json); ffmpeg-build/ = our own FFmpeg build: patches, configure line, scripts (see §3)
 Vendor/FFmpegKit-patches        Upstream FFmpeg fixes backported into Libavformat (6.1.4 era; retired by FFmpegKit 9)
 Vendor/AMSMB2                   libsmb2 + Swift wrapper (4.0.3, LGPL-2.1), vendored only to make the product static
 BassPlayer/App                  App entry (main window, player window on visionOS, ImmersiveSpace), AVAudioSession, FFmpegConfig.apply(); DemoData (BASSPLAYER_DEMO=1 sample content for simulator screenshots)
@@ -123,7 +123,9 @@ BassPlayer/Views                RootView (TabView .sidebarAdaptable: Home/Jellyf
 firmware/esp32-bass-receiver    PlatformIO; NimBLE GATT server, 2-device arbitration, jitter buffer, drift control, I²S, ES8388 init
 .github/workflows/build.yml     visionOS + tvOS unsigned IPAs (matrix), FFmpegKit zips fetched + checksum-verified, SPM cache, "FFmpeg: linked" check
 .github/workflows/ui-screenshots.yml  Simulator builds (visionOS + tvOS), launches each screen with demo data, uploads PNGs (artifact screenshots-<os>)
-.github/workflows/ffmpegkit-backports.yml  Rebuilds mov.o+hls.o with the patches, re-zips FFmpegKit, publishes release RELEASE_TAG once
+.github/workflows/ffmpegkit-build.yml  Compiles FFmpeg (n9.1) for the five slices with FFmpegKit's configure line + patches, checks it against the 9.0.2 binaries, publishes release RELEASE_TAG once (§3 "FFmpeg 9.1")
+.github/workflows/ffmpegkit-repack.yml  Repackages a stock FFmpegKit tag (9.0.2) as visionOS + tvOS zips; its release is the base of ffmpegkit-build.yml
+.github/workflows/ffmpegkit-backports.yml  (retired, 6.1.4 era) Rebuilds mov.o+hls.o with the patches, re-zips FFmpegKit, publishes release RELEASE_TAG once
 .github/workflows/firmware.yml  Both ESP32 envs, uploads .bin + bootloader + partitions
 docs/SETUP-GUIDE.md             End-user step-by-step (hardware, flashing, sideloading, sources, tuning)
 docs/RECEIVER-BRINGUP.md        First power-on of the A1S (2026-11-20): boot-loop crash, cause, fix, what was tested on hardware
@@ -205,6 +207,20 @@ room dim / flipV / HDR / brightness / contrast / saturation / HDR boost.
 - `Package.swift` — tests removed; FFmpegKit comes from the local `../FFmpegKit` package.
 
 ### FFmpegKit (Vendor/FFmpegKit)
+**Current (branch `ffmpeg-9.1`, 2026-11-21): FFmpeg n9.1 compiled by our own workflow, release
+`ffmpegkit-9.1-vt1`; see "FFmpeg 9.1" below.** The rest of this subsection is the history
+that build stands on, oldest setup last.
+
+**What "stock" means here.** FFmpegKit never shipped plain FFmpeg: "stock FFmpegKit 9.0.2 =
+FFmpeg 9.0.2" in this file and in CLAUDE.md means FFmpeg `n9.0.2` **plus FFmpegKit's 13 FFmpeg
+patches** (`Plugins/BuildFFmpeg/patch/FFmpeg` at its tag): VideoToolbox session-error and
+Metal-compatible buffers, HLS probing without the extension/MIME check, an AC-4 decoder,
+TrueHD single-substream layout, H.264 always re-negotiating the pixel format in
+`h264_init_ps`, Matroska cues parsed at open (option `cues_parsing_deferred`), WAV empty
+LIST tag, `ff_dec_init` rename, an HTTP `redirects_expires`
+option, extra exported symbols (`ff_dovi_*`, `ffurl_*`, ...), hlsenc without `+dash`, TLS
+verification off by default, DASH seek arithmetic. Our 9.1 build carries the same 13.
+
 **Branch `ffmpegkit-9` (2026-11-08): stock FFmpegKit 9.0.2 = FFmpeg 9.0.2.** Release
 `ffmpegkit-9.0.2-vt1` of this repo holds the tag's 22 xcframeworks stripped to visionOS +
 tvOS slices plus `FFmpegKit-sources.zip` (the C shim target), produced by
@@ -265,6 +281,141 @@ Steps: (1) SMB bridge — done; (2) workflow `ffmpegkit-repack.yml`: sparse-clon
 strip to visionOS/tvOS, zip, checksums, generated Package.swift + the tag's `Sources/FFmpegKit`
 shims, publish release `ffmpegkit-9.0.2-vt1`; (3) point `Vendor/FFmpegKit` at it, port
 KSPlayer, drop `NetworkDirectory.swift`; (4) later: MV-HEVC through FFmpeg instead of AVPlayer.
+
+### FFmpeg 9.1 (compiled in CI, 2026-11-21, branch `ffmpeg-9.1`)
+FFmpeg `n9.1` was tagged on 2026-11-20. kingslay/FFmpegKit has no 9.1 tag and no longer
+publishes its build plugin (9.x tags hold binaries and the patch files only; the last plugin
+source is tag 6.1.4, for n6.1), so there was nothing to repackage. The owner chose to compile
+it here, keeping FFmpegKit's configuration and its 13 patches.
+
+**What the release is.** `ffmpegkit-9.1-vt1` has the same 22 xcframeworks + sources zip as
+`ffmpegkit-9.0.2-vt1`. The seven FFmpeg ones (`Libavutil`, `Libswresample`, `Libswscale`,
+`Libavcodec`, `Libavformat`, `Libavfilter`, `Libavdevice`) are built by
+`.github/workflows/ffmpegkit-build.yml`; the other 15 (dav1d, OpenSSL, libplacebo, libass,
+MoltenVK, ...) and `FFmpegKit-sources.zip` are copied byte for byte from the 9.0.2 release
+(same checksums). No dependency was rebuilt: every version check in `configure` for the
+enabled libraries is the same in n9.0.2 and n9.1.
+
+**How it is built** (everything under `Vendor/FFmpegKit/ffmpeg-build/`):
+- Source: `FFmpeg/FFmpeg` at tag `n9.1`, commit pinned in the workflow (`FFMPEG_COMMIT`).
+- Patches: `patches/*.patch`, applied by `apply_patches.sh` with `git apply` (no fuzz); the
+  build stops at the first one that does not apply. Ten are byte-identical to FFmpegKit
+  9.0.2's and three were re-made for n9.1 (`05-h264_seek`, `10-http-redirect-cache`,
+  `14-dashdec-seek`; what changed in each is in `patches/README.md`). `check_patch_origin.sh`
+  compares the folder with FFmpegKit's tag in CI and fails if any other file differs.
+- Configure line: `configure-args.txt`, recovered from the string embedded in the 9.0.2
+  binaries (`--enable-shared`, `--enable-version3`, no `--enable-gpl`; `--arch` and
+  `--enable-debug` vary per slice as upstream's do).
+- Dependencies: the 9.0.2 xcframeworks (`base-release.json` names the release and its
+  checksums), found through pkg-config files that `build_slice.sh` writes. dav1d, OpenSSL,
+  libass, freetype, harfbuzz, fontconfig, srt, opus, lcms2 are static archives linked into the
+  FFmpeg libraries; libzvbi, libplacebo, libfribidi stay separate dynamic frameworks.
+- Vulkan headers: KhronosGroup/Vulkan-Headers at the revision MoltenVK v1.4.0 pins (header
+  version 323), because FFmpegKit points pkg-config `vulkan` at its MoltenVK's include
+  directory. The copy in FFmpegKit's `Sources/FFmpegKit/private` is 1.3.280 and is *not* what
+  the binaries were built with: with it configure leaves `vulkan_1_4` off and the Vulkan VP9
+  hwaccel and six Vulkan extensions present in the 9.0.2 libraries go missing (run
+  44839237503 was built that way and its report showed it). No SPIR-V compiler is on the PATH, as upstream: the
+  `*_vulkan` filters on the configure line stay disabled in both builds.
+- Five jobs on `macos-15` (Xcode 26.3, SDK 26.2; the 9.0.2 binaries used SDK 26.5): xrOS
+  arm64, xrOS simulator arm64, tvOS arm64, tvOS simulator arm64 and x86_64, about 4–6 minutes
+  each in parallel. The dylibs get install name `@rpath/LibX.framework/LibX`, are stripped
+  like upstream's and ad-hoc signed; device slices keep a dSYM.
+- Package job (about 4 minutes): `assemble_frameworks.py` puts the binaries and headers into
+  copies of the 9.0.2 frameworks (Info.plist, module map), lipo's the tvOS simulator pair,
+  zips, writes `checksums.json`, `MANIFEST.txt` and `Package.swift`; `link_test.sh` then
+  compiles and links an Objective-C file against all seven modules + the shim headers for
+  every slice. A whole run takes about 10 minutes.
+
+**What the package job asserts (any miss fails the run, nothing is published):**
+- the configure line embedded in each new library (what `avutil_configuration()` returns)
+  equals the one in the 9.0.2 library of the same slice and architecture, apart from `--prefix`;
+- `FFmpeg version n9.1` is in every library whose 9.0.2 counterpart has `FFmpeg version
+  n9.0.2` (all but libswscale, which has no such string in either), `n9.0.2` is in none, the
+  Mach-O version and the headers match `expected-versions.json` (lavu 61.19.100, lavc
+  63.24.100, lavf 63.16.100, lavfi 12.8.100, lavd 63.5.100, sws 10.5.100, swr 7.6.100) and
+  `Lavc63.24.100` / `Lavf63.16.100` are present; major versions equal the base's;
+- platform, minimum OS and the set of `@rpath` libraries each library loads equal the base's
+  (a missing or extra embedded framework would be a dyld crash at launch);
+- no header of the base is gone except `libavutil/libm.h` (removed in 9.1);
+- no decoder, demuxer, muxer, protocol, filter, bitstream filter or hwaccel that the base
+  library has is missing (string based, since the base has no `config_components.h`; names
+  shorter than six characters are reported, not judged).
+`MANIFEST.txt` (in the artifact and in the release notes) lists the rest: sizes, exported
+symbols, components new in 9.1, system load commands.
+
+**Known differences from the 9.0.2 binaries that remain:**
+- tvOS `Libavfilter` is about 0.45 MB smaller: upstream's link pulled part of the static
+  libdovi (Rust runtime objects) into it; FFmpeg calls nothing in it (libplacebo carries its
+  own copy), and ours links without it. visionOS upstream does not have it either.
+- `Libavdevice` additionally loads the system `libobjc`.
+- A few `av*` symbols that 9.0.2 libraries re-exported from another FFmpeg library are now
+  only in the library that defines them (the library no longer imports them); none is gone.
+- Built with SDK 26.2 instead of 26.5.
+
+**To repeat the build** push any change under `Vendor/FFmpegKit/ffmpeg-build/` or to the
+workflow file (it runs on push; `workflow_dispatch` only works once the workflow is on
+`main`). Every run builds and checks; a run publishes only when `PUBLISH` is `"true"` *and*
+release `RELEASE_TAG` does not exist. The release is created as a draft and made public after
+all 24 assets are up, so a failed upload leaves nothing behind. **Never overwrite a release:**
+to publish again bump the suffix (`-vt2`).
+
+**To bump FFmpeg** (or rebuild with a change): in `ffmpegkit-build.yml` set `FFMPEG_TAG`,
+`FFMPEG_COMMIT`, `RELEASE_TAG` and `PUBLISH: "false"`; put the new library versions in
+`expected-versions.json`; push and read the dry run. A patch that no longer applies: see
+`patches/README.md` (re-context only, record it, add it to `REMADE` in
+`check_patch_origin.sh`). A component reported as "in base only" means configure detected
+something differently: fix the cause (it was the Vulkan headers last time), do not relax the
+check. When the dry run is green set `PUBLISH: "true"`, push, download artifact
+`ffmpegkit-package` of that run and commit its `Package.swift`, `checksums.json` and
+`RELEASE_TAG` into `Vendor/FFmpegKit` (the artifact has `DRY-RUN.txt` instead of `RELEASE_TAG`
+when its checksums belong to no release), then `PUBLISH` back to `"false"`. If FFmpegKit
+publishes a matching tag later, `ffmpegkit-repack.yml` is the simpler route and its release
+can become the new base (`base-release.json`); a new base needs its configure line re-read
+(`configure-args.txt`) and the MoltenVK revision re-checked (`VULKAN_HEADERS_COMMIT`).
+
+**What changed for the app, n9.0.2 → n9.1 (checked 2026-11-21):**
+- **No source change was needed.** `Vendor/KSPlayer` and the app compile unchanged for both
+  platforms: no public function was removed between the two header sets, the library major
+  versions are the same, and the shim sources are the 9.0.2 ones.
+- `AVFormatContext.io_open` (the `KSOptions.reconnectNestedHTTP` wrapper in
+  `MEPlayer/MEPlayerItem.swift`): same declaration in both versions; compiles as before.
+- `avcodec_parameters_to_context()` no longer copies `AVCodecParameters.initial_padding` into
+  `AVCodecContext.delay` (lavc 63.23.101). Nothing in KSPlayer or the app reads
+  `AVCodecContext.delay`, `initial_padding` or `seek_preroll`; contexts are made in
+  `MEPlayer/AVFFmpegExtension.swift` (`createContext`) and only handed to the decoder.
+- MVC (`MEPlayer/Edge264Decode.swift`): it reads `AVCodecParameters` (codec id, profile, avcC
+  extradata) and raw `AVPacket` data and never touches an `AVCodecContext`, so the `delay`
+  change cannot reach it. Between the tags the H.264 parser only gained data partitioning
+  (NAL type 2) and a field-order default, and the Matroska demuxer changes do not concern MVC.
+  **Not tested:** there is no MVC sample in CI.
+- HTTP keep-alive: `multiple_requests` now defaults to -1 ("auto") instead of 0. Reading
+  `http.c`: auto asks for keep-alive only on a request with a bounded range, which is sent
+  only when `request_size` / `initial_request_size` are set (default 0; the app sets
+  neither), so the requests the app makes still say `Connection: close`. YouTube sessions
+  set `http_persistent=0` as before, and a `Connection: close` reply (what the SMB bridge
+  sends) is still honoured.
+
+**What CI showed, and what it did not:**
+- `build.yml` run 44845396279 (`59badf9`): visionOS and tvOS green; the packaging step shows
+  the embedded frameworks, and the embedded libraries carry `FFmpeg version n9.1`. visionOS
+  IPA 23,975,930 bytes (9.0.2 build `c7e0418`: 23,601,871).
+- `e2e-tests.yml` on the visionOS simulator, 9.1 (run 44845398776, `59badf9`) and, for
+  comparison, 9.0.2 (run 44842283289, `c7e0418`): **both runs fail, and not because of
+  FFmpeg.** On the `xcode-27` runner the simulator is so slow that XCUITest's UI queries time
+  out ("Failed to get matching snapshots: Timed out while evaluating UI query"); the 9.0.2 run
+  lost all four tests that way before any playback, the 9.1 run passed `testTabsRender` (in
+  22 minutes) and lost the other three. The suite last passed on 2026-11-08 and needs repair
+  before it can gate anything (see §7).
+- The 9.1 run's NAS test did get as far as playing: it listed the share, tapped `sample.mp4`,
+  and the screen recording in the artifact shows the player window about 70 s later with the
+  test clip's colour bars, the timecode advancing (frame 1 → 4 in the last two seconds of the
+  recording) and the chip reading `Bass tap · 48 kHz · 2 ch · -21 dB · FFmpeg`. So with 9.1
+  the SMB loopback bridge → `http.c` → demux → video and audio decode → bass tap chain works
+  in the simulator. The test still failed: the chip query timed out before the window appeared.
+- **Not shown by anything:** YouTube (the test never got past launch), Plex, seeking, long
+  playback, HDR / Dolby Vision, MVC, VideoToolbox on hardware, tvOS at run time, and
+  everything on the headset. No 9.1 build has been installed on a device.
 
 ## 4. Known risks — check these first on hardware
 
@@ -532,7 +683,7 @@ Ordered by likelihood of needing a fix.
    segments is not confirmed, and the watchdog does not cover a reset on the audio connection.
    **Look to Scroll** (visionOS 26): `View.lookToScroll()` on RootView and PlayerScreen; the
    user must also enable it in the headset's Settings.
-1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
+1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpeg 9.1 on branch `ffmpeg-9.1` (§3 "FFmpeg 9.1"; nothing of it has run on hardware: play one item per source, seek, check YouTube for "keepalive" / reconnect lines in the log), FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
    the SMB bridge (NAS browse + play), MVC 3D Blu-ray (needs a MakeMKV 3D MKV on the server;
    watch `video delay` lines for decode speed), the new icon, the judder fix (display link at
    panel rate — "drop next frame" lines should be rare).
@@ -545,3 +696,8 @@ Ordered by likelihood of needing a fix.
    notifications at cinema open.
 5. **Library UX:** detail sheet before playing, poster caching for large libraries.
 6. **Firmware extras:** Wi‑Fi (UDP) transport, OTA.
+7. **Repair `e2e-tests.yml`:** on the `xcode-27` runner every UI query takes tens of seconds
+   and most time out (2026-11-21: all four tests failed on the unchanged 9.0.2 app, three of
+   four on 9.1). Ideas, untested: longer `waitForExistence` timeouts and one launch for all
+   tests, no screen recording (the artifact is 2 GB of video), collecting the in-app `DiagLog`
+   instead of `log show` (which holds no FFmpeg or player lines), a smaller simulator window.
