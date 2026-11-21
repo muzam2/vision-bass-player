@@ -96,7 +96,7 @@ layer's timebase, or run the link on its own thread).
   in together, so which mattered most is unknown. Research report with a prioritised redesign
   (timestamped enqueue-ahead off the main thread, as Apple documents and VLC 4 does):
   `/home/remoteuser/reports/visionOS video player judder.md` on the Linux box, notes beside it
-  in `research_notes/`. That redesign is the next piece of work.
+  in `research_notes/`. Its recommendation 3 is built on branch `frame-pacing-timestamped` (below).
 - *YouTube freeze:* a real reset at 00:07:50 was recovered by the watchdog's reopen: picture
   stopped 00:08:23.9, reopen at 00:08:27.5, playing again 1.4 s later, bass tap survived, no
   repeat for the remaining four minutes. Seeking never recovers this state (the owner's manual
@@ -106,6 +106,55 @@ layer's timebase, or run the link on its own thread).
   replies are evidently not treated as resumable; the real cure would be patching `hls.c` to
   retry a segment whose read fails instead of moving on.
 - *Not exercised:* a reset on the audio connection; Apple TV with any of this.
+
+**Timestamped frame pacing (branch `frame-pacing-timestamped`, 2026-11-21; built, NOT merged,
+NOT yet run on the headset).** The report's recommendation 3 for the flat window, as a second
+mode next to the display-link loop, off by default.
+- *Switches* (Settings → Diagnostics): **"Timestamped frame pacing"** (`diag.timestampedFrames`,
+  persisted; `FFmpegSession.applyFramePacing` applies it at every 0.5 s poll, so it also works
+  on a film that is playing) and **"Stall test (blocks the main thread)"** (200 ms every 2 s
+  while playing; lives in memory only in `MainThreadStallTest`, so it is off at every launch).
+- *How it works* (`Vendor/KSPlayer/.../MEPlayer/TimestampedVideoPresenter.swift`, read its
+  header): a pump on its own serial queue (`bassplayer.frame-pump`, a 5 ms timer while
+  playing) pops decoded frames in order from KSPlayer's frame queue, wraps each with its media
+  timestamp and no display-immediately attachment, and enqueues it on the display layer's
+  `sampleBufferRenderer` once it is due within 150 ms. It stops when the renderer says
+  `isReadyForMoreMediaData == false`. A frame more than one frame duration late when it
+  reaches the pump is dropped (VLC's rule), except one every 0.25 s so a slow decoder still
+  shows a picture. The layer's `controlTimebase` (host clock underneath) is the pump's: it is
+  anchored to the audio clock less `videoDelay` at every start, then kept there by trimming
+  its rate (average of the error over 0.5 s, 2 ms dead band, time constant 1.5 s, at most
+  3 %); only an error of 100 ms or more sets the time outright ("resync"). Pause = rate 0;
+  seek = flush + anchor again at the next start; playback rate = timebase rate;
+  `KSPlayerLayer.reopen()` = new frame source, flush, anchor again; stop = flush with the image
+  removed.
+- *The clock.* KSPlayer writes its audio clock through the main thread. `MEPlayerItem.setAudio`
+  now also stores each reading (media time, `CACurrentMediaTime()`) in a small ring under an
+  unfair lock, on the audio render thread itself; the pump reads only that. Nothing the pump
+  needs is updated by the main thread.
+- *Fallback.* The display-link loop runs, exactly as before, when the switch is off, while the
+  cinema screen is open (it is fed through `frameSink`, which only the loop calls), and for
+  streams whose frames the layer cannot take: Dolby Vision profile 5 (Metal shader) and
+  software-decoded 10-bit planar video (`PixelBuffer`, e.g. VP9 profile 2). The pump leaves
+  the first such frame in the queue and `MetalPlayView` switches back for the rest of the
+  item. The log says which: `frame pacing: timestamped` or `frame pacing: display link (…)`.
+- *Reading the log.* `render:` lines now start with the mode. Display link:
+  `render: mode display-link · N ticks … · N frames shown · N dropped …` (as before).
+  Timestamped: `render: mode timestamped · N enqueued in 10.0 s (60.0/s) · lookahead A–B ms ·
+  pump: N late dropped, … not ready N, longest gap N ms · system: N frames, N dropped, N
+  corrupted, frame delay ±N ms · renderer rendering, N flushes, N timeline resets · clock:
+  audio, N readings, error mean ±N ms, worst ±N ms, N trims up to N %, N resyncs · rate 1.000 ·
+  main thread: … · stall test: N × 200 ms`. "system:" is `AVVideoPerformanceMetrics` as changes
+  since the previous line.
+- *The acceptance test, still to do on the headset:* 60 fps video in a window, stall test on.
+  Display link first: expect `frames shown` well under 600 and `dropped` above 0 per 10 s.
+  Then switch timestamped on (no restart needed): the design holds if `enqueued` stays near
+  600, `system: … dropped` stays 0 or near it and `frame delay` stays small while
+  `main thread: worst wait` shows about 200 ms. If the system drops frames during stalls
+  anyway, presentation on visionOS depends on the app's main thread after all and the next
+  step is a dedicated render thread (report item 4), not more tuning here. Also listen for
+  lip sync and Bass lead: they should be unchanged between the modes.
+- *What CI showed:* see §4 risk 14. Smoothness, audio sync and stall immunity are untested.
 
 ## 1. The owner and their constraints
 
@@ -218,6 +267,7 @@ omitted) and `shelfItems(kind, limit:)` (24 for the row, 300 for See all).
 
 ### Persisted settings
 Backend, show episodes, resume, autoplay next, Jellyfin creds, Plex token/server/server-token,
+timestamped frame pacing (`diag.timestampedFrames`; the stall test is deliberately not persisted),
 NAS shares (+Keychain passwords), YouTube SponsorBlock + max quality (`yt.maxHeight`) + HDR (`yt.preferHDR`) + visitor id (`yt.visitorData`), receiver extra delay (0–400 ms, sent
 to firmware), bass lead (0–300 ms, FFmpeg only, `bass.leadMs`), mute, per-item stereo and
 projection overrides (`stereo.<id>`, `proj.<id>`), positions (`pos.<id>`), recents, immersive
@@ -243,6 +293,24 @@ room dim / flipV / HDR / brightness / contrast / saturation / HDR boost.
   the first on-device crash, reproduced in the simulator by the E2E Plex test); rebuilds the
   graph cleanly on retry.
 - `Package.swift` — tests removed; FFmpegKit comes from the local `../FFmpegKit` package.
+
+Timestamped frame pacing (2026-11-21, branch `frame-pacing-timestamped`; every change is
+marked "Bass Player patch" in the source):
+- `MEPlayer/TimestampedVideoPresenter.swift` — **new file**: the pump, the audio-following
+  timebase, `TimestampedPresentationStats`.
+- `MEPlayer/MetalPlayView.swift` — `PresentationMode` (`requestedPresentationMode`,
+  `activePresentationMode`, `presentationFallbackReason`), hand-over between the loop and the
+  presenter, `takeTimestampedStats`, `framesHandedOver`, `playbackRate`, `timelineWillJump`;
+  state shared with other threads moved into `MetalPlayViewShared` (lock); the layer's
+  immediate timebase factored into `AVSampleBufferDisplayView.makeImmediateTimebase()`.
+- `MEPlayer/MEPlayerItem.swift` — `audioClock`, `videoClock`, `isAudioStalled` behind
+  `clockLock`; the audio clock ring written in `setAudio` on the audio render thread;
+  `getVideoOutputRender(mayFinish:where:)`, `audioClockSamples(after:)`, `setVideoEnqueued`.
+- `MEPlayer/Model.swift` — those three in `OutputRenderSourceDelegate`, `AudioClockSample(s)`,
+  `UnfairLock`.
+- `MEPlayer/KSMEPlayer.swift` — passes `playbackRate` and the start of a seek to the view;
+  leaves the layer's control timebase alone while the pump owns it.
+- `AVPlayer/KSOptions.swift` — `videoDelay` behind a lock (read by the pump).
 
 ### FFmpegKit (Vendor/FFmpegKit)
 **Current (branch `ffmpeg-9.1`, 2026-11-21): FFmpeg n9.1 compiled by our own workflow, release
@@ -609,6 +677,41 @@ Ordered by likelihood of needing a fix.
     `ui-screenshots.yml`): TabView `.sidebarAdaptable`, player in a separate window on
     visionOS (`WindowGroup(id: "player", for: MediaItem.self)`), `fullScreenCover` on tvOS.
     tvOS focus behaviour in the grids and the YouTube text field needs a look on the Apple TV.
+14. **Timestamped frame pacing has never run on a device** (§0). CI compiled it for both
+    platforms and the visionOS simulator played a 720p60 H.264 file with it (E2E run
+    44873700431, numbers from the app's own log in the `e2e-results` artifact: 600 frames
+    enqueued per 10 s at 60.0/s, lookahead up to 150 ms, clock error mean −0.2 ms with no
+    trims and no resyncs, renderer `rendering`, the system's count 4–32 dropped of 600. While
+    XCUITest held the app's main thread for 26 s the pump still enqueued 1834 frames in
+    30.6 s and the system counted 46 dropped; the display-link loop under a 28 s block of
+    the same kind showed 18 frames in 29.5 s. With the stall test on, the display-link loop
+    in the simulator lost 43–79 frames per 10 s.) That is a simulator on a runner without a
+    GPU: it shows the mode starts, plays and does not need the main thread to keep feeding
+    the renderer. It says nothing about smoothness or sync on the headset.
+    Unknown until the headset says so, in the order I would check them:
+    (a) whether queued frames survive a blocked main thread on visionOS at all (the stall
+    test; no Apple text promises it);
+    (b) A/V sync and Bass lead: the anchor uses the same audio readings as the old clock but
+    stamped on the audio thread instead of on arrival at the main thread, so the picture
+    should sit a few ms earlier than before, not more;
+    (c) whether rate trims of up to 3 % on a control timebase are followed smoothly by the
+    layer (Apple documents rate and time control, not small trims); watch `trims` and
+    `resyncs`: steady single-digit trims are the design working, resyncs outside starts and
+    seeks are not;
+    (d) how the renderer treats a frame that is already due when enqueued (the pump keeps one
+    every 0.25 s when the decoder is behind; if the system discards those the picture
+    freezes while `enqueued` still counts, and the YouTube watchdog, which counts frames
+    handed over, would not notice);
+    (e) HDR10/HLG through the timestamped path (same layer and buffers as before, so
+    expected unchanged) and the one-eye 3D crop (the aspect is applied on the pump's queue,
+    up to 150 ms before the crop rectangle changes);
+    (f) the last 150 ms of a file may not be shown: the player finishes when the audio does.
+    The renderer calls used (`enqueue`, `isReadyForMoreMediaData`, `flush`, `status`) are
+    deprecated from OS 27.0 in favour of `AVSampleBufferVideoRenderer.Receiver`, which only
+    exists from 27.0 and only through an `AVSampleBufferRenderSynchronizer`; with deployment
+    targets 26.0 / 18.0 the old calls are the ones to use and compile without warnings
+    (checked against the Xcode 27 SDK headers in CI). Move to the receiver when the targets
+    reach 27.
 
 ## 5. Not done, and why
 
@@ -660,6 +763,19 @@ Ordered by likelihood of needing a fix.
   launches with `BASSPLAYER_DEMO=1` + `BASSPLAYER_SCREEN=<tab>` and uploads one PNG per screen.
   `DemoData.swift` seeds the clients (`enableDemo` on Jellyfin/Plex/YouTube) and a few
   part-watched items. Download with `gh run download <id> -n screenshots-visionos`.
+  `settings-diagnostics` is Settings scrolled to the Diagnostics switches
+  (`BASSPLAYER_SETTINGS_SECTION=diagnostics`).
+- **Playing in the simulator:** `gh workflow run e2e-tests.yml --ref <branch>` (all tests,
+  30 min or more) or with `-f only="testNASPlayTimestamped testNASPlayTimestampedUnderStalls"`
+  for a subset. The NAS tests play a generated 720p60 clip in either frame-pacing mode
+  (`BASSPLAYER_PACING=timestamped|display-link`, `BASSPLAYER_STALL_TEST=1`; both honoured
+  only together with `BASSPLAYER_UITEST=1`) and read the mode, the frame count and the last
+  `render:` line from a test-only element (`PacingProbe`). `E2E …` lines in the job log and
+  `bassplayer.log` in the `e2e-results` artifact carry the numbers. **Trust the log, not the
+  verdicts:** on the current runner XCUITest's queries often fail with "Timed out while
+  evaluating UI query" although the app is playing (all four tests failed that way on
+  unchanged `main` code on 2026-11-21, run 44842283289); the app's main thread shows blocks
+  of 20–28 s in the log at those moments.
 - **Logs from the headset:** Settings → Diagnostics → "Send log to computer" posts the in-app
   log (`DiagLog`, app + KSPlayer messages) to `tools/diag_receiver.py` running on the LAN box
   (`python3 tools/diag_receiver.py --bind <ip> --port 8799 --dir <ipa dir>`; logs land in
@@ -672,6 +788,17 @@ Ordered by likelihood of needing a fix.
   DISPLAY=:10), headset awake, Import IPA.
 
 ## 7. Suggested next steps, in order
+
+**First: run the frame-pacing acceptance test on the headset** (§0, "Timestamped frame
+pacing"). If it holds: make timestamped the default, then give the cinema screen the same treatment
+(its `AVSampleBufferVideoRenderer` has no settable timebase, so it needs an
+`AVSampleBufferRenderSynchronizer` steered with `setRate(_:time:atHostTime:)` from the same
+audio readings, and the frame sink must then be fed from the pump), then bring Dolby Vision
+profile 5 and 10-bit software frames onto the queue by rendering them offscreen into pixel
+buffers (report item 4). Smaller follow-ups: try `CMAudioClockCreate` as the timebase's
+source clock so the trim has less to do; move to the 27 receiver API when the deployment
+targets allow. If it does not hold: report item 4's dedicated render thread.
+
 
 0. **Verified on device 2026-11-10 (21 Bridges, 4K HEVC, DTS-HD MA 5.1):** the bass tap
    works — mixer tap delivers 48 kHz 6-channel planar buffers, the extractor takes the LFE
