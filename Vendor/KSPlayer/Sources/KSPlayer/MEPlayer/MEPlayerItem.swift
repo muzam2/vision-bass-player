@@ -31,10 +31,35 @@ public final class MEPlayerItem: Sendable {
     private var readOperation: BlockOperation?
     private var closeOperation: BlockOperation?
     private var seekingCompletionHandler: ((Bool) -> Void)?
+    // Bass Player patch: the clocks and `isAudioStalled` were plain variables touched from the
+    // main thread, the read thread and the audio render thread. The timestamped frame pump
+    // (`TimestampedVideoPresenter`) reads them from its own queue as well, so they now sit
+    // behind a lock. `audioClockRing` holds the audio clock's last readings exactly as the
+    // audio render thread took them, for the pump; `audioClock` itself is still written
+    // through the main thread, as upstream does, for the display-link loop.
+    private let clockLock = UnfairLock()
+    private var _isAudioStalled = true
+    private var _audioClock = KSClock()
+    private var _videoClock = KSClock()
+    private var audioClockRing = [AudioClockSample](repeating: AudioClockSample(media: 0, host: 0), count: MEPlayerItem.audioClockRingSize)
+    private var audioClockWritten = UInt64(0)
+    private static let audioClockRingSize = 64
     // 没有音频数据可以渲染
-    private var isAudioStalled = true
-    private var audioClock = KSClock()
-    private var videoClock = KSClock()
+    private var isAudioStalled: Bool {
+        get { clockLock.withLock { _isAudioStalled } }
+        set { clockLock.withLock { _isAudioStalled = newValue } }
+    }
+
+    private var audioClock: KSClock {
+        get { clockLock.withLock { _audioClock } }
+        set { clockLock.withLock { _audioClock = newValue } }
+    }
+
+    private var videoClock: KSClock {
+        get { clockLock.withLock { _videoClock } }
+        set { clockLock.withLock { _videoClock = newValue } }
+    }
+
     private var isFirst = true
     private var isSeek = false
     private var allPlayerItemTracks = [PlayerItemTrackProtocol]()
@@ -881,6 +906,15 @@ extension MEPlayerItem: OutputRenderSourceDelegate {
 
     public func setAudio(time: CMTime, position: Int64) {
 //        print("[audio] setAudio: \(time.seconds)")
+        // Bass Player patch: note the reading here, on the audio render thread, with the time
+        // it was taken. The copy below reaches `audioClock` only when the main thread gets to
+        // it and is stamped with that later time.
+        let host = CACurrentMediaTime()
+        let media = time.seconds
+        clockLock.withLock {
+            audioClockRing[Int(audioClockWritten % UInt64(MEPlayerItem.audioClockRingSize))] = AudioClockSample(media: media, host: host)
+            audioClockWritten &+= 1
+        }
         // 切换到主线程的话，那播放起来会更顺滑
         runOnMainThread {
             self.audioClock.time = time
@@ -938,6 +972,51 @@ extension MEPlayerItem: OutputRenderSourceDelegate {
             }
         }
         return frame
+    }
+
+    // MARK: Bass Player patch: timestamped presentation (called on the frame pump's queue)
+
+    public func getVideoOutputRender(mayFinish: Bool, where predicate: (VideoVTBFrame, Int) -> Bool) -> VideoVTBFrame? {
+        guard let videoTrack else {
+            return nil
+        }
+        // `getOutputRender` reports the end of the track when it finds the queue empty after
+        // the decoder has finished. The pump is ahead of the screen, so it only lets that
+        // happen once what it enqueued has been shown.
+        if !mayFinish, videoTrack.frameCount == 0 {
+            return nil
+        }
+        return withoutActuallyEscaping(predicate) { videoTrack.getOutputRender(where: $0) }
+    }
+
+    public func audioClockSamples(after cursor: UInt64) -> AudioClockSamples {
+        let size = UInt64(MEPlayerItem.audioClockRingSize)
+        let (count, stalled) = clockLock.withLock { (audioClockWritten, _isAudioStalled) }
+        // A cursor from another item (the stream was opened again) starts over.
+        let cursor = cursor > count ? 0 : cursor
+        guard count > cursor else {
+            return AudioClockSamples(samples: [], cursor: cursor, isMaster: !stalled)
+        }
+        // Allocated before the lock is taken again: the audio render thread waits on it.
+        var samples = [AudioClockSample]()
+        samples.reserveCapacity(Int(size))
+        let written: UInt64 = clockLock.withLock {
+            let written = audioClockWritten
+            var index = max(cursor, written > size ? written - size : 0)
+            while index < written {
+                samples.append(audioClockRing[Int(index % size)])
+                index += 1
+            }
+            return written
+        }
+        return AudioClockSamples(samples: samples, cursor: written, isMaster: !stalled)
+    }
+
+    public func setVideoEnqueued(time: CMTime, position: Int64) {
+        clockLock.withLock {
+            _videoClock.time = time
+            _videoClock.position = position
+        }
     }
 
     public func getAudioOutputRender() -> AudioFrame? {

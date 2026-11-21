@@ -8,6 +8,7 @@
 import AVFoundation
 import CoreMedia
 import Libavcodec
+import os
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -33,6 +34,55 @@ public protocol OutputRenderSourceDelegate: AnyObject {
     func getAudioOutputRender() -> AudioFrame?
     func setAudio(time: CMTime, position: Int64)
     func setVideo(time: CMTime, position: Int64)
+    // Bass Player patch: the three calls the timestamped frame pump makes
+    // (`TimestampedVideoPresenter`). All of them are safe off the main thread.
+    /// Takes the next decoded frame, in presentation order, if `predicate` accepts it. The
+    /// predicate runs under the frame queue's lock: decide, do not work. With `mayFinish`
+    /// false an empty queue is not reported as the end of the video track (the pump runs
+    /// ahead of what is on screen).
+    func getVideoOutputRender(mayFinish: Bool, where predicate: (VideoVTBFrame, Int) -> Bool) -> VideoVTBFrame?
+    /// Audio clock readings newer than `cursor`, as the audio output wrote them on its render
+    /// thread (not the copy that goes through the main thread).
+    func audioClockSamples(after cursor: UInt64) -> AudioClockSamples
+    /// A frame was handed to the renderer ahead of time; keeps the video clock moving.
+    func setVideoEnqueued(time: CMTime, position: Int64)
+}
+
+/// Bass Player patch: one reading of the audio clock: the media time the audio output had
+/// reached (output latency already taken off) and the host time (`CACurrentMediaTime`) at
+/// which its render callback said so.
+public struct AudioClockSample: Sendable {
+    public let media: TimeInterval
+    public let host: TimeInterval
+}
+
+public struct AudioClockSamples: Sendable {
+    public let samples: [AudioClockSample]
+    /// Pass back as `after:` next time.
+    public let cursor: UInt64
+    /// False when there is no audio to follow (no audio track, or it has ended).
+    public let isMaster: Bool
+}
+
+/// Bass Player patch: a lock that is cheap enough for the audio render thread.
+final class UnfairLock: @unchecked Sendable {
+    private let pointer: os_unfair_lock_t
+    init() {
+        pointer = .allocate(capacity: 1)
+        pointer.initialize(to: os_unfair_lock())
+    }
+
+    deinit {
+        pointer.deinitialize(count: 1)
+        pointer.deallocate()
+    }
+
+    @inline(__always)
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        os_unfair_lock_lock(pointer)
+        defer { os_unfair_lock_unlock(pointer) }
+        return try body()
+    }
 }
 
 protocol CodecCapacityDelegate: AnyObject {

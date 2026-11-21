@@ -89,7 +89,15 @@ open class KSOptions {
     public var isSeekImageSubtitle = false
     // video
     public var display = DisplayEnum.plane
-    public var videoDelay = 0.0 // s
+    // Bass Player patch: also read by the timestamped frame pump on its own queue, so the
+    // value sits behind a lock.
+    public var videoDelay: Double { // s
+        get { videoDelayLock.withLock { _videoDelay } }
+        set { videoDelayLock.withLock { _videoDelay = newValue } }
+    }
+
+    private let videoDelayLock = UnfairLock()
+    private var _videoDelay = 0.0
     public var autoDeInterlace = false
     public var autoRotate = true
     public var destinationDynamicRange: DynamicRange?
