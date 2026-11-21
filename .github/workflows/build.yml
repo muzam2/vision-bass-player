@@ -129,7 +129,7 @@ jobs:
           test "$missing" = 0
           ls "$APP/Frameworks" 2>/dev/null || echo "(no embedded frameworks)"
           # Which FFmpeg the app ships (av_version_info(), from the embedded Libavutil).
-          strings - "$APP/Frameworks/Libavutil.framework/Libavutil" | grep -m1 "FFmpeg version" || { echo "no FFmpeg version string in the embedded Libavutil"; exit 1; }
+          strings - "$APP/Frameworks/Libavutil.framework/Libavutil" | grep -oE "FFmpeg version [^ ]+$" | head -n1 | grep . || { echo "no FFmpeg version string in the embedded Libavutil"; exit 1; }
           rm -rf Payload && mkdir Payload
           cp -R "$APP" Payload/
           VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
