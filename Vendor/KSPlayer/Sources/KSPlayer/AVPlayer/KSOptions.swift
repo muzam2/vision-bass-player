@@ -27,6 +27,11 @@ open class KSOptions {
     /// Bass Player patch: maps a requested seek time to the one actually used (e.g. snapped to an
     /// HLS segment boundary, where the keyframe is). Applied in KSMEPlayer.seek; nil = as is.
     public var seekSnap: ((TimeInterval) -> TimeInterval)?
+    /// Bass Player patch: make the HTTP connections FFmpeg opens *inside* a demuxer (HLS
+    /// segments, playlists, keys) resume at the byte offset after a dropped connection. The
+    /// `reconnect*` entries in `formatContextOptions` only reach the top-level URL; the HLS
+    /// demuxer hands its segment connections a fixed short list of options and nothing else.
+    public var reconnectNestedHTTP = false
     /// Applies to short videos only
     public var isLoopPlay = KSOptions.isLoopPlay
     /// 区间无缝循环 [lowerBound, upperBound]，单位秒（相对 file 内播放时间，不含 startTime offset）。
@@ -378,28 +383,28 @@ open class KSOptions {
         } else {
             if diff < -4 / fps {
                 videoClockDelayCount += 1
-                let log = "[video] video delay=\(diff), clock=\(desire), delay count=\(videoClockDelayCount), frameCount=\(frameCount)"
+                // Bass Player patch: built only for the rare cases that are still logged. A line
+                // for every dropped frame (up to ~18 a second) ran on the frame loop itself;
+                // the app's `render:` line every 10 s carries the counts instead.
+                let log = { "[video] video delay=\(diff), clock=\(desire), delay count=\(self.videoClockDelayCount), frameCount=\(frameCount)" }
                 if frameCount == 1 {
                     if diff < -1, videoClockDelayCount % 10 == 0 {
-                        KSLog("\(log) drop gop Packet")
+                        KSLog("\(log()) drop gop Packet")
                         return (diff, .dropGOPPacket)
                     } else if videoClockDelayCount % 5 == 0 {
-                        KSLog("\(log) drop next frame")
                         return (diff, .dropNextFrame)
                     } else {
                         return (diff, .next)
                     }
                 } else {
                     if diff < -8, videoClockDelayCount % 100 == 0 {
-                        KSLog("\(log) seek video track")
+                        KSLog("\(log()) seek video track")
                         return (diff, .seek)
                     }
                     if diff < -1, videoClockDelayCount % 10 == 0 {
-                        KSLog("\(log) flush video track")
                         return (diff, .flush)
                     }
                     if videoClockDelayCount % 2 == 0 {
-                        KSLog("\(log) drop next frame")
                         return (diff, .dropNextFrame)
                     } else {
                         return (diff, .next)

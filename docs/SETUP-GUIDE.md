@@ -167,9 +167,9 @@ Subwoofer receiver:
 |---|---|
 | Thump lands **before** the picture/sound | Raise **Receiver delay** in 10 ms steps |
 | Thump lands **after** | Raise **Bass lead** in 10 ms steps (FFmpeg backend only). This holds the headset's own audio and picture back by that much so the sub catches up. |
-| Can't tell | Use a film with a clean single hit (a door slam, a drum) and loop it. Start with **Bass lead 80 ms**, which is roughly the BLE link, then nudge. |
+| Can't tell | Use a film with a clean single hit (a door slam, a drum) and loop it. Start with **Bass lead 180 ms** (an estimate of the whole bass path, not yet measured), then nudge. |
 
-Typical result: Bass lead 60–100 ms, Receiver delay 0. Once set it stays set; both values are
+Expected result: Bass lead somewhere around 150–220 ms, Receiver delay 0. Once set it stays set; both values are
 remembered per device, so tune the Apple TV separately (it has its own audio latency).
 
 **Level:** set the sub's gain so bass is felt, not heard as a separate boom. If the receiver's

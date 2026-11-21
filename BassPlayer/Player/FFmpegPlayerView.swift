@@ -65,6 +65,67 @@ final class BassPlayerOptions: KSOptions {
 }
 
 /// Owns the bass pipeline for one FFmpeg playback and exposes decoded frames for the immersive screen.
+/// Measures how long the main thread takes to get round to a queued block: a timer on another
+/// thread queues one every 20 ms and the block notes how late it ran. Tells "the main thread
+/// was busy" apart from "the display link was not fired" when frames go missing.
+final class MainThreadProbe: @unchecked Sendable {
+    private var timer: DispatchSourceTimer?      // main thread only
+    private var worst = 0.0                      // main thread only, as are the two below
+    private var over50 = 0
+    private var total = 0
+
+    func start() {
+        guard timer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
+        t.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(20), leeway: .milliseconds(2))
+        t.setEventHandler { [weak self] in
+            let queued = CACurrentMediaTime()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let waited = CACurrentMediaTime() - queued
+                self.total += 1
+                if waited > self.worst { self.worst = waited }
+                if waited > 0.05 { self.over50 += 1 }
+            }
+        }
+        timer = t
+        t.resume()
+    }
+
+    func stop() {
+        timer?.cancel()
+        timer = nil
+    }
+
+    func take() -> (worst: Double, over50: Int, total: Int) {
+        defer { worst = 0; over50 = 0; total = 0 }
+        return (worst, over50, total)
+    }
+}
+
+/// The sub-bass level shown in the player's status line (see `FFmpegSession.bassMeter`).
+@MainActor
+final class BassMeter: ObservableObject {
+    /// dBFS, whole decibels; -120 = silence.
+    @Published private(set) var levelDb: Float = -120
+
+    func set(_ db: Float) {
+        let rounded = db.rounded()
+        if rounded != levelDb { levelDb = rounded }
+    }
+}
+
+/// "Bass tap · 48 kHz · 2 ch · -12 dB", or "Bass tap off".
+struct BassTapLabel: View {
+    let installed: Bool
+    let audioFormat: String
+    @ObservedObject var meter: BassMeter
+
+    var body: some View {
+        Text(installed ? "Bass tap · \(audioFormat) · \(meter.levelDb <= -119 ? "silent" : String(format: "%.0f dB", meter.levelDb))" : "Bass tap off")
+    }
+}
+
 @MainActor
 final class FFmpegSession: ObservableObject {
     let options = FFmpegConfig.makeOptions()
@@ -73,9 +134,18 @@ final class FFmpegSession: ObservableObject {
     @Published private(set) var tapInstalled = false
     @Published private(set) var backendName = "—"
     @Published private(set) var audioFormat = "—"
-    /// Peak of the extracted sub-bass over the last poll interval, in dBFS (-120 = silence).
-    @Published private(set) var bassLevelDb: Float = -120
+    /// Peak of the extracted sub-bass over the last poll interval. It changes on almost every
+    /// poll, so it is published by its own object: only `BassTapLabel` redraws, not every view
+    /// that observes the session (which redrew the whole player twice a second and cost the
+    /// render loop a display tick each time; see `logRenderStats`).
+    let bassMeter = BassMeter()
     private var lastBassLog: Date = .distantPast
+    private var lastRenderLog = Date()
+    private var lastDroppedFrames: UInt32 = 0
+    private var pollWorst = 0.0
+    private var pollTotal = 0.0
+    private var pollCount = 0
+    private let mainProbe = MainThreadProbe()
 
     private weak var coordinator: KSVideoPlayer.Coordinator?
     private var pollTimer: Timer?
@@ -93,6 +163,15 @@ final class FFmpegSession: ObservableObject {
     private var sleepFired = false
 
     private lazy var doviRenderer = DoviFrameRenderer()
+
+    /// Frames handed to the renderer; the sink runs on the main thread, as does `poll`.
+    private final class FrameCounter { var count = 0 }
+    private let frameCounter = FrameCounter()
+    private var stallFrameCount = -1
+    private var stallSince = Date()
+    private var stallPosition = 0.0
+    private var stallRecoveries: [Date] = []
+    private var stallGiveUpLogged = Date.distantPast
     private weak var sinkView: MetalPlayView?
 
     /// Mirror every rendered frame to the immersive screen while it is open. Dolby Vision
@@ -100,7 +179,9 @@ final class FFmpegSession: ObservableObject {
     private func installFrameSink(on view: MetalPlayView) {
         guard sinkView !== view else { return }
         sinkView = view
+        let counter = frameCounter
         view.frameSink = { [weak self] frame, pixelBuffer, time in
+            counter.count &+= 1
             guard let push = ImmersiveScreenBridge.shared.pushFrame else { return }
             var dovi: MTLTexture?
             if DoviFrameRenderer.needsMapping(frame), let self {
@@ -143,15 +224,17 @@ final class FFmpegSession: ObservableObject {
             // then fails and is retried ("keepalive request failed"), one wasted round trip per
             // segment and per seek.
             options.formatContextOptions["http_persistent"] = 0
-            // A connection reset mid-segment (seen 2026-11-10) made FFmpeg's "streamed"
-            // reconnect restart the segment from byte 0 behind the demuxer's back: duplicated
-            // bytes, 80 VP9 header errors, picture frozen for 12 s while audio ran on.
-            // googlevideo answers with Content-Length and ranges, so plain reconnect resumes at
-            // the offset; a failure then skips to the next segment instead of feeding garbage.
-            options.formatContextOptions["reconnect"] = 1
-            options.formatContextOptions["reconnect_streamed"] = 0
-            options.formatContextOptions["reconnect_on_network_error"] = 1
-            options.formatContextOptions["reconnect_delay_max"] = 2
+            // A connection reset in the middle of a segment (2026-11-10 and 2026-11-20). FFmpeg's
+            // HLS demuxer treats any read error as the end of the segment and moves on, so the
+            // fMP4 parser is fed a cut-off fragment followed by the next segment: a burst of VP9
+            // header errors, then no video frames at all while the audio (its own connection)
+            // plays on. The `reconnect*` format options set here before never reached the
+            // segment connections (HLS passes them a fixed list of options), so they did nothing.
+            // Two layers now: FFmpeg resumes the cut-off download itself where the server allows
+            // it, and `watchForVideoStall` reopens the stream if the picture stops anyway.
+            options.reconnectNestedHTTP = true
+            // A segment that fails to *open* is retried instead of skipped (5 s of film).
+            options.formatContextOptions["seg_max_retry"] = 2
             options.seekSnap = nil
             if let master = item.directURL, master.isFileURL {
                 Task { await learnSegments(master: master, userAgent: item.userAgent) }
@@ -214,6 +297,11 @@ final class FFmpegSession: ObservableObject {
         finished = false
         reportedStart = false
         sleepFired = false
+        stallFrameCount = -1
+        stallRecoveries = []
+        mainProbe.start()
+        lastRenderLog = Date()
+        lastDroppedFrames = 0
         if let item, let library {
             library.noteStarted(item)
             // YouTube resume needs the backported mov/hls seek fixes in Vendor/FFmpegKit.
@@ -259,6 +347,7 @@ final class FFmpegSession: ObservableObject {
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        mainProbe.stop()
         tap.detach()
         tapInstalled = false
         if let item, let library, lastKnownPosition > 0 {
@@ -300,10 +389,84 @@ final class FFmpegSession: ObservableObject {
         }
     }
 
+    /// YouTube only. The picture can stop for good while the sound carries on (see
+    /// `configure`): no frame reaches the renderer although the player says it is playing and
+    /// its clock keeps moving. A seek does not bring it back (tried on the headset 2026-11-20:
+    /// three seeks, state went buffering → playing each time, still no frame), so the stream is
+    /// opened again from scratch at the start of the current segment: a new demuxer and
+    /// decoders in the same player. The film steps back a few seconds at most.
+    private func watchForVideoStall(layer: KSPlayerLayer, player: KSMEPlayer) {
+        guard item?.source == .youtube else { return }
+        let now = Date()
+        let frames = frameCounter.count
+        let position = player.currentPlaybackTime
+        guard layer.state == .bufferFinished, sinkView != nil, position.isFinite,
+              UIApplication.shared.applicationState == .active,
+              frames == stallFrameCount, position >= stallPosition else {
+            // Not playing, not on screen (nothing is drawn then), frames are arriving, or the
+            // position jumped back: start over.
+            stallFrameCount = frames
+            stallSince = now
+            stallPosition = position.isFinite ? position : 0
+            return
+        }
+        let frozenFor = now.timeIntervalSince(stallSince)
+        guard frozenFor >= 3, position - stallPosition >= 2 else { return }
+        stallRecoveries.removeAll { now.timeIntervalSince($0) > 120 }
+        guard stallRecoveries.count < 3 else {
+            if now.timeIntervalSince(stallGiveUpLogged) > 60 {
+                stallGiveUpLogged = now
+                DiagLog.log(String(format: "video stalled again at %.1f s; three recoveries in two minutes did not hold, leaving it alone for now", position), "player")
+            }
+            return
+        }
+        stallRecoveries.append(now)
+        let restart = max(0, options.seekSnap?(position) ?? position)
+        DiagLog.log(String(format: "video stalled at %.1f s: no frame for %.1f s while the clock moved %.1f s; opening the stream again at %.1f s (recovery %d)",
+                           position, frozenFor, position - stallPosition, restart, stallRecoveries.count), "player")
+        stallSince = now
+        stallPosition = position
+        options.startPlayTime = restart
+        layer.reopen()
+    }
+
+    /// Every 10 s while playing: how often the display link really fired, the longest gap
+    /// between ticks, frames shown and dropped, and what this poll costs. A 60 fps video
+    /// needs at least 60 ticks a second with no gap much over 17 ms; anything less shows as
+    /// judder however fast the decoder is.
+    private func logRenderStats(layer: KSPlayerLayer, player: KSMEPlayer) {
+        let now = Date()
+        guard now.timeIntervalSince(lastRenderLog) >= 10, let view = player.videoOutput as? MetalPlayView else { return }
+        lastRenderLog = now
+        let r = view.takeRenderStats()
+        let dropped = player.dynamicInfo?.droppedVideoFrameCount ?? 0
+        let newDrops = dropped >= lastDroppedFrames ? dropped - lastDroppedFrames : dropped
+        lastDroppedFrames = dropped
+        let worst = pollWorst
+        pollWorst = 0; pollTotal = 0; pollCount = 0
+        let main = mainProbe.take()
+        guard r.ticks > 1, r.span > 0, layer.state == .bufferFinished else { return }
+        DiagLog.log(String(format: "render: %d ticks in %.1f s (%.1f/s, link %.0f Hz) · %d gaps over 25 ms, longest %.0f ms · longest draw %.1f ms · %d frames shown · %d dropped · sync %+.0f ms · main thread: worst wait %.0f ms, %d of %d probes over 50 ms · poll worst %.1f ms",
+                           r.ticks, r.span, Double(r.ticks - 1) / r.span, r.linkInterval > 0 ? 1 / r.linkInterval : 0,
+                           r.lateTicks, r.longestGap * 1000, r.longestDraw * 1000, r.presented, Int(newDrops),
+                           (player.dynamicInfo?.audioVideoSyncDiff ?? 0) * 1000,
+                           main.worst * 1000, main.over50, main.total, worst * 1000), "player")
+    }
+
     private func poll() {
         guard let layer = coordinator?.playerLayer else { return }
         let player = layer.player
-        backendName = player is KSMEPlayer ? "FFmpeg" : "AVPlayer"
+        let pollStart = CACurrentMediaTime()
+        defer {
+            let took = CACurrentMediaTime() - pollStart
+            pollWorst = max(pollWorst, took)
+            pollTotal += took
+            pollCount += 1
+        }
+        // Publish only what changed: every assignment to a @Published property redraws the
+        // views observing the session, changed or not.
+        let backend = player is KSMEPlayer ? "FFmpeg" : "AVPlayer"
+        if backendName != backend { backendName = backend }
         trackProgress(layer: layer)
         // SponsorBlock: jump over marked segments.
         if !sponsorSkipper.segments.isEmpty, layer.state == .bufferFinished || layer.state == .readyToPlay,
@@ -316,6 +479,8 @@ final class FFmpegSession: ObservableObject {
         }
         guard let me = player as? KSMEPlayer else { return }
         if let view = me.videoOutput as? MetalPlayView { installFrameSink(on: view) }
+        watchForVideoStall(layer: layer, player: me)
+        logRenderStats(layer: layer, player: me)
         let mvc = me.tracks(mediaType: .video).contains { ($0 as? FFmpegAssetTrack)?.decodesStereoSideBySide == true }
         if mvc != mvcStereo {
             mvcStereo = mvc
@@ -328,18 +493,20 @@ final class FFmpegSession: ObservableObject {
         if let engine = (me.audioOutput as? AudioEnginePlayer)?.engine {
             let f = engine.mainMixerNode.outputFormat(forBus: 0)
             if f.sampleRate > 0 {
-                audioFormat = "\(Int(f.sampleRate) / 1000) kHz · \(f.channelCount) ch"
+                let format = "\(Int(f.sampleRate) / 1000) kHz · \(f.channelCount) ch"
+                if audioFormat != format { audioFormat = format }
             }
         }
         // "Installed" means the mixer tap really exists; the level proves samples flow through it.
         let s = extractor.stats()
-        tapInstalled = tap.tapInstalled
-        bassLevelDb = s.bassPeakDb
+        if tapInstalled != tap.tapInstalled { tapInstalled = tap.tapInstalled }
+        bassMeter.set(s.bassPeakDb)
         if Date().timeIntervalSince(lastBassLog) > 10 {
             lastBassLog = Date()
-            DiagLog.log(String(format: "tap %@: %d buffers, %d frames, %d packets · input peak %.0f dB · bass peak %.0f dB · BLE %@ sent %d dropped %d",
+            DiagLog.log(String(format: "tap %@: %d buffers, %d frames, %d packets · input peak %.0f dB · bass peak %.0f dB · BLE %@ sent %d dropped %d queue peak %d · receiver buffer %d underruns %d dropped %d",
                                tap.tapInstalled ? "on" : "off", s.buffers, s.frames, s.packets, s.inputPeakDb, s.bassPeakDb,
-                               bassLink.state.rawValue, bassLink.packetsSent, bassLink.packetsDropped), "bass")
+                               bassLink.state.rawValue, bassLink.packetsSent, bassLink.packetsDropped, bassLink.sendQueuePeak,
+                               bassLink.receiverBufferFill, bassLink.receiverUnderruns, bassLink.receiverDropped), "bass")
         }
     }
 }
@@ -423,7 +590,7 @@ struct FFmpegPlayerView: View {
     private func statusChip(_ session: FFmpegSession) -> some View {
         HStack(spacing: 8) {
             Image(systemName: session.tapInstalled ? "waveform" : "waveform.slash")
-            Text(session.tapInstalled ? "Bass tap · \(session.audioFormat) · \(session.bassLevelDb <= -119 ? "silent" : String(format: "%.0f dB", session.bassLevelDb))" : "Bass tap off")
+            BassTapLabel(installed: session.tapInstalled, audioFormat: session.audioFormat, meter: session.bassMeter)
             Text("·")
             Text(session.backendName)
             if let dv = session.doviStatus { Text("·"); Text(dv) }
