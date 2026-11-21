@@ -8,7 +8,10 @@
 #   - external libraries = the stock FFmpegKit 9.0.2 dependency xcframeworks, found by
 #     pkg-config through .pc files synthesized here (upstream's own .pc files are not
 #     published; versions come from the frameworks' headers)
-#   - Vulkan headers = the copy FFmpegKit ships in Sources/FFmpegKit/private (header only)
+#   - Vulkan headers = KhronosGroup/Vulkan-Headers at the revision of the MoltenVK FFmpegKit
+#     ships (header only; FFmpegKit points pkg-config "vulkan" at MoltenVK's include directory).
+#     Their version decides whether configure enables vulkan_1_4 and with it the Vulkan VP9
+#     hwaccel, which the 9.0.2 binaries have.
 # Output (in <out dir>): the seven shared libraries renamed/re-identified as frameworks
 # binaries (Libavcodec, ...), stripped like upstream's, dSYMs for device slices, the installed
 # public headers plus the private headers upstream also ships, and config.h for the record.
@@ -70,7 +73,11 @@ freetype_libs="$(fw libfreetype) -lbz2 -lz"
 harfbuzz_libs="$(fw libharfbuzz) $freetype_libs -framework CoreText -framework CoreGraphics -framework CoreFoundation -lc++"
 fontconfig_libs="$(fw libfontconfig) $freetype_libs -lexpat"
 openssl_libs="$(fw libssl) $(fw libcrypto)"
-pc vulkan      1.3.280 "-I$vulkan_inc" ""
+vk_core="$vulkan_inc/vulkan/vulkan_core.h"
+vk_minor="$(sed -n 's/^#define VK_HEADER_VERSION_COMPLETE VK_MAKE_API_VERSION(0, 1, \([0-9]*\), VK_HEADER_VERSION)$/\1/p' "$vk_core")"
+vk_patch="$(sed -n 's/^#define VK_HEADER_VERSION \([0-9]*\)$/\1/p' "$vk_core")"
+test -n "$vk_minor" && test -n "$vk_patch" || { echo "::error::cannot read the Vulkan header version from $vk_core" >&2; exit 1; }
+pc vulkan      "1.$vk_minor.$vk_patch" "-I$vulkan_inc" ""
 pc lcms2       2.19    "-I$(hdr lcms2)" "$(fw lcms2)"
 pc dav1d       1.5.0   "-I$(hdr libdav1d)" "$(fw libdav1d)"
 pc libplacebo  7.360.0 "-F$(fwdir libplacebo) -I$vulkan_inc" \
@@ -122,11 +129,13 @@ grep -E "^(License|install prefix|ARCH|C compiler)" "$work/configure.out" || tru
 if grep -q '_VULKAN_FILTER 1$' config_components.h; then
   echo "::error::a SPIR-V compiler was detected (Vulkan filters enabled); FFmpegKit 9.0.2 was built without one" >&2; exit 1
 fi
-for want in VULKAN LCMS2 LIBDAV1D LIBPLACEBO LIBFREETYPE LIBHARFBUZZ LIBFRIBIDI LIBASS LIBSRT LIBZVBI LIBFONTCONFIG LIBOPUS OPENSSL LIBXML2 VIDEOTOOLBOX AUDIOTOOLBOX SHARED; do
+for want in VULKAN VULKAN_1_4 LCMS2 LIBDAV1D LIBPLACEBO LIBFREETYPE LIBHARFBUZZ LIBFRIBIDI LIBASS LIBSRT LIBZVBI LIBFONTCONFIG LIBOPUS OPENSSL LIBXML2 VIDEOTOOLBOX AUDIOTOOLBOX SHARED; do
   grep -q "^#define CONFIG_$want 1" config.h || { echo "::error::CONFIG_$want is not enabled" >&2; exit 1; }
 done
 grep -q '^#define CONFIG_STATIC 0' config.h
-grep -E '^#define CONFIG_(VULKAN_1_4|SECURETRANSPORT|ZLIB|BZLIB|LZMA|ICONV|LIBCURL|APPKIT|AVFOUNDATION|COREIMAGE|METAL|GPL|VERSION3|NONFREE) ' config.h | sed 's/^#define /  /' || true
+# In the 9.0.2 binaries and not on the configure line: depends on the Vulkan header version.
+grep -q '^#define CONFIG_VP9_VULKAN_HWACCEL 1' config_components.h || { echo "::error::CONFIG_VP9_VULKAN_HWACCEL is not enabled" >&2; exit 1; }
+grep -E '^#define CONFIG_(SECURETRANSPORT|ZLIB|BZLIB|LZMA|ICONV|LIBCURL|APPKIT|AVFOUNDATION|COREIMAGE|METAL|GPL|VERSION3|NONFREE) ' config.h | sed 's/^#define /  /' || true
 
 # --- build ----------------------------------------------------------------------------------
 jobs="$(sysctl -n hw.ncpu)"
@@ -186,6 +195,7 @@ cp "$work/configure.out" "$out/config/configure.out"
   echo "CFLAGS=$cflags"
   echo "LDFLAGS=$ldflags"
   echo "ffmpeg_version=$(cat libavutil/ffversion.h | grep FFMPEG_VERSION | cut -d'"' -f2)"
+  echo "vulkan_headers=1.$vk_minor.$vk_patch"
 } | tee "$out/build-info.txt"
 echo "$slice" > "$out/SLICE"
 echo "$arch" > "$out/ARCH"

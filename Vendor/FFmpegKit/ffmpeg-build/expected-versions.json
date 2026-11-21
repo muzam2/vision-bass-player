@@ -1,0 +1,12 @@
+{
+  "ffmpeg": "n9.1",
+  "libraries": {
+    "Libavutil": "61.19.100",
+    "Libswresample": "7.6.100",
+    "Libswscale": "10.5.100",
+    "Libavcodec": "63.24.100",
+    "Libavformat": "63.16.100",
+    "Libavfilter": "12.8.100",
+    "Libavdevice": "63.5.100"
+  }
+}
