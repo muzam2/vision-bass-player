@@ -77,6 +77,8 @@ public class KSMEPlayer: NSObject {
 
     public var playbackRate: Float = 1 {
         didSet {
+            // Bass Player patch: timestamped presentation runs its timebase at this rate.
+            (videoOutput as? MetalPlayView)?.playbackRate = playbackRate
             if playbackRate != audioOutput.playbackRate {
                 audioOutput.playbackRate = playbackRate
                 if audioOutput is AudioUnitPlayer {
@@ -207,7 +209,11 @@ extension KSMEPlayer: MEPlayerDelegate {
                 KSLog("[audio] audio type: \(audioOutput) prepare audioFormat )")
                 audioOutput.prepare(audioFormat: audioDescriptor.audioFormat)
             }
-            if let controlTimebase = videoOutput?.displayLayer.controlTimebase, options.startPlayTime > 1 {
+            // Bass Player patch: in timestamped mode the control timebase belongs to the frame
+            // pump (`MetalPlayView.ownsControlTimebase`); it is left alone here and in `seek`.
+            if (videoOutput as? MetalPlayView)?.ownsControlTimebase != true,
+               let controlTimebase = videoOutput?.displayLayer.controlTimebase, options.startPlayTime > 1
+            {
                 CMTimebaseSetTime(controlTimebase, time: CMTimeMake(value: Int64(options.startPlayTime), timescale: 1))
             }
             delegate?.readyToPlay(player: self)
@@ -360,6 +366,9 @@ extension KSMEPlayer: MediaPlayerProtocol {
         var time = max(time, 0)
         if let snap = options.seekSnap { time = max(snap(time), 0) }
         playbackState = .seeking
+        // Bass Player patch: frames already handed to the renderer ahead of time belong to the
+        // old position.
+        (videoOutput as? MetalPlayView)?.timelineWillJump()
         runOnMainThread { [weak self] in
             self?.bufferingProgress = 0
         }
@@ -375,7 +384,9 @@ extension KSMEPlayer: MediaPlayerProtocol {
                 self.audioOutput.flush()
                 runOnMainThread { [weak self] in
                     guard let self else { return }
-                    if let controlTimebase = self.videoOutput?.displayLayer.controlTimebase {
+                    if (self.videoOutput as? MetalPlayView)?.ownsControlTimebase != true,
+                       let controlTimebase = self.videoOutput?.displayLayer.controlTimebase
+                    {
                         CMTimebaseSetTime(controlTimebase, time: CMTimeMake(value: Int64(self.currentPlaybackTime), timescale: 1))
                     }
                 }

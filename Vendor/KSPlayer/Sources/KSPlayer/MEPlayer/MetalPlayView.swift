@@ -25,17 +25,87 @@ public protocol VideoOutput: FrameOutput {
     func readNextFrame()
 }
 
+/// Bass Player patch: the part of `MetalPlayView`'s state that is not confined to the main
+/// thread. The display-link loop writes it on the main thread; in timestamped mode the frame
+/// pump writes it on its queue; the player reads and writes parts of it from wherever it is.
+final class MetalPlayViewShared: @unchecked Sendable {
+    private let lock = UnfairLock()
+    private var _currentFrame: VideoVTBFrame?
+    private var _pixelBuffer: PixelBufferProtocol?
+    private var _framesHandedOver = 0
+    private var _playbackRate = Float(1)
+    private var _timestampedActive = false
+    private var _presenter: AnyObject?
+
+    var currentFrame: VideoVTBFrame? {
+        lock.withLock { _currentFrame }
+    }
+
+    var pixelBuffer: PixelBufferProtocol? {
+        get { lock.withLock { _pixelBuffer } }
+        set { lock.withLock { _pixelBuffer = newValue } }
+    }
+
+    var framesHandedOver: Int {
+        lock.withLock { _framesHandedOver }
+    }
+
+    var playbackRate: Float {
+        get { lock.withLock { _playbackRate } }
+        set { lock.withLock { _playbackRate = newValue } }
+    }
+
+    var timestampedActive: Bool {
+        get { lock.withLock { _timestampedActive } }
+        set { lock.withLock { _timestampedActive = newValue } }
+    }
+
+    /// The presenter, typed loosely because its class needs a newer OS than the package's
+    /// minimum. Set once, on the main thread, the first time timestamped mode is entered.
+    var presenter: TimestampedPresenting? {
+        lock.withLock { _presenter } as? TimestampedPresenting
+    }
+
+    func setPresenter(_ presenter: AnyObject) {
+        lock.withLock { _presenter = presenter }
+    }
+
+    /// A frame went to the renderer.
+    func noteFrame(_ frame: VideoVTBFrame, pixelBuffer: PixelBufferProtocol?) {
+        lock.withLock {
+            _currentFrame = frame
+            if let pixelBuffer {
+                _pixelBuffer = pixelBuffer
+            }
+            _framesHandedOver &+= 1
+        }
+    }
+}
+
 public final class MetalPlayView: UIView, VideoOutput {
     public var displayLayer: AVSampleBufferDisplayLayer {
         displayView.displayLayer
     }
 
     private var isDovi: Bool = false
+    /// Bass Player patch: see `MetalPlayViewShared`.
+    private nonisolated let shared = MetalPlayViewShared()
     /// Last frame handed to the renderer (lets hosts read per-frame Dolby Vision metadata).
-    public private(set) var currentFrame: VideoVTBFrame?
+    public var currentFrame: VideoVTBFrame? {
+        shared.currentFrame
+    }
+
+    /// Bass Player patch: frames handed to the renderer since the view was created, in either
+    /// presentation mode.
+    public var framesHandedOver: Int {
+        shared.framesHandedOver
+    }
+
     /// Bass Player patch: called on the main thread with every frame handed to the renderer
     /// (hardware CVPixelBuffer or software planes), so a second consumer — the immersive
-    /// cinema screen — can display the same frames.
+    /// cinema screen — can display the same frames. Display-link mode only: in timestamped
+    /// mode frames are handed over ahead of their display time on another queue, so a
+    /// consumer that needs them must keep the view in display-link mode.
     public var frameSink: ((VideoVTBFrame, PixelBufferProtocol, CMTime) -> Void)?
     /// Bass Player patch: what the display link did since the last `takeRenderStats()`. Tells a
     /// starved render loop (few ticks, long gaps between them) apart from frames that were
@@ -105,14 +175,81 @@ public final class MetalPlayView: UIView, VideoOutput {
         }
     }
 
-    public private(set) var pixelBuffer: PixelBufferProtocol?
+    public private(set) var pixelBuffer: PixelBufferProtocol? {
+        get { shared.pixelBuffer }
+        set { shared.pixelBuffer = newValue }
+    }
+
     /// 用displayLink会导致锁屏无法draw，
     /// 用DispatchSourceTimer的话，在播放4k视频的时候repeat的时间会变长,
     /// 用MTKView的draw(in:)也是不行，会卡顿
     private var displayLink: CADisplayLink!
 //    private let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-    public var options: KSOptions
-    public weak var renderSource: OutputRenderSourceDelegate?
+    public var options: KSOptions {
+        didSet {
+            // Bass Player patch: a reopened or replaced item gets a fresh decision.
+            presentationFallbackReason = nil
+            reconcilePresentationMode()
+            shared.presenter?.setSource(renderSource, options: options)
+        }
+    }
+
+    public weak var renderSource: OutputRenderSourceDelegate? {
+        didSet {
+            // Bass Player patch: the pump keeps its own reference (it runs off the main thread).
+            shared.presenter?.setSource(renderSource, options: options)
+        }
+    }
+
+    // MARK: Bass Player patch: timestamped presentation
+
+    /// How frames reach the screen.
+    public enum PresentationMode: String, Sendable {
+        /// Upstream's loop: a display link on the main run loop picks at most one frame per
+        /// tick and shows it at once.
+        case displayLink = "display-link"
+        /// A pump on its own queue hands frames to the display layer's renderer ahead of time
+        /// with their media timestamps; a timebase that follows the audio clock decides when
+        /// each one appears (`TimestampedVideoPresenter`).
+        case timestamped
+    }
+
+    /// What the host asks for. Main thread. Takes effect at once, also during playback.
+    /// Display link is the default and the fallback: timestamped mode only takes frames the
+    /// display layer can show (see `presentationFallbackReason`).
+    public var requestedPresentationMode = PresentationMode.displayLink {
+        didSet {
+            guard requestedPresentationMode != oldValue else { return }
+            presentationFallbackReason = nil
+            reconcilePresentationMode()
+        }
+    }
+
+    /// The mode that is running. Main thread.
+    public private(set) var activePresentationMode = PresentationMode.displayLink {
+        didSet {
+            shared.timestampedActive = activePresentationMode == .timestamped
+        }
+    }
+
+    /// Why timestamped mode was asked for but is not running, for this item. Main thread.
+    public private(set) var presentationFallbackReason: String?
+    /// True while the display layer's control timebase is driven by the frame pump.
+    public nonisolated var ownsControlTimebase: Bool {
+        shared.timestampedActive
+    }
+
+    /// Playback rate of the player; the timestamped timebase runs at it.
+    public nonisolated var playbackRate: Float {
+        get { shared.playbackRate }
+        set {
+            shared.playbackRate = newValue
+            shared.presenter?.setRate(Double(newValue))
+        }
+    }
+
+    /// Whether the player wants frames to flow (`play()` / `pause()`). Main thread.
+    private var wantsPlayback = false
     // AVSampleBufferAudioRenderer AVSampleBufferRenderSynchronizer AVSampleBufferDisplayLayer
     var displayView = AVSampleBufferDisplayView() {
         didSet {
@@ -136,11 +273,18 @@ public final class MetalPlayView: UIView, VideoOutput {
     }
 
     public func play() {
-        displayLink.isPaused = false
+        wantsPlayback = true
+        if activePresentationMode == .timestamped {
+            shared.presenter?.setPlaying(true)
+        } else {
+            displayLink.isPaused = false
+        }
     }
 
     public func pause() {
+        wantsPlayback = false
         displayLink.isPaused = true
+        shared.presenter?.setPlaying(false)
         // A pause is not a gap between ticks.
         lastTickTime = 0
         firstTickTime = 0
@@ -198,6 +342,10 @@ public final class MetalPlayView: UIView, VideoOutput {
 
     public func flush() {
         pixelBuffer = nil
+        if activePresentationMode == .timestamped {
+            shared.presenter?.timelineJumped(removeImage: true)
+            return
+        }
         if displayView.isHidden {
             metalView.clear()
         } else {
@@ -207,9 +355,14 @@ public final class MetalPlayView: UIView, VideoOutput {
 
     public func invalidate() {
         displayLink.invalidate()
+        shared.presenter?.detach()
     }
 
     public func readNextFrame() {
+        if activePresentationMode == .timestamped {
+            shared.presenter?.showStill()
+            return
+        }
         draw(force: true)
     }
 
@@ -241,7 +394,8 @@ extension MetalPlayView {
             guard let frame = renderSource?.getVideoOutputRender(force: force) else {
                 return
             }
-            pixelBuffer = frame.corePixelBuffer
+            let pixelBuffer = frame.corePixelBuffer
+            self.pixelBuffer = pixelBuffer
             guard let pixelBuffer else {
                 return
             }
@@ -252,7 +406,7 @@ extension MetalPlayView {
             let sar = pixelBuffer.aspectRatio
             // Dolby Vision profile 5 must go through our Metal shader; the display layer can't map IPT.
             let dovi = frame.dovi?.needsMapping == true ? frame.dovi : nil
-            currentFrame = frame
+            shared.noteFrame(frame, pixelBuffer: nil)
             renderStats.presented += 1
             frameSink?(frame, pixelBuffer, cmtime)
             if dovi == nil, let pixelBuffer = pixelBuffer.cvPixelBuffer, options.isUseDisplayLayer() {
@@ -310,6 +464,116 @@ extension MetalPlayView {
     private func set(pixelBuffer: CVPixelBuffer, time: CMTime) {
         guard let formatDescription else { return }
         displayView.enqueue(imageBuffer: pixelBuffer, formatDescription: formatDescription, time: time)
+    }
+}
+
+// MARK: - Bass Player patch: timestamped presentation
+
+public extension MetalPlayView {
+    /// What the frame pump did since the last call, delivered on the main thread (nil when
+    /// timestamped mode is not running). The system's own frame counts are fetched
+    /// asynchronously, so the answer arrives a moment later. Main thread.
+    func takeTimestampedStats(completion: @escaping (TimestampedPresentationStats?) -> Void) {
+        if activePresentationMode == .timestamped, let presenter = shared.presenter {
+            presenter.takeStats(completion: completion)
+        } else {
+            completion(nil)
+        }
+    }
+}
+
+extension MetalPlayView {
+    /// A seek is starting: what was handed to the renderer ahead of time is stale. Any thread.
+    nonisolated func timelineWillJump() {
+        shared.presenter?.timelineJumped(removeImage: false)
+    }
+
+    /// Main thread. Decides which mode runs and hands the layer over.
+    private func reconcilePresentationMode() {
+        var want = requestedPresentationMode
+        if want == .timestamped {
+            if presentationFallbackReason != nil {
+                want = .displayLink
+            } else if !options.isUseDisplayLayer() {
+                presentationFallbackReason = "the player is not using the display layer"
+                want = .displayLink
+            } else if !TimestampedPresentation.isAvailable {
+                presentationFallbackReason = "it needs a newer OS"
+                want = .displayLink
+            }
+        }
+        guard want != activePresentationMode else { return }
+        if want == .timestamped {
+            if enterTimestampedMode() {
+                activePresentationMode = .timestamped
+            } else {
+                presentationFallbackReason = "no timebase could be created"
+            }
+        } else {
+            activePresentationMode = .displayLink
+            leaveTimestampedMode()
+        }
+    }
+
+    private func enterTimestampedMode() -> Bool {
+        guard #available(iOS 17.4, tvOS 17.4, macOS 14.4, visionOS 1.1, *) else { return false }
+        let presenter: TimestampedVideoPresenter
+        if let existing = shared.presenter as? TimestampedVideoPresenter {
+            presenter = existing
+        } else {
+            let sharedState = self.shared
+            let created = TimestampedVideoPresenter(
+                onFrame: { frame, pixelBuffer in
+                    // Frame pump's queue.
+                    sharedState.noteFrame(frame, pixelBuffer: pixelBuffer)
+                },
+                onFormat: { [weak self] fps, isDovi, formatDescription in
+                    // Frame pump's queue. Display-mode matching is main-thread work and not
+                    // urgent.
+                    Task { @MainActor [weak self] in
+                        guard let self, self.activePresentationMode == .timestamped else { return }
+                        self.isDovi = isDovi
+                        self.fps = fps
+                        self.formatDescription = formatDescription
+                    }
+                },
+                onIneligible: { [weak self] reason in
+                    // Frame pump's queue: it met a frame the display layer cannot take and left
+                    // it in the queue for the display-link loop.
+                    Task { @MainActor [weak self] in
+                        guard let self, self.activePresentationMode == .timestamped else { return }
+                        self.presentationFallbackReason = reason
+                        self.reconcilePresentationMode()
+                    }
+                }
+            )
+            guard let created else { return false }
+            shared.setPresenter(created)
+            presenter = created
+        }
+        displayLink.isPaused = true
+        lastTickTime = 0
+        firstTickTime = 0
+        if displayView.isHidden {
+            displayView.isHidden = false
+            metalView.isHidden = true
+            metalView.clear()
+        }
+        displayView.displayLayer.controlTimebase = presenter.timebase
+        presenter.attach(renderer: displayView.displayLayer.sampleBufferRenderer, source: renderSource, options: options,
+                         rate: Double(shared.playbackRate), playing: wantsPlayback)
+        return true
+    }
+
+    private func leaveTimestampedMode() {
+        // Waits for the pump's queue: after this line the pump no longer touches the renderer,
+        // and the display-link loop is the only user of the layer again.
+        shared.presenter?.detach()
+        displayView.displayLayer.controlTimebase = AVSampleBufferDisplayView.makeImmediateTimebase()
+        // The pump described the frames itself; let the loop decide afresh whether the layer
+        // has to be rebuilt for the next one.
+        formatDescription = nil
+        displayLink.isPaused = !wantsPlayback
     }
 }
 
@@ -393,13 +657,20 @@ class AVSampleBufferDisplayView: UIView {
         #if !canImport(UIKit)
         layer = AVSampleBufferDisplayLayer()
         #endif
+        displayLayer.controlTimebase = AVSampleBufferDisplayView.makeImmediateTimebase()
+    }
+
+    /// The timebase upstream gives the layer for display-immediately frames: host clock, from
+    /// zero, running. (Bass Player patch: factored out so the layer can be given it back when
+    /// timestamped mode ends.)
+    static func makeImmediateTimebase() -> CMTimebase? {
         var controlTimebase: CMTimebase?
         CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault, sourceClock: CMClockGetHostTimeClock(), timebaseOut: &controlTimebase)
         if let controlTimebase {
-            displayLayer.controlTimebase = controlTimebase
             CMTimebaseSetTime(controlTimebase, time: .zero)
             CMTimebaseSetRate(controlTimebase, rate: 1.0)
         }
+        return controlTimebase
     }
 
     @available(*, unavailable)
