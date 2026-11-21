@@ -53,12 +53,26 @@ enum FFmpegConfig {
 /// KSOptions with 3D awareness: when one eye of a packed frame is shown on a flat display,
 /// report the un-squeezed aspect so the picture isn't stretched.
 final class BassPlayerOptions: KSOptions {
+    // Set on the main thread; `customizeDar` is called on the main thread by the display-link
+    // loop and on the frame pump's queue in timestamped mode, hence the lock.
+    private let lock = NSLock()
+    private var _stereo: StereoFormat = .mono
+    private var _cropToOneEye = false
+
     /// Stereo packing of the current file, and whether the flat view should crop to one eye.
-    var stereo: StereoFormat = .mono
-    var cropToOneEye = false
+    var stereo: StereoFormat {
+        get { lock.withLock { _stereo } }
+        set { lock.withLock { _stereo = newValue } }
+    }
+
+    var cropToOneEye: Bool {
+        get { lock.withLock { _cropToOneEye } }
+        set { lock.withLock { _cropToOneEye = newValue } }
+    }
 
     override func customizeDar(sar: CGSize, par: CGSize) -> CGSize? {
-        guard cropToOneEye, stereo.isPacked, par.width > 0, par.height > 0 else { return nil }
+        let (stereo, crop) = lock.withLock { (_stereo, _cropToOneEye) }
+        guard crop, stereo.isPacked, par.width > 0, par.height > 0 else { return nil }
         let aspect = stereo.displayAspect(frameWidth: Double(par.width), frameHeight: Double(par.height))
         return CGSize(width: aspect * 1000, height: 1000)
     }
@@ -164,9 +178,11 @@ final class FFmpegSession: ObservableObject {
 
     private lazy var doviRenderer = DoviFrameRenderer()
 
-    /// Frames handed to the renderer; the sink runs on the main thread, as does `poll`.
-    private final class FrameCounter { var count = 0 }
-    private let frameCounter = FrameCounter()
+    /// What the frame-pacing choice came to, as last logged ("timestamped", "display link …").
+    private var pacingDescription = ""
+    /// Mode, frames handed over and the last `render:` line, for the simulator tests' probe.
+    private(set) var pacingProbe = "mode=- handed=0 render=-"
+    private var lastRenderLine = "-"
     private var stallFrameCount = -1
     private var stallSince = Date()
     private var stallPosition = 0.0
@@ -176,12 +192,12 @@ final class FFmpegSession: ObservableObject {
 
     /// Mirror every rendered frame to the immersive screen while it is open. Dolby Vision
     /// profile 5 frames are colour-mapped first (the system renderer can't interpret IPT).
+    /// Only the display-link loop calls the sink, so `applyFramePacing` keeps the player in
+    /// that mode while the screen is open.
     private func installFrameSink(on view: MetalPlayView) {
         guard sinkView !== view else { return }
         sinkView = view
-        let counter = frameCounter
         view.frameSink = { [weak self] frame, pixelBuffer, time in
-            counter.count &+= 1
             guard let push = ImmersiveScreenBridge.shared.pushFrame else { return }
             var dovi: MTLTexture?
             if DoviFrameRenderer.needsMapping(frame), let self {
@@ -190,6 +206,35 @@ final class FFmpegSession: ObservableObject {
             push(pixelBuffer, time, dovi)
         }
         DiagLog.log("frame sink installed", "player")
+    }
+
+    /// Ask the player for the frame-presentation mode chosen in Settings → Diagnostics, and log
+    /// what it came to whenever that changes. Called at every poll and when the cinema screen
+    /// opens or closes, so the switch also works on a film that is playing.
+    private func applyFramePacing() {
+        guard let view = (coordinator?.playerLayer?.player as? KSMEPlayer)?.videoOutput as? MetalPlayView else { return }
+        // The cinema screen is fed through the frame sink, which timestamped mode bypasses.
+        let cinemaOpen = ImmersiveScreenBridge.shared.pushFrame != nil
+        let wanted = FramePacing.wantsTimestamped
+        let request: MetalPlayView.PresentationMode = wanted && !cinemaOpen ? .timestamped : .displayLink
+        if view.requestedPresentationMode != request { view.requestedPresentationMode = request }
+        let description: String
+        if view.activePresentationMode == .timestamped {
+            description = "timestamped"
+        } else if wanted, cinemaOpen {
+            description = "display link (timestamped is on, but the cinema screen takes its frames from the display-link loop)"
+        } else if wanted, let reason = view.presentationFallbackReason {
+            description = "display link (timestamped is on, but \(reason))"
+        } else if wanted {
+            description = "display link (timestamped is on and starting)"
+        } else {
+            description = "display link"
+        }
+        if description != pacingDescription {
+            pacingDescription = description
+            DiagLog.log("frame pacing: \(description)", "player")
+        }
+        pacingProbe = "mode=\(view.activePresentationMode.rawValue) handed=\(view.framesHandedOver) render=\(lastRenderLine)"
     }
 
     /// Human-readable Dolby Vision status for the UI.
@@ -302,6 +347,11 @@ final class FFmpegSession: ObservableObject {
         mainProbe.start()
         lastRenderLog = Date()
         lastDroppedFrames = 0
+        pacingDescription = ""
+        _ = MainThreadStallTest.shared.takeCount()
+        ImmersiveScreenBridge.shared.consumerChanged = { [weak self] in
+            MainActor.assumeIsolated { self?.applyFramePacing() }
+        }
         if let item, let library {
             library.noteStarted(item)
             // YouTube resume needs the backported mov/hls seek fixes in Vendor/FFmpegKit.
@@ -312,7 +362,12 @@ final class FFmpegSession: ObservableObject {
         pollTimer?.invalidate()
         // KSVideoPlayerView owns the state callbacks, so we poll briefly until the engine exists.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.poll()
+                // After the poll, so the poll's own timing in the `render:` line stays honest.
+                MainThreadStallTest.shared.stallIfDue(playing: self.coordinator?.playerLayer?.state == .bufferFinished)
+            }
         }
     }
 
@@ -348,6 +403,7 @@ final class FFmpegSession: ObservableObject {
         pollTimer?.invalidate()
         pollTimer = nil
         mainProbe.stop()
+        ImmersiveScreenBridge.shared.consumerChanged = nil
         tap.detach()
         tapInstalled = false
         if let item, let library, lastKnownPosition > 0 {
@@ -398,7 +454,8 @@ final class FFmpegSession: ObservableObject {
     private func watchForVideoStall(layer: KSPlayerLayer, player: KSMEPlayer) {
         guard item?.source == .youtube else { return }
         let now = Date()
-        let frames = frameCounter.count
+        // Frames handed to the renderer, by the display-link loop or by the timestamped pump.
+        let frames = sinkView?.framesHandedOver ?? 0
         let position = player.currentPlaybackTime
         guard layer.state == .bufferFinished, sinkView != nil, position.isFinite,
               UIApplication.shared.applicationState == .active,
@@ -430,10 +487,17 @@ final class FFmpegSession: ObservableObject {
         layer.reopen()
     }
 
-    /// Every 10 s while playing: how often the display link really fired, the longest gap
-    /// between ticks, frames shown and dropped, and what this poll costs. A 60 fps video
-    /// needs at least 60 ticks a second with no gap much over 17 ms; anything less shows as
-    /// judder however fast the decoder is.
+    /// Every 10 s while playing, one `render:` line that starts with the presentation mode.
+    ///
+    /// Display link: how often the link really fired, the longest gap between ticks, frames
+    /// shown and dropped. A 60 fps video needs at least 60 ticks a second with no gap much
+    /// over 17 ms; anything less shows as judder however fast the decoder is.
+    ///
+    /// Timestamped: frames enqueued and how far ahead, what the pump dropped itself, what the
+    /// system says it displayed and dropped (`AVVideoPerformanceMetrics`), the renderer's
+    /// state and how the timebase followed the audio clock.
+    ///
+    /// Both end with the main-thread probe, this poll's cost and the stall test's count.
     private func logRenderStats(layer: KSPlayerLayer, player: KSMEPlayer) {
         let now = Date()
         guard now.timeIntervalSince(lastRenderLog) >= 10, let view = player.videoOutput as? MetalPlayView else { return }
@@ -445,12 +509,44 @@ final class FFmpegSession: ObservableObject {
         let worst = pollWorst
         pollWorst = 0; pollTotal = 0; pollCount = 0
         let main = mainProbe.take()
-        guard r.ticks > 1, r.span > 0, layer.state == .bufferFinished else { return }
-        DiagLog.log(String(format: "render: %d ticks in %.1f s (%.1f/s, link %.0f Hz) · %d gaps over 25 ms, longest %.0f ms · longest draw %.1f ms · %d frames shown · %d dropped · sync %+.0f ms · main thread: worst wait %.0f ms, %d of %d probes over 50 ms · poll worst %.1f ms",
-                           r.ticks, r.span, Double(r.ticks - 1) / r.span, r.linkInterval > 0 ? 1 / r.linkInterval : 0,
-                           r.lateTicks, r.longestGap * 1000, r.longestDraw * 1000, r.presented, Int(newDrops),
-                           (player.dynamicInfo?.audioVideoSyncDiff ?? 0) * 1000,
-                           main.worst * 1000, main.over50, main.total, worst * 1000), "player")
+        let stalls = MainThreadStallTest.shared.takeCount()
+        var tail = String(format: "main thread: worst wait %.0f ms, %d of %d probes over 50 ms · poll worst %.1f ms",
+                          main.worst * 1000, main.over50, main.total, worst * 1000)
+        if MainThreadStallTest.shared.isOn || stalls > 0 {
+            tail += " · stall test: \(stalls) × \(MainThreadStallTest.stallMilliseconds) ms"
+        }
+        guard layer.state == .bufferFinished else { return }
+        if view.activePresentationMode == .timestamped {
+            view.takeTimestampedStats { [weak self] t in
+                guard let t, t.span > 0 else { return }
+                let system: String
+                if let frames = t.systemFrames, let systemDropped = t.systemDropped {
+                    system = String(format: "system: %d frames, %d dropped, %d corrupted, frame delay %+.1f ms",
+                                    frames, systemDropped, t.systemCorrupted ?? 0, (t.systemFrameDelay ?? 0) * 1000)
+                } else {
+                    system = "system: no metrics"
+                }
+                let clock = t.followsAudio
+                    ? String(format: "clock: audio, %d readings, error mean %+.1f ms, worst %+.1f ms, %d trims up to %.2f %%, %d resyncs",
+                             t.clockSamples, t.clockErrorMean * 1000, t.clockErrorWorst * 1000, t.trims, t.maxTrim * 100, t.resyncs)
+                    : "clock: free-running (no audio to follow)"
+                let line = String(format: "render: mode timestamped · %d enqueued in %.1f s (%.1f/s) · lookahead %.0f–%.0f ms · pump: %d late dropped, %d late kept, %d out of order, %d unwrappable, not ready %d, longest gap %.0f ms · %@ · renderer %@%@, %d flushes, %d timeline resets · %@ · rate %.3f · ",
+                                  t.enqueued, t.span, Double(t.enqueued) / t.span, t.lookaheadMin * 1000, t.lookaheadMax * 1000,
+                                  t.lateDropped, t.lateKept, t.outOfOrder, t.unwrappable, t.notReady, t.longestPumpGap * 1000,
+                                  system, t.rendererStatus, t.rendererError.map { " (\($0))" } ?? "", t.rendererFlushes, t.timelineResets,
+                                  clock, t.timebaseRate) + tail
+                self?.lastRenderLine = line
+                DiagLog.log(line, "player")
+            }
+            return
+        }
+        guard r.ticks > 1, r.span > 0 else { return }
+        let line = String(format: "render: mode display-link · %d ticks in %.1f s (%.1f/s, link %.0f Hz) · %d gaps over 25 ms, longest %.0f ms · longest draw %.1f ms · %d frames shown · %d dropped · sync %+.0f ms · ",
+                          r.ticks, r.span, Double(r.ticks - 1) / r.span, r.linkInterval > 0 ? 1 / r.linkInterval : 0,
+                          r.lateTicks, r.longestGap * 1000, r.longestDraw * 1000, r.presented, Int(newDrops),
+                          (player.dynamicInfo?.audioVideoSyncDiff ?? 0) * 1000) + tail
+        lastRenderLine = line
+        DiagLog.log(line, "player")
     }
 
     private func poll() {
@@ -479,6 +575,7 @@ final class FFmpegSession: ObservableObject {
         }
         guard let me = player as? KSMEPlayer else { return }
         if let view = me.videoOutput as? MetalPlayView { installFrameSink(on: view) }
+        applyFramePacing()
         watchForVideoStall(layer: layer, player: me)
         logRenderStats(layer: layer, player: me)
         let mvc = me.tracks(mediaType: .video).contains { ($0 as? FFmpegAssetTrack)?.decodesStereoSideBySide == true }
@@ -613,7 +710,15 @@ final class ImmersiveScreenBridge {
     static let shared = ImmersiveScreenBridge()
     /// Set by the cinema screen while it is open: (decoded frame, presentation time,
     /// Dolby-Vision-mapped texture if the frame needed mapping).
-    var pushFrame: ((PixelBufferProtocol, CMTime, MTLTexture?) -> Void)?
+    var pushFrame: ((PixelBufferProtocol, CMTime, MTLTexture?) -> Void)? {
+        didSet {
+            if (pushFrame == nil) != (oldValue == nil) { consumerChanged?() }
+        }
+    }
+
+    /// Called on the main thread when the cinema screen starts or stops taking frames: the
+    /// player must be in display-link mode while it does (see `FFmpegSession.applyFramePacing`).
+    var consumerChanged: (() -> Void)?
     /// Packing of the current film; the screen splits packed frames into two eyes.
     var stereoFormat: StereoFormat = .mono
     /// Flat screen or VR sphere.

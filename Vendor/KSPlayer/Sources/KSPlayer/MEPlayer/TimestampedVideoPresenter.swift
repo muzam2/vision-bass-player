@@ -348,9 +348,9 @@ final class TimestampedVideoPresenter: TimestampedPresenting, @unchecked Sendabl
                 snapshot.rendererError = "\(error.domain) \(error.code)"
             }
             let pending = PendingStats(snapshot)
-            let deliver: @Sendable (AVVideoPerformanceMetrics?) -> Void = { [weak self] metrics in
+            let deliver: @Sendable (AVVideoPerformanceMetrics?) -> Void = { metrics in
                 // Pump queue.
-                guard let self, !pending.delivered else { return }
+                guard !pending.delivered else { return }
                 pending.delivered = true
                 if let metrics {
                     let now = (frames: metrics.totalNumberOfFrames, dropped: metrics.numberOfDroppedFrames,
