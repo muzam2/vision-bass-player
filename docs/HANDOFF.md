@@ -85,6 +85,28 @@ probe shows short waits while ticks stay sparse, the display link itself is bein
 and the frame loop has to move off it** (enqueue frames ahead with timestamps on the display
 layer's timebase, or run the link on its own thread).
 
+**Headset results, night of 2026-11-20 to 21 (build `8045ac0`, all merged to `main`).**
+- *Bass:* the Vision Pro as sender works. The owner hears it; ~10,000 packets per video sent,
+  0 dropped, send queue peak 5–8, receiver buffer 40–80 samples, 0–2 underruns a minute (raise
+  Receiver delay 20–40 ms if gaps are audible). The receiver's `dropped` figure jumps when a new
+  stream starts (sequence restarts at 0, 16-bit counter); it is steady during a stream.
+- *Judder:* 1440p60 VP9 in a window went from 20–40 display-link ticks/s and half the frames
+  lost to 89.9 ticks/s, no gap over 25 ms, 600 of 600 frames, 0 dropped, main-thread waits of
+  2–10 ms. The cause was the app starving its own main thread; the three round-2 changes went
+  in together, so which mattered most is unknown. Research report with a prioritised redesign
+  (timestamped enqueue-ahead off the main thread, as Apple documents and VLC 4 does):
+  `/home/remoteuser/reports/visionOS video player judder.md` on the Linux box, notes beside it
+  in `research_notes/`. That redesign is the next piece of work.
+- *YouTube freeze:* a real reset at 00:07:50 was recovered by the watchdog's reopen: picture
+  stopped 00:08:23.9, reopen at 00:08:27.5, playing again 1.4 s later, bass tap survived, no
+  repeat for the remaining four minutes. Seeking never recovers this state (the owner's manual
+  seeks and three automatic ones all failed on the earlier build). **Layer 1 (HTTP resume) has
+  never fired** in two resets although the log proves the options reach nested opens
+  (`nested open N with reconnect options: manifest.googlevideo.com`), so googlevideo's segment
+  replies are evidently not treated as resumable; the real cure would be patching `hls.c` to
+  retry a segment whose read fails instead of moving on.
+- *Not exercised:* a reset on the audio connection; Apple TV with any of this.
+
 ## 1. The owner and their constraints
 
 - Physician, hobbyist developer, comfortable with Linux, Docker, PlatformIO, OpenWrt.
