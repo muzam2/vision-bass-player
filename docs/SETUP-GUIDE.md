@@ -180,6 +180,21 @@ output level a few dB in firmware.
 buffer" should sit around 60–80 samples and not drift, "Underruns" should not climb while
 playing. If buffer drifts steadily, the receiver's drift control isn't keeping up; tell me.
 
+**Smoother video, experimental** (Settings → Diagnostics, FFmpeg player only):
+
+- **Timestamped frame pacing**: off = as before. On = the app queues each picture a moment
+  ahead and the system shows it in time with the sound, so a busy app should no longer cost
+  frames. You can flip it while a film plays; it takes effect within a second. The cinema
+  screen, Dolby Vision profile 5 and some 10-bit video keep the old way. If the picture
+  stutters, freezes or drifts from the sound with it on, switch it off and send the log.
+- **Stall test (blocks the main thread)**: for testing only. It freezes the app's controls for
+  a fifth of a second every two seconds while a film plays, to see whether the picture
+  survives. It is always off again when the app starts.
+
+To compare the two: turn on "Stream log live to computer", play a 60 fps video in a window,
+turn the stall test on, watch for 30 s, turn timestamped frame pacing on, watch for 30 s
+more. Then switch the stall test off.
+
 ---
 
 ## 9. Using two devices with one sub

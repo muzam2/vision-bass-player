@@ -42,7 +42,8 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
   — our copy is the source of truth) and patched for Dolby Vision P5, one-eye crop, a frame
   sink for the cinema screen, FFmpeg 9 API, the MVC decoder (`MEPlayer/Edge264Decode.swift`)
   and a few lifecycle fixes (`keepsPlayerWhenViewGoesAway`, no player resurrection in
-  `updateUIView`, display link at panel rate on visionOS). Patched files: HANDOFF §3.
+  `updateUIView`, display link at panel rate on visionOS, timestamped presentation).
+  Patched files: HANDOFF §3.
 - Dolby Vision P5 needs `KSOptions.asynchronousDecompression = false` (FFmpeg hwaccel path),
   otherwise the RPU side data never reaches the frame. P7/P8 play as HDR10/HLG base layer.
 - `KSVideoPlayerView` overwrites `coordinator.onStateChanged`; `FFmpegSession` therefore polls
@@ -113,6 +114,20 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
   rate (a `@Published` assigned on a timer, even with an unchanged value) drops frames on
   60 fps video. Fast-changing values get their own small `ObservableObject` observed by a leaf
   view (`BassMeter`/`BassTapLabel`). The `render:` log line every 10 s is the measurement.
+- Timestamped frame pacing (2026-11-21, Settings → Diagnostics, off by default, **not yet
+  proven on the headset**): `MetalPlayView.requestedPresentationMode = .timestamped` makes a
+  pump on its own queue enqueue frames up to 150 ms ahead with their media timestamps on the
+  display layer's renderer, under a control timebase that follows the audio clock
+  (`MEPlayer/TimestampedVideoPresenter.swift`). The display-link loop stays the default and
+  the fallback for the cinema screen (`frameSink` is only called by the loop), Dolby Vision
+  P5 and 10-bit software frames. The pump must never read state the main thread updates:
+  the audio clock comes from readings `MEPlayerItem.setAudio` stores on the audio render
+  thread. `render:` lines start with `mode display-link` or `mode timestamped`. The stall
+  test switch blocks the main thread on purpose and is never persisted. HANDOFF §0 has the
+  acceptance test.
+- The renderer calls the pump uses (`enqueue`, `isReadyForMoreMediaData`, `flush`, `status`)
+  are deprecated from OS 27.0 for `AVSampleBufferVideoRenderer.Receiver` (27.0+ only, through
+  a render synchronizer). At deployment targets 26.0 / 18.0 they are correct and warning-free.
 - BLE sending: the engine tap delivers 100 ms buffers, i.e. five bass packets at once, and
   CoreBluetooth accepts one write-without-response per turn of its delegate queue. `BassLink`
   therefore queues packets and paces them out every 20 ms; sending a burst directly loses four
