@@ -39,6 +39,74 @@ packets dropped. With the default 60 ms buffer one PC-driven run underran mid-st
 Receiver delay 80 ms it did not. **Still untested: the headset or Apple TV as the sender.**
 Full record, crash log and repeat steps: `docs/RECEIVER-BRINGUP.md`.
 
+**Headset as sender, first try 2026-11-20:** the Vision Pro found BassSub, connected and the tap
+ran (bass peak up to −3 dB), but the owner heard no bass. The log showed `sent 407 dropped 1628`:
+exactly one packet sent per tap buffer. The engine tap delivers 100 ms buffers (4800 frames at
+48 kHz), so `BassExtractor` emits five packets back to back, and `canSendWriteWithoutResponse`
+goes false after the first write until CoreBluetooth's delegate has run on the same queue. The
+receiver got 20 ms of audio every 100 ms. Fix (branch `fix/ble-send-pacing`): `BassLink` queues
+packets and a 20 ms timer sends them one at a time, with `peripheralIsReady` draining any
+backlog; the 10 s log line now adds `queue peak` and the receiver's buffer / underruns / dropped.
+The pacing puts about 80–100 ms into the bass path, so expect Bass lead near 180 ms (estimate).
+**Not yet confirmed on the headset.**
+
+**Judder (analysed 2026-11-20 from the live log, all sessions since 2026-11-08):** KSPlayer's
+`drop next frame` warnings are not a decoder problem. At every drop 12–16 decoded frames were
+queued, hardware-decoded Plex/Jellyfin/H.264 content drops too, and the same 1440p60 VP9 format
+also plays for minutes with none. The frame loop (`MetalPlayView.renderFrame`, a `CADisplayLink`
+on the main run loop) shows at most one frame per tick, so at 60 fps a missed tick is a lost
+frame once the lag reaches four frames (`KSOptions.videoClockSync`). Two patterns: (A) 60 fps
+video, 2.1–2.7 drops/s, 0.07–0.08 s late, phase-locked to a 0.5 s period (concentration
+0.97–0.99 over four sessions) = `FFmpegSession.poll`, which assigned four `@Published`
+properties every time and so redrew everything observing the session; (B) 2026-11-20 only,
+windowed playback after 22:02: up to ~18 drop events/s, runs of 170–296 late frames, lag
+growing past 1 s, 24/30 fps content affected too, clean in the cinema (no windows). Cause of
+(B) not established; new that day were the BLE link publishing counters and receiver status to
+the UI (~6/s, `BassLink` is an `@EnvironmentObject` of RootView and the player) and live log
+streaming. Branch `fix/judder-measure`: the poll publishes only on change, the bass level moved
+to `BassMeter` (only `BassTapLabel` redraws), and a `render:` log line every 10 s gives ticks/s,
+the link's refresh rate, longest gap between ticks, frames shown/dropped and the poll's cost.
+**Read those lines before changing anything else**; if (B) persists with long gaps, split
+`BassLink`'s fast counters into their own object the same way.
+
+**First measurements, 2026-11-20 23:29–23:47 (build `c7e0418`).** Cinema: 68–83 ticks/s,
+0 dropped at 30 and 60 fps. Window, 4K 30 fps: 56–61 ticks/s with a ~95 ms gap in every
+10 s, 0 dropped (the same video dropped ~255 events/min before). Window, 1440p60: **20–40
+ticks/s falling over three minutes, gaps of 250–350 ms, ~30 of 60 frames dropped every
+second, A/V sync sliding to −8 s**, with the decoded queue full (12–13) and the tick itself
+taking ~1 ms. So the display link's callback is being starved or not delivered, not slow.
+Branch `fix/judder-round2` removes the three things known to run on or block the main thread
+at a steady rate: `BassLink`'s counters move to `BassLinkStats` (views wrap them in
+`BassStatsReader`), `DiagLog.write` hands lines to a queue instead of taking its lock on the
+caller's thread, and KSPlayer no longer logs a line per dropped frame from the frame loop.
+The `render:` line gains the number of gaps over 25 ms and a main-thread probe (a block
+queued every 20 ms from another thread: worst wait and how many waited over 50 ms). **If the
+probe shows short waits while ticks stay sparse, the display link itself is being throttled
+and the frame loop has to move off it** (enqueue frames ahead with timestamps on the display
+layer's timebase, or run the link on its own thread).
+
+**Headset results, night of 2026-11-20 to 21 (build `8045ac0`, all merged to `main`).**
+- *Bass:* the Vision Pro as sender works. The owner hears it; ~10,000 packets per video sent,
+  0 dropped, send queue peak 5–8, receiver buffer 40–80 samples, 0–2 underruns a minute (raise
+  Receiver delay 20–40 ms if gaps are audible). The receiver's `dropped` figure jumps when a new
+  stream starts (sequence restarts at 0, 16-bit counter); it is steady during a stream.
+- *Judder:* 1440p60 VP9 in a window went from 20–40 display-link ticks/s and half the frames
+  lost to 89.9 ticks/s, no gap over 25 ms, 600 of 600 frames, 0 dropped, main-thread waits of
+  2–10 ms. The cause was the app starving its own main thread; the three round-2 changes went
+  in together, so which mattered most is unknown. Research report with a prioritised redesign
+  (timestamped enqueue-ahead off the main thread, as Apple documents and VLC 4 does):
+  `/home/remoteuser/reports/visionOS video player judder.md` on the Linux box, notes beside it
+  in `research_notes/`. That redesign is the next piece of work.
+- *YouTube freeze:* a real reset at 00:07:50 was recovered by the watchdog's reopen: picture
+  stopped 00:08:23.9, reopen at 00:08:27.5, playing again 1.4 s later, bass tap survived, no
+  repeat for the remaining four minutes. Seeking never recovers this state (the owner's manual
+  seeks and three automatic ones all failed on the earlier build). **Layer 1 (HTTP resume) has
+  never fired** in two resets although the log proves the options reach nested opens
+  (`nested open N with reconnect options: manifest.googlevideo.com`), so googlevideo's segment
+  replies are evidently not treated as resumable; the real cure would be patching `hls.c` to
+  retry a segment whose read fails instead of moving on.
+- *Not exercised:* a reset on the audio connection; Apple TV with any of this.
+
 ## 1. The owner and their constraints
 
 - Physician, hobbyist developer, comfortable with Linux, Docker, PlatformIO, OpenWrt.
@@ -482,8 +550,34 @@ Ordered by likelihood of needing a fix.
    buffer requirement 1.0 s. Expect ~1–1.5 s.
    Seen once: a TCP reset from googlevideo mid-segment → FFmpeg's `reconnect_streamed` restarted
    the segment at byte 0 → duplicated bytes → VP9 header errors → video frozen 12 s, audio on
-   (self-recovered at the next keyframe). YouTube sessions now set `reconnect=1,
-   reconnect_streamed=0, reconnect_on_network_error=1, reconnect_delay_max=2`.
+   (self-recovered at the next keyframe). YouTube sessions then set `reconnect=1,
+   reconnect_streamed=0, reconnect_on_network_error=1, reconnect_delay_max=2`. **That did
+   nothing:** FFmpeg's HLS demuxer gives its segment connections only a fixed list of options
+   (`ffio_copy_url_options` plus `seekable`), so `reconnect*` in `formatContextOptions` never
+   reaches them. It happened again on 2026-11-20 (`IO error: Connection reset by peer` while
+   buffering ahead; 34 s later ~450 VP9 header errors in 2 s, then no video frames at all with
+   audio and the bass tap running on). Cause in `hls.c`: a segment read error is treated as the
+   end of the segment, so the fMP4 parser gets a cut-off fragment followed by the next segment.
+   Fix on branch `fix/youtube-stall-recovery`, two layers. (1) `KSOptions.reconnectNestedHTTP`:
+   `MEPlayerItem` wraps the format context's `io_open` and adds `reconnect`,
+   `reconnect_on_network_error`, `reconnect_delay_max=2` to every nested HTTP open, so `http.c`
+   resumes with a Range request (needs Content-Length and range support; look for `Will
+   reconnect at N` in the log). Also `seg_max_retry=2` for segments that fail to open.
+   (2) `FFmpegSession.watchForVideoStall` (YouTube only): no frame at the renderer for 3 s
+   while playing, on screen and the clock moved 2 s → seek to the current position, at most
+   three times in two minutes; logs `video stalled at …`.
+   **First real reset with that build, 2026-11-20 23:39:** layer 1 did nothing (no `Will
+   reconnect at` / `Will retry at` line after `IO error: Connection reset by peer`; unknown
+   whether the options are not reaching the connection or googlevideo's reply is treated as
+   non-seekable), the picture stopped 38 s later with a single VP9 header error, the watchdog
+   fired on time, and **three seeks did not bring one frame back** (state went buffering →
+   playing each time). Branch `fix/stall-reopen`: the watchdog now calls
+   `KSPlayerLayer.reopen()` (new, vendored patch: stop, `player.replace` with the same URL,
+   prepare; `set(url:)` is a no-op for an unchanged URL) with `startPlayTime` at the segment
+   start, i.e. a fresh demuxer and decoders in the same player. `MEPlayerItem` also logs the
+   first two nested opens (`nested open N with reconnect options: <host>`) so the next log
+   shows whether layer 1 is applied at all. Not yet seen working. The watchdog does not cover
+   a reset on the audio connection, and whether the bass tap survives a reopen is unchecked.
    **Look to Scroll** (visionOS 26): `View.lookToScroll()` on RootView and PlayerScreen; the
    user must also enable it in the headset's Settings.
 1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),

@@ -11,8 +11,10 @@ Owner has **no Mac**: everything is compiled by GitHub Actions and sideloaded wi
 Apple ID (Vision Pro: SideStore 0.7.2 installs the IPA downloaded in Safari from the LAN
 helper `tools/diag_receiver.py`; HANDOFF §0 has the exact loop). Installed on the headset
 2026-11-08 and iterated all day with a live log stream. The ESP32-A1S receiver arrived
-2026-11-20 and plays PC-sent test audio through the owner's sub (`tools/receiver_test.py`,
-record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untested.
+2026-11-20 (`docs/RECEIVER-BRINGUP.md`, `tools/receiver_test.py`). Since the night of
+2026-11-20 the headset drives it: the owner hears bass, 60 fps video plays in a window with
+no dropped frames, and a YouTube connection reset recovers by itself (HANDOFF §0, "Headset
+results"). Read the `render:` and `bass` lines in the live log before changing playback code.
 
 ## Build & verify
 - Never try to build Swift locally; push and read Actions. `build.yml` (visionOS + tvOS unsigned
@@ -102,6 +104,19 @@ record in `docs/RECEIVER-BRINGUP.md`); the headset as the sender is still untest
   `NimBLEDevice::init` (`esp_bt_controller_init` → `ESP_ERR_INVALID_STATE`). Firmware bugs
   like this only show on the board, never in CI. `platformio.ini` pins the board-tested pair
   (espressif32 8.0.0, NimBLE-Arduino 1.4.3); bump one at a time and test on hardware.
+- FFmpeg's HLS demuxer does not pass `formatContextOptions` on to its segment connections;
+  HTTP options for segments go through `KSOptions.reconnectNestedHTTP` (an `io_open` wrapper
+  in `MEPlayerItem`). A segment read error is silently treated as end of segment, which
+  corrupts fMP4 parsing; `FFmpegSession.watchForVideoStall` is the safety net for YouTube.
+- Judder is main-thread starvation, not decoding: `MetalPlayView`'s display link runs on the
+  main run loop and shows one frame per tick, so anything that redraws SwiftUI at a steady
+  rate (a `@Published` assigned on a timer, even with an unchanged value) drops frames on
+  60 fps video. Fast-changing values get their own small `ObservableObject` observed by a leaf
+  view (`BassMeter`/`BassTapLabel`). The `render:` log line every 10 s is the measurement.
+- BLE sending: the engine tap delivers 100 ms buffers, i.e. five bass packets at once, and
+  CoreBluetooth accepts one write-without-response per turn of its delegate queue. `BassLink`
+  therefore queues packets and paces them out every 20 ms; sending a burst directly loses four
+  packets in five ("sent N dropped 4N" in the log, no audible bass).
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and
   git-ignored. `.usda` is excluded from the folder source and added as a resource for visionOS.
 
