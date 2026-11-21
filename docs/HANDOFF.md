@@ -293,6 +293,14 @@ room dim / flipV / HDR / brightness / contrast / saturation / HDR boost.
   the first on-device crash, reproduced in the simulator by the E2E Plex test); rebuilds the
   graph cleanly on retry.
 - `Package.swift` — tests removed; FFmpegKit comes from the local `../FFmpegKit` package.
+- `MEPlayer/MEPlayerItemTrack.swift`, `MEPlayer/Model.swift` (2026-11-21) — seek epoch on
+  packets; the decode thread keeps the packet that arrives while a flush is pending instead of
+  dropping it (the keyframe after a seek; found with a decode-thread trace on the headset: 6 of
+  22 seeks hit it, and all 22 then played).
+- `Metal/MetalRender.swift` (2026-11-21) — shader library from the package bundle first (the
+  main bundle's library is the app's `FrameConvert.metal`); the HDR VP9 crash on the headset.
+- `MEPlayer/AudioEnginePlayer.swift` (2026-11-21) — mixer → lead delay → output wired at the
+  output's hardware rate, not the source's.
 
 Timestamped frame pacing (2026-11-21, branch `frame-pacing-timestamped`; every change is
 marked "Bass Player patch" in the source):

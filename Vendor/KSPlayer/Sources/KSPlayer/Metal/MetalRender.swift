@@ -14,10 +14,15 @@ import simd
 class MetalRender {
     static let device = MTLCreateSystemDefaultDevice()!
     static let library: MTLLibrary = {
-        var library: MTLLibrary!
-        library = device.makeDefaultLibrary()
+        // Bass Player patch: KSPlayer's own shaders first. Upstream asked for the main bundle's
+        // default library and only fell back to the package's. The app has a Metal file of its
+        // own (Immersive/FrameConvert.metal), so the main bundle's library exists and holds none
+        // of these functions; every pipeline was then built with nil functions and Metal aborted
+        // the app on the first frame drawn through this path (10-bit software video such as
+        // YouTube's VP9 HDR, Dolby Vision profile 5). Seen on the headset 2026-11-21.
+        var library: MTLLibrary! = try? device.makeDefaultLibrary(bundle: .module)
         if library == nil {
-            library = try? device.makeDefaultLibrary(bundle: .module)
+            library = device.makeDefaultLibrary()
         }
         return library
     }()
@@ -161,6 +166,9 @@ class MetalRender {
         descriptor.colorAttachments[0].pixelFormat = KSOptions.colorPixelFormat(bitDepth: bitDepth)
         descriptor.vertexFunction = library.makeFunction(name: isSphere ? "mapSphereTexture" : "mapTexture")
         descriptor.fragmentFunction = library.makeFunction(name: fragmentFunction)
+        if descriptor.vertexFunction == nil || descriptor.fragmentFunction == nil {
+            KSLog("[video] Metal shader for \(fragmentFunction) not found in the shader library; the pipeline cannot be built")
+        }
         let vertexDescriptor = MTLVertexDescriptor()
         vertexDescriptor.attributes[0].format = .float4
         vertexDescriptor.attributes[0].bufferIndex = 0

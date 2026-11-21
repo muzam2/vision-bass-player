@@ -4,7 +4,9 @@ import Darwin
 /// Records why the previous run died, so the next launch can put it in the diagnostic log (the
 /// owner has no Mac, so device crash reports are hard to reach). Uncaught Objective-C exceptions
 /// (AVAudioEngine raises these) are written with their reason and call stack; fatal signals
-/// (Swift traps, aborts, bad memory access) with the signal number and a raw backtrace.
+/// (Swift traps, aborts, bad memory access) with the signal number and a raw backtrace. Standard
+/// error is kept in a file as well: system frameworks (Metal, Swift's own fatal errors) print
+/// the reason for an abort there and nowhere else.
 enum CrashCapture {
     fileprivate nonisolated(unsafe) static var fd: Int32 = -1
 
@@ -13,10 +15,27 @@ enum CrashCapture {
         return dir.appendingPathComponent("lastcrash.txt")
     }
 
+    private static var stderrURL: URL {
+        fileURL.deletingLastPathComponent().appendingPathComponent("laststderr.txt")
+    }
+
     /// Install the handlers and return what the previous run left behind, if anything.
     static func install() -> String? {
         let url = fileURL
-        let previous = (try? String(contentsOf: url, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var previous = (try? String(contentsOf: url, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // What the previous run printed on standard error, if it crashed; then send this run's
+        // standard error to the same file.
+        if let report = previous, !report.isEmpty, let data = try? Data(contentsOf: stderrURL), !data.isEmpty {
+            let tail = String(decoding: data.suffix(3000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !tail.isEmpty {
+                previous = report + "\nLast lines on standard error:\n" + tail
+            }
+        }
+        let errFile = open(stderrURL.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        if errFile >= 0 {
+            dup2(errFile, STDERR_FILENO)
+            close(errFile)
+        }
         fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
         NSSetUncaughtExceptionHandler { exception in
             let text = "Uncaught exception \(exception.name.rawValue): \(exception.reason ?? "(no reason)")\n"

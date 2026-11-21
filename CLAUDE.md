@@ -141,6 +141,19 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
   CoreBluetooth accepts one write-without-response per turn of its delegate queue. `BassLink`
   therefore queues packets and paces them out every 20 ms; sending a burst directly loses four
   packets in five ("sent N dropped 4N" in the log, no audible bass).
+- Seeking: `AsyncPlayerItemTrack.seek` empties the packet queue (which wakes the decode thread)
+  before it sets `state = .flush`, so the thread can be back in `pop` with the flush pending and
+  upstream then threw away the next packet: the keyframe of the new position. Every frame up to
+  the next keyframe failed ("Not all references are available"), the picture froze until the
+  stall watchdog reopened the stream; about three seeks in ten with FFmpeg 9.1, none seen with
+  9.0.2 (same code, different timing). The thread now flushes and keeps that packet; packets
+  carry a seek epoch so leftovers are still dropped. Log line: "[seek] first packet arrived with
+  a flush pending".
+- KSPlayer's Metal path (10-bit software frames such as YouTube VP9 HDR, Dolby Vision P5) must
+  load the package's shader library, not the main bundle's: the app has its own
+  `Immersive/FrameConvert.metal`, so `makeDefaultLibrary()` returns a library without KSPlayer's
+  functions and pipeline creation aborts the app (`MetalRender.library`). `CrashCapture` also
+  keeps standard error, where Metal and Swift print the reason for an abort.
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and
   git-ignored. `.usda` is excluded from the folder source and added as a resource for visionOS.
 

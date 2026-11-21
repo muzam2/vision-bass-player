@@ -221,11 +221,19 @@ public class AudioEnginePlayer: AudioOutput {
         engine.connect(nodes: nodes, format: audioFormat)
         // Bass Player patch: main mixer → lead delay → output, wired here while the engine is
         // stopped (see `leadDelayNode`).
+        // The format is the output's own rate (48 kHz on the headset), as it was when the engine
+        // connected the mixer to the output by itself. The mixer's output format at this point
+        // is only the source's rate (44.1 kHz for YouTube), and using it moved the rate
+        // conversion from the mixer to the output and the bass tap to 44.1 kHz.
         let mixerFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+        let hardwareRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        let graphFormat = AVAudioFormat(standardFormatWithSampleRate: hardwareRate > 0 ? hardwareRate : mixerFormat.sampleRate,
+                                        channels: mixerFormat.channelCount) ?? mixerFormat
         if audioFormat.channelCount <= 2, mixerFormat.sampleRate > 0, mixerFormat.channelCount > 0, mixerFormat.channelCount <= 2 {
-            engine.connect(engine.mainMixerNode, to: leadDelayNode, format: mixerFormat)
-            engine.connect(leadDelayNode, to: engine.outputNode, format: mixerFormat)
+            engine.connect(engine.mainMixerNode, to: leadDelayNode, format: graphFormat)
+            engine.connect(leadDelayNode, to: engine.outputNode, format: graphFormat)
             leadDelayInGraph = true
+            KSLog("[audio] mixer → lead delay → output at \(Int(graphFormat.sampleRate)) Hz, \(graphFormat.channelCount) ch (output hardware \(Int(hardwareRate)) Hz)")
         } else {
             leadDelayInGraph = false
             KSLog("[audio] lead delay not in the graph for a \(mixerFormat.channelCount)-channel mix")
