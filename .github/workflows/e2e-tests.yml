@@ -132,6 +132,9 @@ jobs:
           xcrun xcresulttool export attachments --path e2e.xcresult --output-path out/attachments 2>/dev/null || true
           ls -la out/attachments 2>/dev/null | head -40 || true
           cp ~/Library/Logs/DiagnosticReports/BassPlayer* out/ 2>/dev/null || true
+          # Which FFmpeg the tested app carried (av_version_info(), from the embedded Libavutil).
+          SIMAPP=$(find build/Build/Products -name BassPlayer.app -type d | head -n1)
+          strings - "$SIMAPP/Frameworks/Libavutil.framework/Libavutil" | grep -m1 "FFmpeg version" | tee out/ffmpeg-version.txt || true
           xcrun simctl spawn "$UDID" log show --last 30m --predicate 'process == "BassPlayer"' > out/app.log 2>&1 || true
           grep -E "E2E |Test Case|error:" test.log > out/test-highlights.txt || true
           cp test.log out/
