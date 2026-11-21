@@ -17,6 +17,20 @@ import Libavformat
 nonisolated(unsafe) private var ksInnerIOOpen = AVFormatContext().io_open
 /// Nested HTTP opens seen since the wrapper was last installed; the first two are logged.
 nonisolated(unsafe) private var ksNestedOpenCount = 0
+/// Bass Player diagnostic (seek tracing, 2026-11-21): until this host time, and for at most
+/// `ksSeekTraceLines` more lines, FFmpeg's info/verbose/debug messages from demuxers are logged
+/// as well, so a seek that goes wrong on the headset shows which segment it mapped to and what
+/// the demuxer did next.
+nonisolated(unsafe) private var ksSeekTraceUntil = 0.0
+nonisolated(unsafe) private var ksSeekTraceLines = 0
+
+/// Long URLs carry signatures and bury the log; keep their start only.
+private func ksShortenURLs(_ text: String) -> String {
+    guard text.contains("://") else { return text }
+    return text.split(separator: " ", omittingEmptySubsequences: false).map { token -> String in
+        token.contains("://") && token.count > 80 ? String(token.prefix(80)) + "…" : String(token)
+    }.joined(separator: " ")
+}
 
 public final class MEPlayerItem: Sendable {
     private let url: URL
@@ -152,6 +166,18 @@ public final class MEPlayerItem: Sendable {
                     }
                 }
             }
+            // Bass Player diagnostic: demuxer chatter right after a seek (see `ksSeekTraceUntil`).
+            if level > LogLevel.warning.rawValue, level <= LogLevel.debug.rawValue, ksSeekTraceLines > 0,
+               CACurrentMediaTime() < ksSeekTraceUntil, let ptr
+            {
+                // The class pointer can be null for some callers, so read it as optional.
+                let avclass = ptr.assumingMemoryBound(to: UnsafePointer<AVClass>?.self).pointee
+                if let avclass, let name = avclass.pointee.class_name, String(cString: name) == "AVFormatContext" {
+                    ksSeekTraceLines -= 1
+                    KSLog(level: .warning, "seektrace ffmpeg: " + ksShortenURLs(log.trimmingCharacters(in: .newlines)))
+                    return
+                }
+            }
             // 找不到解码器
             if log.hasPrefix("parser not found for codec") {
                 KSLog(level: .error, log)
@@ -161,6 +187,8 @@ public final class MEPlayerItem: Sendable {
     }()
 
     weak var delegate: MEPlayerDelegate?
+    /// Bass Player diagnostic: packets still to be logged after the last seek.
+    private var seekTracePackets = 0
     public init(url: URL, options: KSOptions) {
         self.url = url
         self.options = options
@@ -547,7 +575,13 @@ extension MEPlayerItem {
                 let seekMax = increase < 0 ? timeStamp - increase - 2 : Int64.max
                 // can not seek to key frame
                 let seekStartTime = CACurrentMediaTime()
+                // Bass Player diagnostic: trace this seek (FFmpeg's own debug lines and the first
+                // packets that come back).
+                ksSeekTraceUntil = seekStartTime + 2.5
+                ksSeekTraceLines = 80
+                seekTracePackets = 20
                 var result = avformat_seek_file(formatCtx, -1, seekMin, timeStamp, seekMax, seekFlags)
+                KSLog("seektrace seek: want \(seekToTime) s from clock \(time.seconds) s → timestamp \(timeStamp) µs, window \(seekMin == Int64.min ? "min" : String(seekMin))…\(seekMax == Int64.max ? "max" : String(seekMax)), flags \(seekFlags), result \(result)")
 //                var result = av_seek_frame(formatCtx, -1, timeStamp, seekFlags)
                 // When seeking before the beginning of the file, and seeking fails,
                 // try again without the backwards flag to make it seek to the
@@ -591,6 +625,20 @@ extension MEPlayerItem {
         let readResult = av_read_frame(formatCtx, corePacket)
         if state == .closed {
             return 0
+        }
+        if seekTracePackets > 0 {
+            seekTracePackets -= 1
+            if readResult == 0, let formatCtx, let stream = formatCtx.pointee.streams[Int(corePacket.pointee.stream_index)] {
+                let tb = stream.pointee.time_base
+                let unit = tb.den != 0 ? Double(tb.num) / Double(tb.den) : 0
+                let pts = corePacket.pointee.pts == Int64.min ? "none" : String(format: "%.3f", Double(corePacket.pointee.pts) * unit)
+                let dts = corePacket.pointee.dts == Int64.min ? "none" : String(format: "%.3f", Double(corePacket.pointee.dts) * unit)
+                let kind = stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO ? "video" : (stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO ? "audio" : "other")
+                let key = corePacket.pointee.flags & AV_PKT_FLAG_KEY != 0 ? "KEY" : "-"
+                KSLog("seektrace packet \(20 - seekTracePackets): \(kind) stream \(corePacket.pointee.stream_index) \(key) pts \(pts) dts \(dts) size \(corePacket.pointee.size) pos \(corePacket.pointee.pos)")
+            } else {
+                KSLog("seektrace packet \(20 - seekTracePackets): read returned \(readResult)")
+            }
         }
         if readResult == 0 {
             if let outputFormatCtx, let formatCtx {
