@@ -9,6 +9,9 @@ name: FFmpegKit repack
 on:
   workflow_dispatch:
   push:
+    # Branches only: path filters are not applied to tag pushes, so a release tag (v*)
+    # would otherwise start this workflow.
+    branches: ["**"]
     paths:
       - .github/workflows/ffmpegkit-repack.yml
       - Vendor/FFmpegKit/tools/repack_release.py

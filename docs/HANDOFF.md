@@ -766,7 +766,8 @@ Ordered by likelihood of needing a fix.
 - **Public releases (2026-11-21).** Visitors are sent to the latest release, not to Actions
   artifacts (those need a sign-in and expire after 90 days). `git tag vX.Y.Z && git push origin
   vX.Y.Z` on a green `main` makes the release: `build.yml` attaches both IPAs, `firmware.yml`
-  the six `.bin` files (path filters do not apply to tag pushes). Then attach the two
+  the six `.bin` files (path filters do not apply to tag pushes, which is why the three
+  `ffmpegkit-*` workflows are limited to branch pushes). Then attach the two
   calibration videos (`tools/make_bass_sync_videos.py`) and write the notes with
   `gh release edit`. The Vision Pro installer is the iloader fork's release
   (`muzam2/iloader`, tag `vp-2.4.1-1`, built on the workstation with
