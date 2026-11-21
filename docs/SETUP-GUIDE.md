@@ -44,8 +44,8 @@ You only do this once.
 
 1. Install **Python 3** if you don't have it, then in a terminal:
    `pip install esptool`
-2. Go to the GitHub repo → **Actions** → the latest green "Build ESP32 firmware" run → download
-   the **`firmware-esp32-a1s`** artifact and unzip it. You get three `.bin` files.
+2. Go to the [latest release](https://github.com/muzam2/vision-bass-player/releases/latest) and download the three files ending in
+   **`-esp32-a1s.bin`** (bootloader, partitions, bass-receiver).
 3. Plug the A1S into the computer with the **data** micro-USB cable, using the USB port
    nearest the two small buttons (that's the serial one; the other port is power only).
 4. Find the port: Windows → Device Manager → Ports (e.g. `COM5`); Linux → `ls /dev/ttyUSB*`;
@@ -87,24 +87,26 @@ and gain, and that the cable is in the board's 3.5 mm jack.
 
 ## 4. Install the app on the Vision Pro (no Mac needed)
 
-The stock iloader can't see a Vision Pro (it only talks USB). The Linux box has a build of
-iloader with wireless Vision Pro support (`~/src/iloader-vp/…/iloader`; a desktop launcher is
-fine too). Steps, in order:
+The stock iloader can't see a Vision Pro (it only talks USB). Use the build with wireless
+Vision Pro support from [muzam2/iloader](https://github.com/muzam2/iloader/releases): there is
+a Linux build (`.deb`, or a plain binary); on Windows or a Mac it has to be built from source
+(its README says how). Steps, in order:
 
 1. Put the headset on, same Wi‑Fi as the computer. Open **Settings → General → Remote Devices**
    and leave that screen up (the headset only announces itself while it's open).
 2. Start iloader. The Vision Pro appears under Devices → click it → type the **6-digit code**
    the headset shows → Pair. (Only needed once.)
 3. **Add Account** → sign in with your Apple ID (2FA code goes to your other Apple devices).
-4. Get the app: GitHub repo → Actions → latest green "Build unsigned IPAs" → download
-   **`BassPlayer-visionos-unsigned-ipa`**, unzip.
-5. In iloader: **Import IPA** → pick the `.ipa`. It signs and installs over Wi‑Fi (~30 s).
+4. Get the app: [latest release](https://github.com/muzam2/vision-bass-player/releases/latest) → download the file ending in
+   **`-visionos-unsigned.ipa`**.
+5. In iloader: **Import IPA** → pick the `.ipa`. It signs and installs over Wi‑Fi (about a
+   minute). Keep the headset on and awake until it says it is done.
 6. On the headset: Settings → General → VPN & Device Management → **Trust** your Apple ID. If
    it asks for **Developer Mode**, turn it on (Settings → Privacy & Security) and let it restart.
 
 Free Apple ID rules: the signature lasts **7 days**, then the app refuses to open. Renew it by
 repeating step 5 (settings are kept). Optionally install **SideStore** from iloader (the
-button installs a Vision Pro build with the sign-in fix); if it signs in with the same Apple
+button installs the Vision Pro build, 0.7.3); if it signs in with the same Apple
 ID, it can renew Bass Player on the headset itself. You can have 3 sideloaded apps at once.
 
 ---
@@ -115,8 +117,8 @@ ID, it can renew Bass Player on the headset itself. You can have 3 sideloaded ap
    `bitxeno/atvloadly`). Its README has a one-line `docker run`.
 2. Apple TV: Settings → Remotes and Devices → **Remote App and Devices**. Leave it open.
 3. Open atvloadly's web page, pick the Apple TV, enter the pairing code.
-4. Download **`BassPlayer-tvos-unsigned-ipa`** from the same Actions run, unzip, upload the
-   `.ipa` in atvloadly with your Apple ID. It re-signs it every week automatically.
+4. Download the file ending in **`-tvos-unsigned.ipa`** from the same release and upload it
+   in atvloadly with your Apple ID. It re-signs it every week automatically.
 5. On the Apple TV: Settings → General → Privacy & Security → trust the developer profile.
 
 ---
@@ -161,15 +163,29 @@ If nothing: see Troubleshooting at the bottom.
 ## 8. Tuning the timing (the bit that matters)
 
 Bass that arrives late feels wrong even when you can't hear why. Two knobs in Settings →
-Subwoofer receiver:
+Subwoofer receiver: **Bass lead** and **Receiver delay**.
+
+**The quick way: the calibration videos.** Download `bass-sync-sweep.mp4` and
+`bass-sync-steady.mp4` from the [latest release](https://github.com/muzam2/vision-bass-player/releases/latest) and put them
+where the app can play them (a NAS share is easiest).
+
+1. Set **Bass lead** and **Receiver delay** to 0.
+2. Play **bass-sync-sweep**. You hear a click in the headset and a thump from the sub, four
+   times per step. The screen says how early the thump is ("Thump 140 ms early").
+3. Note the step where click and thump land together. Set **Bass lead** to that number.
+4. Play **bass-sync-steady** to check: click and thump should be one hit.
+
+On the author's Vision Pro the two met between 120 and 160 ms, so Bass lead is 140 ms.
+
+**By ear, with a film:**
 
 | Symptom | Fix |
 |---|---|
 | Thump lands **before** the picture/sound | Raise **Receiver delay** in 10 ms steps |
 | Thump lands **after** | Raise **Bass lead** in 10 ms steps (FFmpeg backend only). This holds the headset's own audio and picture back by that much so the sub catches up. |
-| Can't tell | Use a film with a clean single hit (a door slam, a drum) and loop it. Start with **Bass lead 180 ms** (an estimate of the whole bass path, not yet measured), then nudge. |
+| Can't tell | Use a film with a clean single hit (a door slam, a drum) and loop it. Start with **Bass lead 140 ms**, then nudge. |
 
-Expected result: Bass lead somewhere around 150–220 ms, Receiver delay 0. Once set it stays set; both values are
+Expected result: Bass lead somewhere around 120–160 ms, Receiver delay 0. Once set it stays set; both values are
 remembered per device, so tune the Apple TV separately (it has its own audio latency).
 
 **Level:** set the sub's gain so bass is felt, not heard as a separate boom. If the receiver's
@@ -293,7 +309,7 @@ side; the fix is updating the client identities in `InnerTubeClient.swift` from 
 | Film won't open (FFmpeg) | Jellyfin: check the user has access to the library. Plex: the chosen server connection might be a remote relay; pick the server again from Settings when on the same LAN. |
 | Plex: "A server with the specified host name could not be found" | Your router refuses to resolve Plex's `*.plex.direct` names to a LAN address (DNS-rebinding protection; OpenWrt does this by default). The app now falls back to the plain IP by itself. To fix it at the router too (OpenWrt): add `plex.direct` to dnsmasq's *Domain whitelist* / `rebind_domain`. |
 | NAS shows no files | Enter just the host (`192.168.1.20`): the shares appear as folders. If a share still looks empty, it needs a username/password. |
-| App won't open after a week | The free-ID signature expired. On the Linux box: iloader → Import IPA again (settings are kept). On Apple TV check atvloadly is still running. |
+| App won't open after a week | The free-ID signature expired. In iloader: Import IPA again (settings are kept). On Apple TV check atvloadly is still running. |
 | Bass stutters | Keep the A1S within ~5 m line-of-sight of the headset; move it away from the Wi‑Fi router; check "Packets dropped" in Diagnostics. |
 | `ES8388 init FAILED` on serial | You have the AC101 variant of the A1S. Build the `esp32dev` firmware and use a £6 PCM5102A board instead (wiring in `src/main.cpp`). |
 
@@ -301,6 +317,7 @@ side; the fix is updating the client identities in `InnerTubeClient.swift` from 
 
 ## 12. Updating
 
-Every push to the repo builds fresh IPAs and firmware in Actions. Reinstall the `.ipa` the same
+New versions appear on the [releases page](https://github.com/muzam2/vision-bass-player/releases/latest). Reinstall the `.ipa` the same
 way as before (iloader → Import IPA; your settings are kept); reflash the firmware only when the
-firmware artifact changes.
+release notes say the firmware changed. Builds of every change in between are under the repo's
+Actions tab (sign in to GitHub to download them).

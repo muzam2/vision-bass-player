@@ -34,8 +34,12 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
   builds for the visionOS + tvOS simulators and uploads a PNG per tab (demo data via
   `BASSPLAYER_DEMO=1`, tab via `BASSPLAYER_SCREEN`). Download the `screenshots-*` artifacts and
   read the images. New screens should be added to `DemoData` and the workflow's screen list.
-- Tag pushes and release creation were blocked for the original agent session; the owner can
-  push a `v*` tag himself to get a GitHub release with IPAs + firmware attached.
+- A `v*` tag makes a GitHub release with both IPAs and the firmware binaries attached
+  (`build.yml` and `firmware.yml`); `v0.2.0` (2026-11-21) is the first. The README and the
+  setup guide send visitors to the latest release, so tag again when a build worth installing
+  lands, and attach the calibration videos (`tools/make_bass_sync_videos.py`).
+- `Vendor/FFmpegKit/tools/fetch_binaries.sh` always downloads from `muzam2/vision-bass-player`
+  (override: `FFMPEGKIT_RELEASE_REPO`), because forks have no releases.
 
 ## Hard-won facts (don't rediscover)
 - KSPlayer is **vendored** at `Vendor/KSPlayer` (from the `GPLv3` branch; upstream `main`

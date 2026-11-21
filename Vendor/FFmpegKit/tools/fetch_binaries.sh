@@ -1,6 +1,6 @@
 #!/bin/bash
 # Download FFmpegKit's xcframework zips (and FFmpegKit-sources.zip, the C shim target's files)
-# from this repo's release (tag in ../RELEASE_TAG), verify each against checksums.json (SHA-256,
+# from the project's release (tag in ../RELEASE_TAG), verify each against checksums.json (SHA-256,
 # same value SwiftPM uses) and unzip them into Vendor/FFmpegKit/Sources/, where Package.swift
 # references them by path.
 #
@@ -8,7 +8,10 @@
 # file system", seemingly after 504s from the public release URL), so CI fetches them here.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-repo="${GITHUB_REPOSITORY:-muzam2/vision-bass-player}"
+# Always the original project's releases, not $GITHUB_REPOSITORY: GitHub does not copy releases
+# into a fork, so a fork's build could not find them. A repo that publishes its own FFmpeg build
+# (ffmpegkit-build.yml) sets FFMPEGKIT_RELEASE_REPO.
+repo="${FFMPEGKIT_RELEASE_REPO:-muzam2/vision-bass-player}"
 tag="$(tr -d '[:space:]' < "$here/RELEASE_TAG")"
 dest="$here/Sources"
 tmp="$(mktemp -d)"
