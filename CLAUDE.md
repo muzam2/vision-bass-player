@@ -25,7 +25,8 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
 - When polling Actions, wait 30 s between checks, not 10.
 - Compile errors: `gh run view <id> --log-failed | grep "error:"`. Expect Xcode 26 / visionOS
   SDK on `macos-15` + `setup-xcode@latest-stable`.
-- The IPA packaging step prints app size, `FFmpeg: linked` and one `embedded: X` line per
+- The IPA packaging step prints app size, `FFmpeg: linked`, the `FFmpeg version` string of the
+  embedded Libavutil and one `embedded: X` line per
   dynamic framework the binary loads; it **fails** if a loaded framework is missing from
   `Frameworks/` (a dynamic SwiftPM product that the generated project did not embed = dyld
   crash at launch; that is why AMSMB2 is vendored as a static library).
@@ -42,7 +43,8 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
   — our copy is the source of truth) and patched for Dolby Vision P5, one-eye crop, a frame
   sink for the cinema screen, FFmpeg 9 API, the MVC decoder (`MEPlayer/Edge264Decode.swift`)
   and a few lifecycle fixes (`keepsPlayerWhenViewGoesAway`, no player resurrection in
-  `updateUIView`, display link at panel rate on visionOS). Patched files: HANDOFF §3.
+  `updateUIView`, display link at panel rate on visionOS, timestamped presentation).
+  Patched files: HANDOFF §3.
 - Dolby Vision P5 needs `KSOptions.asynchronousDecompression = false` (FFmpeg hwaccel path),
   otherwise the RPU side data never reaches the frame. P7/P8 play as HDR10/HLG base layer.
 - `KSVideoPlayerView` overwrites `coordinator.onStateChanged`; `FFmpegSession` therefore polls
@@ -79,16 +81,24 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
   without which YouTube bot-checks. FFmpeg gets a local one-variant master
   (`HLSVariantPicker`: no AV1, HDR only if `yt.preferHDR`; `protocol_whitelist` set in
   `FFmpegSession.configure`).
-- FFmpeg comes from `Vendor/FFmpegKit`: **stock FFmpegKit 9.0.2 (= FFmpeg 9.0.2)**, its
-  xcframeworks (dynamic, embedded in the app — hence the ~20 MB IPA) stripped to visionOS +
-  tvOS slices and hosted as release `ffmpegkit-9.0.2-vt1` of this repo by workflow
-  `ffmpegkit-repack.yml` (`tools/repack_release.py`; upstream commits the binaries into its git
-  tag and has no release assets). `tools/fetch_binaries.sh` downloads + verifies everything in
-  CI, including `FFmpegKit-sources.zip` (the C shim target), so `Sources/` is not in git. To
-  bump: edit the two tags in the workflow, run it, commit `Package.swift` + `checksums.json` +
-  `RELEASE_TAG` from its artifact, fix API fallout in `Vendor/KSPlayer`. The 6.1.4 backport
-  pipeline (`ffmpegkit-backports.yml`, `Vendor/FFmpegKit-patches`) is retired; its fixes are
-  upstream.
+- FFmpeg comes from `Vendor/FFmpegKit`: **FFmpeg n9.1 + FFmpegKit's 13 FFmpeg patches, compiled
+  by our own workflow** (kingslay/FFmpegKit has no 9.1 tag and no public build plugin any
+  more). `ffmpegkit-build.yml` builds the five slices (visionOS + tvOS, device + simulator)
+  with the configure line recovered from the 9.0.2 binaries, the patches in
+  `Vendor/FFmpegKit/ffmpeg-build/patches` (ten are FFmpegKit's files unchanged, three re-made
+  for n9.1, see the README there; a patch that does not apply fails the build) and the Vulkan
+  headers of FFmpegKit's MoltenVK, checks the result against the 9.0.2 libraries (configure
+  line, version strings, load commands, components) and publishes release `ffmpegkit-9.1-vt1`.
+  Only the seven `Lib*` xcframeworks are ours; the other 15 (dependencies; the dynamic ones are
+  embedded in the app, hence the ~20 MB IPA) and `FFmpegKit-sources.zip` (the C shim target)
+  are byte-identical to `ffmpegkit-9.0.2-vt1`, the stock FFmpegKit 9.0.2 repack
+  (`ffmpegkit-repack.yml`, `tools/repack_release.py`). `tools/fetch_binaries.sh` downloads +
+  verifies everything in CI, so `Sources/` is not in git. **"Stock FFmpeg 9.0.2" in older notes
+  means n9.0.2 plus those same 13 FFmpegKit patches, never plain FFmpeg.** To rebuild or bump:
+  HANDOFF §3 "FFmpeg 9.1" (never overwrite a release, bump the `-vtN` suffix; commit
+  `Package.swift` + `checksums.json` + `RELEASE_TAG` from the publishing run's artifact; fix API
+  fallout in `Vendor/KSPlayer`). The 6.1.4 backport pipeline (`ffmpegkit-backports.yml`,
+  `Vendor/FFmpegKit-patches`) is retired; its fixes are upstream.
 - UI: `RootView` is a `TabView` (`.sidebarAdaptable`) of `AppTab`s; sources are shown by
   `LibraryGridView(source:)` / `YouTubeView` / `NASBrowserView`; everything plays through
   `library.play(item)`, which opens the `PlayerWindow` scene on visionOS and a
@@ -113,10 +123,37 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
   rate (a `@Published` assigned on a timer, even with an unchanged value) drops frames on
   60 fps video. Fast-changing values get their own small `ObservableObject` observed by a leaf
   view (`BassMeter`/`BassTapLabel`). The `render:` log line every 10 s is the measurement.
+- Timestamped frame pacing (2026-11-21, Settings → Diagnostics, off by default, **not yet
+  proven on the headset**): `MetalPlayView.requestedPresentationMode = .timestamped` makes a
+  pump on its own queue enqueue frames up to 150 ms ahead with their media timestamps on the
+  display layer's renderer, under a control timebase that follows the audio clock
+  (`MEPlayer/TimestampedVideoPresenter.swift`). The display-link loop stays the default and
+  the fallback for the cinema screen (`frameSink` is only called by the loop), Dolby Vision
+  P5 and 10-bit software frames. The pump must never read state the main thread updates:
+  the audio clock comes from readings `MEPlayerItem.setAudio` stores on the audio render
+  thread. `render:` lines start with `mode display-link` or `mode timestamped`. The stall
+  test switch blocks the main thread on purpose and is never persisted. HANDOFF §0 has the
+  acceptance test.
+- The renderer calls the pump uses (`enqueue`, `isReadyForMoreMediaData`, `flush`, `status`)
+  are deprecated from OS 27.0 for `AVSampleBufferVideoRenderer.Receiver` (27.0+ only, through
+  a render synchronizer). At deployment targets 26.0 / 18.0 they are correct and warning-free.
 - BLE sending: the engine tap delivers 100 ms buffers, i.e. five bass packets at once, and
   CoreBluetooth accepts one write-without-response per turn of its delegate queue. `BassLink`
   therefore queues packets and paces them out every 20 ms; sending a burst directly loses four
   packets in five ("sent N dropped 4N" in the log, no audible bass).
+- Seeking: `AsyncPlayerItemTrack.seek` empties the packet queue (which wakes the decode thread)
+  before it sets `state = .flush`, so the thread can be back in `pop` with the flush pending and
+  upstream then threw away the next packet: the keyframe of the new position. Every frame up to
+  the next keyframe failed ("Not all references are available"), the picture froze until the
+  stall watchdog reopened the stream; about three seeks in ten with FFmpeg 9.1, none seen with
+  9.0.2 (same code, different timing). The thread now flushes and keeps that packet; packets
+  carry a seek epoch so leftovers are still dropped. Log line: "[seek] first packet arrived with
+  a flush pending".
+- KSPlayer's Metal path (10-bit software frames such as YouTube VP9 HDR, Dolby Vision P5) must
+  load the package's shader library, not the main bundle's: the app has its own
+  `Immersive/FrameConvert.metal`, so `makeDefaultLibrary()` returns a library without KSPlayer's
+  functions and pipeline creation aborts the app (`MetalRender.library`). `CrashCapture` also
+  keeps standard error, where Metal and Swift print the reason for an abort.
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and
   git-ignored. `.usda` is excluded from the folder source and added as a resource for visionOS.
 

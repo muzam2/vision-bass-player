@@ -182,6 +182,17 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     // 无缝播放使用的PacketQueue
     private var loopPacketQueue: CircularBuffer<Packet>?
     var packetQueue = CircularBuffer<Packet>()
+    // Bass Player patch: seek epoch. `seek` bumps it before it empties the queue and every
+    // packet carries the epoch it was queued in, so the decode thread can tell a packet of the
+    // new position from a leftover whatever `state` says at that moment.
+    private let epochLock = NSLock()
+    private var epochValue = 0
+    private var epoch: Int {
+        epochLock.lock()
+        defer { epochLock.unlock() }
+        return epochValue
+    }
+
     override var packetCount: Int { packetQueue.count }
     override var isLoopModel: Bool {
         didSet {
@@ -209,6 +220,7 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     }
 
     override func putPacket(packet: Packet) {
+        packet.epoch = epoch
         if isLoopModel {
             loopPacketQueue?.push(packet)
         } else {
@@ -249,7 +261,25 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
                 if isEndOfFile, packetQueue.count == 0 {
                     state = .finished
                 } else {
-                    guard let packet = packetQueue.pop(wait: true), state != .flush, state != .closed else {
+                    guard let packet = packetQueue.pop(wait: true), state != .closed else {
+                        continue
+                    }
+                    if state == .flush {
+                        // Bass Player patch: `seek` empties the queue, which wakes this thread,
+                        // before it sets `state`; the thread can therefore be back in `pop`
+                        // with the flush still pending, and the packet that then arrives is
+                        // the first one of the new position: the keyframe. Upstream dropped it
+                        // here, so every frame up to the next keyframe failed to decode and
+                        // the picture froze (about three seeks in ten on the headset, measured
+                        // 2026-11-21). Do the flush now and keep the packet.
+                        decoderMap.values.forEach { $0.doFlushCodec() }
+                        state = .decoding
+                        if mediaType == .video {
+                            KSLog("[seek] first packet arrived with a flush pending (key \(packet.isKeyFrame)); codec flushed, packet kept")
+                        }
+                    }
+                    guard packet.epoch == epoch else {
+                        // Queued before the latest seek emptied the queue.
                         continue
                     }
                     autoreleasepool {
@@ -264,6 +294,9 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
         if decodeOperation.isFinished {
             decode()
         }
+        epochLock.lock()
+        epochValue += 1
+        epochLock.unlock()
         packetQueue.flush()
         super.seek(time: time)
         loopPacketQueue = nil

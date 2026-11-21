@@ -13,25 +13,36 @@ struct SettingsView: View {
     @State private var showYouTubeSignIn = false
     @AppStorage("diag.uploadURL") private var diagUploadURL = "http://192.168.0.191:8799/log"
     @AppStorage("diag.live") private var diagLive = false
+    @AppStorage(FramePacing.timestampedKey) private var timestampedFrames = false
+    @ObservedObject private var stallTest = MainThreadStallTest.shared
     @State private var diagShow = false
     @State private var diagStatus: String?
     @State private var diagBusy = false
 
     var body: some View {
         NavigationStack {
-            Form {
-                playback
-                jellyfinSection
-                plexSection
-                youtubeSection
-                nasSection
-                subwoofer
-                diagnostics
-                about
+            ScrollViewReader { proxy in
+                Form {
+                    playback
+                    jellyfinSection
+                    plexSection
+                    youtubeSection
+                    nasSection
+                    subwoofer
+                    diagnostics
+                    about
+                }
+                #if !os(tvOS)
+                .formStyle(.grouped)
+                #endif
+                .task {
+                    // CI screenshots: BASSPLAYER_SETTINGS_SECTION=diagnostics lands on the
+                    // switches near the end of the form.
+                    guard ProcessInfo.processInfo.environment["BASSPLAYER_SETTINGS_SECTION"] == "diagnostics" else { return }
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    proxy.scrollTo("framePacing", anchor: .center)
+                }
             }
-            #if !os(tvOS)
-            .formStyle(.grouped)
-            #endif
             .navigationTitle("Settings")
             .sheet(isPresented: $showAddShare) { NASShareEditor() }
             #if canImport(WebKit)
@@ -225,6 +236,13 @@ struct SettingsView: View {
                 .onChange(of: diagLive, initial: true) { _, on in
                     DiagLog.shared.setLive(url: on ? URL(string: diagUploadURL) : nil)
                 }
+            Toggle("Timestamped frame pacing", isOn: $timestampedFrames)
+                .id("framePacing")
+            Text("FFmpeg player only. Off: each frame is drawn from the app's main thread, as before. On: frames are queued ahead with their timestamps and the system shows them on the audio clock. Applies within a second, also to a film that is playing. The cinema screen, Dolby Vision profile 5 and some 10-bit video always use the old way; the log says which one ran (\"frame pacing:\" and \"render: mode\").")
+                .font(.footnote).foregroundStyle(.secondary)
+            Toggle("Stall test (blocks the main thread)", isOn: $stallTest.isOn)
+            Text("Freezes the app's main thread for 200 ms every 2 s while a film plays, to compare the two pacing modes in the log. Buttons respond late while it is on. Always off again when the app starts.")
+                .font(.footnote).foregroundStyle(.secondary)
             Toggle("Show log", isOn: $diagShow)
             if let diagStatus { Text(diagStatus).font(.footnote).foregroundStyle(.secondary) }
             if diagShow {

@@ -96,7 +96,7 @@ layer's timebase, or run the link on its own thread).
   in together, so which mattered most is unknown. Research report with a prioritised redesign
   (timestamped enqueue-ahead off the main thread, as Apple documents and VLC 4 does):
   `/home/remoteuser/reports/visionOS video player judder.md` on the Linux box, notes beside it
-  in `research_notes/`. That redesign is the next piece of work.
+  in `research_notes/`. Its recommendation 3 is built on branch `frame-pacing-timestamped` (below).
 - *YouTube freeze:* a real reset at 00:07:50 was recovered by the watchdog's reopen: picture
   stopped 00:08:23.9, reopen at 00:08:27.5, playing again 1.4 s later, bass tap survived, no
   repeat for the remaining four minutes. Seeking never recovers this state (the owner's manual
@@ -106,6 +106,55 @@ layer's timebase, or run the link on its own thread).
   replies are evidently not treated as resumable; the real cure would be patching `hls.c` to
   retry a segment whose read fails instead of moving on.
 - *Not exercised:* a reset on the audio connection; Apple TV with any of this.
+
+**Timestamped frame pacing (branch `frame-pacing-timestamped`, 2026-11-21; built, NOT merged,
+NOT yet run on the headset).** The report's recommendation 3 for the flat window, as a second
+mode next to the display-link loop, off by default.
+- *Switches* (Settings → Diagnostics): **"Timestamped frame pacing"** (`diag.timestampedFrames`,
+  persisted; `FFmpegSession.applyFramePacing` applies it at every 0.5 s poll, so it also works
+  on a film that is playing) and **"Stall test (blocks the main thread)"** (200 ms every 2 s
+  while playing; lives in memory only in `MainThreadStallTest`, so it is off at every launch).
+- *How it works* (`Vendor/KSPlayer/.../MEPlayer/TimestampedVideoPresenter.swift`, read its
+  header): a pump on its own serial queue (`bassplayer.frame-pump`, a 5 ms timer while
+  playing) pops decoded frames in order from KSPlayer's frame queue, wraps each with its media
+  timestamp and no display-immediately attachment, and enqueues it on the display layer's
+  `sampleBufferRenderer` once it is due within 150 ms. It stops when the renderer says
+  `isReadyForMoreMediaData == false`. A frame more than one frame duration late when it
+  reaches the pump is dropped (VLC's rule), except one every 0.25 s so a slow decoder still
+  shows a picture. The layer's `controlTimebase` (host clock underneath) is the pump's: it is
+  anchored to the audio clock less `videoDelay` at every start, then kept there by trimming
+  its rate (average of the error over 0.5 s, 2 ms dead band, time constant 1.5 s, at most
+  3 %); only an error of 100 ms or more sets the time outright ("resync"). Pause = rate 0;
+  seek = flush + anchor again at the next start; playback rate = timebase rate;
+  `KSPlayerLayer.reopen()` = new frame source, flush, anchor again; stop = flush with the image
+  removed.
+- *The clock.* KSPlayer writes its audio clock through the main thread. `MEPlayerItem.setAudio`
+  now also stores each reading (media time, `CACurrentMediaTime()`) in a small ring under an
+  unfair lock, on the audio render thread itself; the pump reads only that. Nothing the pump
+  needs is updated by the main thread.
+- *Fallback.* The display-link loop runs, exactly as before, when the switch is off, while the
+  cinema screen is open (it is fed through `frameSink`, which only the loop calls), and for
+  streams whose frames the layer cannot take: Dolby Vision profile 5 (Metal shader) and
+  software-decoded 10-bit planar video (`PixelBuffer`, e.g. VP9 profile 2). The pump leaves
+  the first such frame in the queue and `MetalPlayView` switches back for the rest of the
+  item. The log says which: `frame pacing: timestamped` or `frame pacing: display link (…)`.
+- *Reading the log.* `render:` lines now start with the mode. Display link:
+  `render: mode display-link · N ticks … · N frames shown · N dropped …` (as before).
+  Timestamped: `render: mode timestamped · N enqueued in 10.0 s (60.0/s) · lookahead A–B ms ·
+  pump: N late dropped, … not ready N, longest gap N ms · system: N frames, N dropped, N
+  corrupted, frame delay ±N ms · renderer rendering, N flushes, N timeline resets · clock:
+  audio, N readings, error mean ±N ms, worst ±N ms, N trims up to N %, N resyncs · rate 1.000 ·
+  main thread: … · stall test: N × 200 ms`. "system:" is `AVVideoPerformanceMetrics` as changes
+  since the previous line.
+- *The acceptance test, still to do on the headset:* 60 fps video in a window, stall test on.
+  Display link first: expect `frames shown` well under 600 and `dropped` above 0 per 10 s.
+  Then switch timestamped on (no restart needed): the design holds if `enqueued` stays near
+  600, `system: … dropped` stays 0 or near it and `frame delay` stays small while
+  `main thread: worst wait` shows about 200 ms. If the system drops frames during stalls
+  anyway, presentation on visionOS depends on the app's main thread after all and the next
+  step is a dedicated render thread (report item 4), not more tuning here. Also listen for
+  lip sync and Bass lead: they should be unchanged between the modes.
+- *What CI showed:* see §4 risk 14. Smoothness, audio sync and stall immunity are untested.
 
 ## 1. The owner and their constraints
 
@@ -144,7 +193,7 @@ original session, so IPAs and firmware are **Actions artifacts** until someone p
 ```
 project.yml                     XcodeGen spec: BassPlayer (visionOS 2) + BassPlayerTV (tvOS 18), same sources, KSPlayer from Vendor/
 Vendor/KSPlayer                 KSPlayer GPLv3 source, vendored + patched (see §3). UPSTREAM_COMMIT = base commit
-Vendor/FFmpegKit                Local FFmpegKit 6.1.4 package: shims + generated Package.swift → release zips (see §3)
+Vendor/FFmpegKit                Local FFmpegKit package: generated Package.swift → release zips (RELEASE_TAG, checksums.json); ffmpeg-build/ = our own FFmpeg build: patches, configure line, scripts (see §3)
 Vendor/FFmpegKit-patches        Upstream FFmpeg fixes backported into Libavformat (6.1.4 era; retired by FFmpegKit 9)
 Vendor/AMSMB2                   libsmb2 + Swift wrapper (4.0.3, LGPL-2.1), vendored only to make the product static
 BassPlayer/App                  App entry (main window, player window on visionOS, ImmersiveSpace), AVAudioSession, FFmpegConfig.apply(); DemoData (BASSPLAYER_DEMO=1 sample content for simulator screenshots)
@@ -161,7 +210,9 @@ BassPlayer/Views                RootView (TabView .sidebarAdaptable: Home/Jellyf
 firmware/esp32-bass-receiver    PlatformIO; NimBLE GATT server, 2-device arbitration, jitter buffer, drift control, I²S, ES8388 init
 .github/workflows/build.yml     visionOS + tvOS unsigned IPAs (matrix), FFmpegKit zips fetched + checksum-verified, SPM cache, "FFmpeg: linked" check
 .github/workflows/ui-screenshots.yml  Simulator builds (visionOS + tvOS), launches each screen with demo data, uploads PNGs (artifact screenshots-<os>)
-.github/workflows/ffmpegkit-backports.yml  Rebuilds mov.o+hls.o with the patches, re-zips FFmpegKit, publishes release RELEASE_TAG once
+.github/workflows/ffmpegkit-build.yml  Compiles FFmpeg (n9.1) for the five slices with FFmpegKit's configure line + patches, checks it against the 9.0.2 binaries, publishes release RELEASE_TAG once (§3 "FFmpeg 9.1")
+.github/workflows/ffmpegkit-repack.yml  Repackages a stock FFmpegKit tag (9.0.2) as visionOS + tvOS zips; its release is the base of ffmpegkit-build.yml
+.github/workflows/ffmpegkit-backports.yml  (retired, 6.1.4 era) Rebuilds mov.o+hls.o with the patches, re-zips FFmpegKit, publishes release RELEASE_TAG once
 .github/workflows/firmware.yml  Both ESP32 envs, uploads .bin + bootloader + partitions
 docs/SETUP-GUIDE.md             End-user step-by-step (hardware, flashing, sideloading, sources, tuning)
 docs/RECEIVER-BRINGUP.md        First power-on of the A1S (2026-11-20): boot-loop crash, cause, fix, what was tested on hardware
@@ -216,6 +267,7 @@ omitted) and `shelfItems(kind, limit:)` (24 for the row, 300 for See all).
 
 ### Persisted settings
 Backend, show episodes, resume, autoplay next, Jellyfin creds, Plex token/server/server-token,
+timestamped frame pacing (`diag.timestampedFrames`; the stall test is deliberately not persisted),
 NAS shares (+Keychain passwords), YouTube SponsorBlock + max quality (`yt.maxHeight`) + HDR (`yt.preferHDR`) + visitor id (`yt.visitorData`), receiver extra delay (0–400 ms, sent
 to firmware), bass lead (0–300 ms, FFmpeg only, `bass.leadMs`), mute, per-item stereo and
 projection overrides (`stereo.<id>`, `proj.<id>`), positions (`pos.<id>`), recents, immersive
@@ -241,8 +293,48 @@ room dim / flipV / HDR / brightness / contrast / saturation / HDR boost.
   the first on-device crash, reproduced in the simulator by the E2E Plex test); rebuilds the
   graph cleanly on retry.
 - `Package.swift` — tests removed; FFmpegKit comes from the local `../FFmpegKit` package.
+- `MEPlayer/MEPlayerItemTrack.swift`, `MEPlayer/Model.swift` (2026-11-21) — seek epoch on
+  packets; the decode thread keeps the packet that arrives while a flush is pending instead of
+  dropping it (the keyframe after a seek; found with a decode-thread trace on the headset: 6 of
+  22 seeks hit it, and all 22 then played).
+- `Metal/MetalRender.swift` (2026-11-21) — shader library from the package bundle first (the
+  main bundle's library is the app's `FrameConvert.metal`); the HDR VP9 crash on the headset.
+- `MEPlayer/AudioEnginePlayer.swift` (2026-11-21) — mixer → lead delay → output wired at the
+  output's hardware rate, not the source's.
+
+Timestamped frame pacing (2026-11-21, branch `frame-pacing-timestamped`; every change is
+marked "Bass Player patch" in the source):
+- `MEPlayer/TimestampedVideoPresenter.swift` — **new file**: the pump, the audio-following
+  timebase, `TimestampedPresentationStats`.
+- `MEPlayer/MetalPlayView.swift` — `PresentationMode` (`requestedPresentationMode`,
+  `activePresentationMode`, `presentationFallbackReason`), hand-over between the loop and the
+  presenter, `takeTimestampedStats`, `framesHandedOver`, `playbackRate`, `timelineWillJump`;
+  state shared with other threads moved into `MetalPlayViewShared` (lock); the layer's
+  immediate timebase factored into `AVSampleBufferDisplayView.makeImmediateTimebase()`.
+- `MEPlayer/MEPlayerItem.swift` — `audioClock`, `videoClock`, `isAudioStalled` behind
+  `clockLock`; the audio clock ring written in `setAudio` on the audio render thread;
+  `getVideoOutputRender(mayFinish:where:)`, `audioClockSamples(after:)`, `setVideoEnqueued`.
+- `MEPlayer/Model.swift` — those three in `OutputRenderSourceDelegate`, `AudioClockSample(s)`,
+  `UnfairLock`.
+- `MEPlayer/KSMEPlayer.swift` — passes `playbackRate` and the start of a seek to the view;
+  leaves the layer's control timebase alone while the pump owns it.
+- `AVPlayer/KSOptions.swift` — `videoDelay` behind a lock (read by the pump).
 
 ### FFmpegKit (Vendor/FFmpegKit)
+**Current (branch `ffmpeg-9.1`, 2026-11-21): FFmpeg n9.1 compiled by our own workflow, release
+`ffmpegkit-9.1-vt1`; see "FFmpeg 9.1" below.** The rest of this subsection is the history
+that build stands on, oldest setup last.
+
+**What "stock" means here.** FFmpegKit never shipped plain FFmpeg: "stock FFmpegKit 9.0.2 =
+FFmpeg 9.0.2" in this file and in CLAUDE.md means FFmpeg `n9.0.2` **plus FFmpegKit's 13 FFmpeg
+patches** (`Plugins/BuildFFmpeg/patch/FFmpeg` at its tag): VideoToolbox session-error and
+Metal-compatible buffers, HLS probing without the extension/MIME check, an AC-4 decoder,
+TrueHD single-substream layout, H.264 always re-negotiating the pixel format in
+`h264_init_ps`, Matroska cues parsed at open (option `cues_parsing_deferred`), WAV empty
+LIST tag, `ff_dec_init` rename, an HTTP `redirects_expires`
+option, extra exported symbols (`ff_dovi_*`, `ffurl_*`, ...), hlsenc without `+dash`, TLS
+verification off by default, DASH seek arithmetic. Our 9.1 build carries the same 13.
+
 **Branch `ffmpegkit-9` (2026-11-08): stock FFmpegKit 9.0.2 = FFmpeg 9.0.2.** Release
 `ffmpegkit-9.0.2-vt1` of this repo holds the tag's 22 xcframeworks stripped to visionOS +
 tvOS slices plus `FFmpegKit-sources.zip` (the C shim target), produced by
@@ -303,6 +395,141 @@ Steps: (1) SMB bridge — done; (2) workflow `ffmpegkit-repack.yml`: sparse-clon
 strip to visionOS/tvOS, zip, checksums, generated Package.swift + the tag's `Sources/FFmpegKit`
 shims, publish release `ffmpegkit-9.0.2-vt1`; (3) point `Vendor/FFmpegKit` at it, port
 KSPlayer, drop `NetworkDirectory.swift`; (4) later: MV-HEVC through FFmpeg instead of AVPlayer.
+
+### FFmpeg 9.1 (compiled in CI, 2026-11-21, branch `ffmpeg-9.1`)
+FFmpeg `n9.1` was tagged on 2026-11-20. kingslay/FFmpegKit has no 9.1 tag and no longer
+publishes its build plugin (9.x tags hold binaries and the patch files only; the last plugin
+source is tag 6.1.4, for n6.1), so there was nothing to repackage. The owner chose to compile
+it here, keeping FFmpegKit's configuration and its 13 patches.
+
+**What the release is.** `ffmpegkit-9.1-vt1` has the same 22 xcframeworks + sources zip as
+`ffmpegkit-9.0.2-vt1`. The seven FFmpeg ones (`Libavutil`, `Libswresample`, `Libswscale`,
+`Libavcodec`, `Libavformat`, `Libavfilter`, `Libavdevice`) are built by
+`.github/workflows/ffmpegkit-build.yml`; the other 15 (dav1d, OpenSSL, libplacebo, libass,
+MoltenVK, ...) and `FFmpegKit-sources.zip` are copied byte for byte from the 9.0.2 release
+(same checksums). No dependency was rebuilt: every version check in `configure` for the
+enabled libraries is the same in n9.0.2 and n9.1.
+
+**How it is built** (everything under `Vendor/FFmpegKit/ffmpeg-build/`):
+- Source: `FFmpeg/FFmpeg` at tag `n9.1`, commit pinned in the workflow (`FFMPEG_COMMIT`).
+- Patches: `patches/*.patch`, applied by `apply_patches.sh` with `git apply` (no fuzz); the
+  build stops at the first one that does not apply. Ten are byte-identical to FFmpegKit
+  9.0.2's and three were re-made for n9.1 (`05-h264_seek`, `10-http-redirect-cache`,
+  `14-dashdec-seek`; what changed in each is in `patches/README.md`). `check_patch_origin.sh`
+  compares the folder with FFmpegKit's tag in CI and fails if any other file differs.
+- Configure line: `configure-args.txt`, recovered from the string embedded in the 9.0.2
+  binaries (`--enable-shared`, `--enable-version3`, no `--enable-gpl`; `--arch` and
+  `--enable-debug` vary per slice as upstream's do).
+- Dependencies: the 9.0.2 xcframeworks (`base-release.json` names the release and its
+  checksums), found through pkg-config files that `build_slice.sh` writes. dav1d, OpenSSL,
+  libass, freetype, harfbuzz, fontconfig, srt, opus, lcms2 are static archives linked into the
+  FFmpeg libraries; libzvbi, libplacebo, libfribidi stay separate dynamic frameworks.
+- Vulkan headers: KhronosGroup/Vulkan-Headers at the revision MoltenVK v1.4.0 pins (header
+  version 323), because FFmpegKit points pkg-config `vulkan` at its MoltenVK's include
+  directory. The copy in FFmpegKit's `Sources/FFmpegKit/private` is 1.3.280 and is *not* what
+  the binaries were built with: with it configure leaves `vulkan_1_4` off and the Vulkan VP9
+  hwaccel and six Vulkan extensions present in the 9.0.2 libraries go missing (run
+  44839237503 was built that way and its report showed it). No SPIR-V compiler is on the PATH, as upstream: the
+  `*_vulkan` filters on the configure line stay disabled in both builds.
+- Five jobs on `macos-15` (Xcode 26.3, SDK 26.2; the 9.0.2 binaries used SDK 26.5): xrOS
+  arm64, xrOS simulator arm64, tvOS arm64, tvOS simulator arm64 and x86_64, about 4–6 minutes
+  each in parallel. The dylibs get install name `@rpath/LibX.framework/LibX`, are stripped
+  like upstream's and ad-hoc signed; device slices keep a dSYM.
+- Package job (about 4 minutes): `assemble_frameworks.py` puts the binaries and headers into
+  copies of the 9.0.2 frameworks (Info.plist, module map), lipo's the tvOS simulator pair,
+  zips, writes `checksums.json`, `MANIFEST.txt` and `Package.swift`; `link_test.sh` then
+  compiles and links an Objective-C file against all seven modules + the shim headers for
+  every slice. A whole run takes about 10 minutes.
+
+**What the package job asserts (any miss fails the run, nothing is published):**
+- the configure line embedded in each new library (what `avutil_configuration()` returns)
+  equals the one in the 9.0.2 library of the same slice and architecture, apart from `--prefix`;
+- `FFmpeg version n9.1` is in every library whose 9.0.2 counterpart has `FFmpeg version
+  n9.0.2` (all but libswscale, which has no such string in either), `n9.0.2` is in none, the
+  Mach-O version and the headers match `expected-versions.json` (lavu 61.19.100, lavc
+  63.24.100, lavf 63.16.100, lavfi 12.8.100, lavd 63.5.100, sws 10.5.100, swr 7.6.100) and
+  `Lavc63.24.100` / `Lavf63.16.100` are present; major versions equal the base's;
+- platform, minimum OS and the set of `@rpath` libraries each library loads equal the base's
+  (a missing or extra embedded framework would be a dyld crash at launch);
+- no header of the base is gone except `libavutil/libm.h` (removed in 9.1);
+- no decoder, demuxer, muxer, protocol, filter, bitstream filter or hwaccel that the base
+  library has is missing (string based, since the base has no `config_components.h`; names
+  shorter than six characters are reported, not judged).
+`MANIFEST.txt` (in the artifact and in the release notes) lists the rest: sizes, exported
+symbols, components new in 9.1, system load commands.
+
+**Known differences from the 9.0.2 binaries that remain:**
+- tvOS `Libavfilter` is about 0.45 MB smaller: upstream's link pulled part of the static
+  libdovi (Rust runtime objects) into it; FFmpeg calls nothing in it (libplacebo carries its
+  own copy), and ours links without it. visionOS upstream does not have it either.
+- `Libavdevice` additionally loads the system `libobjc`.
+- A few `av*` symbols that 9.0.2 libraries re-exported from another FFmpeg library are now
+  only in the library that defines them (the library no longer imports them); none is gone.
+- Built with SDK 26.2 instead of 26.5.
+
+**To repeat the build** push any change under `Vendor/FFmpegKit/ffmpeg-build/` or to the
+workflow file (it runs on push; `workflow_dispatch` only works once the workflow is on
+`main`). Every run builds and checks; a run publishes only when `PUBLISH` is `"true"` *and*
+release `RELEASE_TAG` does not exist. The release is created as a draft and made public after
+all 24 assets are up, so a failed upload leaves nothing behind. **Never overwrite a release:**
+to publish again bump the suffix (`-vt2`).
+
+**To bump FFmpeg** (or rebuild with a change): in `ffmpegkit-build.yml` set `FFMPEG_TAG`,
+`FFMPEG_COMMIT`, `RELEASE_TAG` and `PUBLISH: "false"`; put the new library versions in
+`expected-versions.json`; push and read the dry run. A patch that no longer applies: see
+`patches/README.md` (re-context only, record it, add it to `REMADE` in
+`check_patch_origin.sh`). A component reported as "in base only" means configure detected
+something differently: fix the cause (it was the Vulkan headers last time), do not relax the
+check. When the dry run is green set `PUBLISH: "true"`, push, download artifact
+`ffmpegkit-package` of that run and commit its `Package.swift`, `checksums.json` and
+`RELEASE_TAG` into `Vendor/FFmpegKit` (the artifact has `DRY-RUN.txt` instead of `RELEASE_TAG`
+when its checksums belong to no release), then `PUBLISH` back to `"false"`. If FFmpegKit
+publishes a matching tag later, `ffmpegkit-repack.yml` is the simpler route and its release
+can become the new base (`base-release.json`); a new base needs its configure line re-read
+(`configure-args.txt`) and the MoltenVK revision re-checked (`VULKAN_HEADERS_COMMIT`).
+
+**What changed for the app, n9.0.2 → n9.1 (checked 2026-11-21):**
+- **No source change was needed.** `Vendor/KSPlayer` and the app compile unchanged for both
+  platforms: no public function was removed between the two header sets, the library major
+  versions are the same, and the shim sources are the 9.0.2 ones.
+- `AVFormatContext.io_open` (the `KSOptions.reconnectNestedHTTP` wrapper in
+  `MEPlayer/MEPlayerItem.swift`): same declaration in both versions; compiles as before.
+- `avcodec_parameters_to_context()` no longer copies `AVCodecParameters.initial_padding` into
+  `AVCodecContext.delay` (lavc 63.23.101). Nothing in KSPlayer or the app reads
+  `AVCodecContext.delay`, `initial_padding` or `seek_preroll`; contexts are made in
+  `MEPlayer/AVFFmpegExtension.swift` (`createContext`) and only handed to the decoder.
+- MVC (`MEPlayer/Edge264Decode.swift`): it reads `AVCodecParameters` (codec id, profile, avcC
+  extradata) and raw `AVPacket` data and never touches an `AVCodecContext`, so the `delay`
+  change cannot reach it. Between the tags the H.264 parser only gained data partitioning
+  (NAL type 2) and a field-order default, and the Matroska demuxer changes do not concern MVC.
+  **Not tested:** there is no MVC sample in CI.
+- HTTP keep-alive: `multiple_requests` now defaults to -1 ("auto") instead of 0. Reading
+  `http.c`: auto asks for keep-alive only on a request with a bounded range, which is sent
+  only when `request_size` / `initial_request_size` are set (default 0; the app sets
+  neither), so the requests the app makes still say `Connection: close`. YouTube sessions
+  set `http_persistent=0` as before, and a `Connection: close` reply (what the SMB bridge
+  sends) is still honoured.
+
+**What CI showed, and what it did not:**
+- `build.yml` run 44845396279 (`59badf9`): visionOS and tvOS green; the packaging step shows
+  the embedded frameworks, and the embedded libraries carry `FFmpeg version n9.1`. visionOS
+  IPA 23,975,930 bytes (9.0.2 build `c7e0418`: 23,601,871).
+- `e2e-tests.yml` on the visionOS simulator, 9.1 (run 44845398776, `59badf9`) and, for
+  comparison, 9.0.2 (run 44842283289, `c7e0418`): **both runs fail, and not because of
+  FFmpeg.** On the `xcode-27` runner the simulator is so slow that XCUITest's UI queries time
+  out ("Failed to get matching snapshots: Timed out while evaluating UI query"); the 9.0.2 run
+  lost all four tests that way before any playback, the 9.1 run passed `testTabsRender` (in
+  22 minutes) and lost the other three. The suite last passed on 2026-11-08 and needs repair
+  before it can gate anything (see §7).
+- The 9.1 run's NAS test did get as far as playing: it listed the share, tapped `sample.mp4`,
+  and the screen recording in the artifact shows the player window about 70 s later with the
+  test clip's colour bars, the timecode advancing (frame 1 → 4 in the last two seconds of the
+  recording) and the chip reading `Bass tap · 48 kHz · 2 ch · -21 dB · FFmpeg`. So with 9.1
+  the SMB loopback bridge → `http.c` → demux → video and audio decode → bass tap chain works
+  in the simulator. The test still failed: the chip query timed out before the window appeared.
+- **Not shown by anything:** YouTube (the test never got past launch), Plex, seeking, long
+  playback, HDR / Dolby Vision, MVC, VideoToolbox on hardware, tvOS at run time, and
+  everything on the headset. No 9.1 build has been installed on a device.
 
 ## 4. Known risks — check these first on hardware
 
@@ -395,8 +622,16 @@ Ordered by likelihood of needing a fix.
    `engine.mainMixerNode.outputFormat(forBus:0).sampleRate > 0`. If the chip stays "Bass tap
    off", log the format and `layer.state`; check `KSOptions.audioPlayerType` took effect
    (tvOS may prefer `AudioRendererPlayer`).
-3. **Lead delay rewiring** (`BassEngineTap.applyLead`) reconnects the mixer at runtime. If it
-   glitches: keep `videoDelay` only, or insert the delay before `engine.start()`.
+3. ~~**Lead delay rewiring**~~ **crashed the app** the first time the owner set a Bass lead
+   (2026-11-21, YouTube, build `3013b19`): `BassEngineTap.applyLead` re-plumbed mixer → delay →
+   output on the running engine. Fixed on branch `fix/bass-lead-crash`: KSPlayer's
+   `AudioEnginePlayer` owns an `AVAudioUnitDelay` wired between the main mixer and the output in
+   `prepare(audioFormat:)`, while the engine is stopped and reset, for mono/stereo mixes only;
+   afterwards only `leadDelay` (delay time; dry-only at 0) changes. The tap stays on the mixer,
+   ahead of the delay. `options.videoDelay` now follows `tap.effectiveLeadSeconds`, so a format
+   without the delay node (more than two channels) delays neither sound nor picture. The exact
+   exception was not captured; `CrashCapture` (App/) now writes uncaught exceptions and fatal
+   signals to `Caches/lastcrash.txt`, and the next launch logs it under category `crash`.
 4. **Stereo material fails to load** (`StereoScreen.usda`, hand-written MaterialX with
    `ND_realitykit_cameraindexswitch_color3`). Log says "stereo material unavailable";
    fallback is left-eye-only. Fix: rebuild the same graph in Reality Composer Pro on any Mac
@@ -458,6 +693,41 @@ Ordered by likelihood of needing a fix.
     `ui-screenshots.yml`): TabView `.sidebarAdaptable`, player in a separate window on
     visionOS (`WindowGroup(id: "player", for: MediaItem.self)`), `fullScreenCover` on tvOS.
     tvOS focus behaviour in the grids and the YouTube text field needs a look on the Apple TV.
+14. **Timestamped frame pacing has never run on a device** (§0). CI compiled it for both
+    platforms and the visionOS simulator played a 720p60 H.264 file with it (E2E run
+    44873700431, numbers from the app's own log in the `e2e-results` artifact: 600 frames
+    enqueued per 10 s at 60.0/s, lookahead up to 150 ms, clock error mean −0.2 ms with no
+    trims and no resyncs, renderer `rendering`, the system's count 4–32 dropped of 600. While
+    XCUITest held the app's main thread for 26 s the pump still enqueued 1834 frames in
+    30.6 s and the system counted 46 dropped; the display-link loop under a 28 s block of
+    the same kind showed 18 frames in 29.5 s. With the stall test on, the display-link loop
+    in the simulator lost 43–79 frames per 10 s.) That is a simulator on a runner without a
+    GPU: it shows the mode starts, plays and does not need the main thread to keep feeding
+    the renderer. It says nothing about smoothness or sync on the headset.
+    Unknown until the headset says so, in the order I would check them:
+    (a) whether queued frames survive a blocked main thread on visionOS at all (the stall
+    test; no Apple text promises it);
+    (b) A/V sync and Bass lead: the anchor uses the same audio readings as the old clock but
+    stamped on the audio thread instead of on arrival at the main thread, so the picture
+    should sit a few ms earlier than before, not more;
+    (c) whether rate trims of up to 3 % on a control timebase are followed smoothly by the
+    layer (Apple documents rate and time control, not small trims); watch `trims` and
+    `resyncs`: steady single-digit trims are the design working, resyncs outside starts and
+    seeks are not;
+    (d) how the renderer treats a frame that is already due when enqueued (the pump keeps one
+    every 0.25 s when the decoder is behind; if the system discards those the picture
+    freezes while `enqueued` still counts, and the YouTube watchdog, which counts frames
+    handed over, would not notice);
+    (e) HDR10/HLG through the timestamped path (same layer and buffers as before, so
+    expected unchanged) and the one-eye 3D crop (the aspect is applied on the pump's queue,
+    up to 150 ms before the crop rectangle changes);
+    (f) the last 150 ms of a file may not be shown: the player finishes when the audio does.
+    The renderer calls used (`enqueue`, `isReadyForMoreMediaData`, `flush`, `status`) are
+    deprecated from OS 27.0 in favour of `AVSampleBufferVideoRenderer.Receiver`, which only
+    exists from 27.0 and only through an `AVSampleBufferRenderSynchronizer`; with deployment
+    targets 26.0 / 18.0 the old calls are the ones to use and compile without warnings
+    (checked against the Xcode 27 SDK headers in CI). Move to the receiver when the targets
+    reach 27.
 
 ## 5. Not done, and why
 
@@ -509,6 +779,19 @@ Ordered by likelihood of needing a fix.
   launches with `BASSPLAYER_DEMO=1` + `BASSPLAYER_SCREEN=<tab>` and uploads one PNG per screen.
   `DemoData.swift` seeds the clients (`enableDemo` on Jellyfin/Plex/YouTube) and a few
   part-watched items. Download with `gh run download <id> -n screenshots-visionos`.
+  `settings-diagnostics` is Settings scrolled to the Diagnostics switches
+  (`BASSPLAYER_SETTINGS_SECTION=diagnostics`).
+- **Playing in the simulator:** `gh workflow run e2e-tests.yml --ref <branch>` (all tests,
+  30 min or more) or with `-f only="testNASPlayTimestamped testNASPlayTimestampedUnderStalls"`
+  for a subset. The NAS tests play a generated 720p60 clip in either frame-pacing mode
+  (`BASSPLAYER_PACING=timestamped|display-link`, `BASSPLAYER_STALL_TEST=1`; both honoured
+  only together with `BASSPLAYER_UITEST=1`) and read the mode, the frame count and the last
+  `render:` line from a test-only element (`PacingProbe`). `E2E …` lines in the job log and
+  `bassplayer.log` in the `e2e-results` artifact carry the numbers. **Trust the log, not the
+  verdicts:** on the current runner XCUITest's queries often fail with "Timed out while
+  evaluating UI query" although the app is playing (all four tests failed that way on
+  unchanged `main` code on 2026-11-21, run 44842283289); the app's main thread shows blocks
+  of 20–28 s in the log at those moments.
 - **Logs from the headset:** Settings → Diagnostics → "Send log to computer" posts the in-app
   log (`DiagLog`, app + KSPlayer messages) to `tools/diag_receiver.py` running on the LAN box
   (`python3 tools/diag_receiver.py --bind <ip> --port 8799 --dir <ipa dir>`; logs land in
@@ -521,6 +804,17 @@ Ordered by likelihood of needing a fix.
   DISPLAY=:10), headset awake, Import IPA.
 
 ## 7. Suggested next steps, in order
+
+**First: run the frame-pacing acceptance test on the headset** (§0, "Timestamped frame
+pacing"). If it holds: make timestamped the default, then give the cinema screen the same treatment
+(its `AVSampleBufferVideoRenderer` has no settable timebase, so it needs an
+`AVSampleBufferRenderSynchronizer` steered with `setRate(_:time:atHostTime:)` from the same
+audio readings, and the frame sink must then be fed from the pump), then bring Dolby Vision
+profile 5 and 10-bit software frames onto the queue by rendering them offscreen into pixel
+buffers (report item 4). Smaller follow-ups: try `CMAudioClockCreate` as the timebase's
+source clock so the trim has less to do; move to the 27 receiver API when the deployment
+targets allow. If it does not hold: report item 4's dedicated render thread.
+
 
 0. **Verified on device 2026-11-10 (21 Bridges, 4K HEVC, DTS-HD MA 5.1):** the bass tap
    works — mixer tap delivers 48 kHz 6-channel planar buffers, the extractor takes the LFE
@@ -580,7 +874,7 @@ Ordered by likelihood of needing a fix.
    a reset on the audio connection, and whether the bass tap survives a reopen is unchecked.
    **Look to Scroll** (visionOS 26): `View.lookToScroll()` on RootView and PlayerScreen; the
    user must also enable it in the headset's Settings.
-1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
+1. **On-device verification of the remaining changes** (built, not yet confirmed on the headset): FFmpeg 9.1 on branch `ffmpeg-9.1` (§3 "FFmpeg 9.1"; nothing of it has run on hardware: play one item per source, seek, check YouTube for "keepalive" / reconnect lines in the log), FFmpegKit 9.0.2 (Plex/Jellyfin film with subtitles, YouTube seek, Dolby Vision P5),
    the SMB bridge (NAS browse + play), MVC 3D Blu-ray (needs a MakeMKV 3D MKV on the server;
    watch `video delay` lines for decode speed), the new icon, the judder fix (display link at
    panel rate — "drop next frame" lines should be rare).
@@ -593,3 +887,8 @@ Ordered by likelihood of needing a fix.
    notifications at cinema open.
 5. **Library UX:** detail sheet before playing, poster caching for large libraries.
 6. **Firmware extras:** Wi‑Fi (UDP) transport, OTA.
+7. **Repair `e2e-tests.yml`:** on the `xcode-27` runner every UI query takes tens of seconds
+   and most time out (2026-11-21: all four tests failed on the unchanged 9.0.2 app, three of
+   four on 9.1). Ideas, untested: longer `waitForExistence` timeouts and one launch for all
+   tests, no screen recording (the artifact is 2 GB of video), collecting the in-app `DiagLog`
+   instead of `log show` (which holds no FFmpeg or player lines), a smaller simulator window.

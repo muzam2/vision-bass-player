@@ -1,0 +1,29 @@
+diff --git forkSrcPrefix/libavformat/http.c forkDstPrefix/libavformat/http.c
+index 04ed992070456782dceaa01656cf650c8f1a6709..e6c942275d197397ffa06e771a68cecd21b771d4 100644
+--- forkSrcPrefix/libavformat/http.c
++++ forkDstPrefix/libavformat/http.c
+@@ -111,6 +111,7 @@
+     int reply_code;
+     int short_seek_size;
+     int max_redirects;
++    int redirects_expires;
+     int respect_retry_after;
+     uint64_t request_size;
+     uint64_t initial_request_size;
+@@ -231,6 +232,7 @@
+     { "reply_code", "The http status code to return to a client", OFFSET(reply_code), AV_OPT_TYPE_INT, { .i64 = 200}, INT_MIN, 599, E},
+     { "short_seek_size", "Threshold to favor readahead over seek.", OFFSET(short_seek_size), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, INT_MAX, D },
+     { "max_redirects", "Maximum number of redirects", OFFSET(max_redirects), AV_OPT_TYPE_INT, { .i64 = MAX_REDIRECTS }, 0, INT_MAX, D },
++    { "redirects_expires", "redirects expires second", OFFSET(redirects_expires), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, INT_MAX, D },
+     { NULL }
+ };
+ 
+@@ -555,7 +557,7 @@
+         }
+ 
+         if (!s->expires) {
+-            s->expires = (s->http_code == 301 || s->http_code == 308) ? INT64_MAX : -1;
++            s->expires = (s->http_code == 301 || s->http_code == 308) ? INT64_MAX : (time(NULL) + s->redirects_expires);
+         }
+ 
+         if (s->expires > time(NULL) && av_dict_count(s->redirect_cache) < MAX_CACHED_REDIRECTS) {
