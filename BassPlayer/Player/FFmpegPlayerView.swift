@@ -316,6 +316,18 @@ final class FFmpegSession: ObservableObject {
             let num = raw.dropFirst("#EXTINF:".count).split(separator: ",").first.map(String.init) ?? ""
             if let d = Double(num), d > 0 { durations.append(d); t += d; starts.append(t) }
         }
+        // Diagnostic (2026-11-21): the shape of YouTube's media playlist, for reproducing seek
+        // problems off the headset. Tags only; segment addresses are reduced to their path keys.
+        let lines = playlist.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+        let byteRanges = lines.filter { $0.hasPrefix("#EXT-X-BYTERANGE") }.count
+        let head = lines.prefix(14).map { $0.hasPrefix("#") ? String($0.prefix(100)) : "<uri \($0.count) chars>" }.joined(separator: " ¦ ")
+        var shape = "?"
+        if let uri = lines.first(where: { !$0.isEmpty && !$0.hasPrefix("#") }), let url = URL(string: uri) {
+            let parts = url.path.split(separator: "/").map(String.init)
+            shape = (url.host ?? "?") + " /" + stride(from: 0, to: parts.count, by: 2).map { parts[$0] }.prefix(40).joined(separator: "/") + (url.query == nil ? "" : " ?query")
+        }
+        DiagLog.log("media playlist shape: \(lines.count) lines, \(byteRanges) byte ranges ¦ \(head)", "youtube")
+        DiagLog.log("media playlist segment address keys: \(shape); first durations \(durations.prefix(6).map { String(format: "%.3f", $0) }.joined(separator: " "))", "youtube")
         guard durations.count > 1 else { return }
         let sorted = durations.sorted()
         let median = sorted[sorted.count / 2]
