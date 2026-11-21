@@ -2,6 +2,28 @@ import Foundation
 import CoreBluetooth
 import Combine
 
+/// The link's fast-changing numbers (see `BassLink.stats`). Main thread only.
+final class BassLinkStats: ObservableObject {
+    @Published private(set) var packetsSent = 0
+    @Published private(set) var packetsDropped = 0
+    @Published private(set) var sendQueuePeak = 0
+    @Published private(set) var receiverBufferFill = 0
+    @Published private(set) var receiverUnderruns = 0
+    @Published private(set) var receiverDropped = 0
+
+    func setLink(sent: Int, dropped: Int, queuePeak: Int) {
+        if packetsSent != sent { packetsSent = sent }
+        if packetsDropped != dropped { packetsDropped = dropped }
+        if sendQueuePeak != queuePeak { sendQueuePeak = queuePeak }
+    }
+
+    func setReceiver(fill: Int, dropped: Int, underruns: Int) {
+        if receiverBufferFill != fill { receiverBufferFill = fill }
+        if receiverDropped != dropped { receiverDropped = dropped }
+        if receiverUnderruns != underruns { receiverUnderruns = underruns }
+    }
+}
+
 /// BLE central that streams bass packets to the ESP32 receiver.
 ///
 /// GATT layout (must match firmware/esp32-bass-receiver):
@@ -19,13 +41,19 @@ final class BassLink: NSObject, ObservableObject {
 
     @Published private(set) var state: State = .off
     @Published private(set) var peripheralName: String?
-    @Published private(set) var packetsSent = 0
-    @Published private(set) var packetsDropped = 0
+    /// Packet counters and the receiver's status. They change several times a second while a
+    /// film plays, so they are published by `stats`, not by this object: `BassLink` is an
+    /// environment object of the root and player views, and every change to it redrew both on
+    /// the main thread, where the video frame loop also runs. Views that show these numbers
+    /// wrap them in `BassStatsReader`.
+    let stats = BassLinkStats()
+    var packetsSent: Int { stats.packetsSent }
+    var packetsDropped: Int { stats.packetsDropped }
     /// Most packets ever waiting to be sent since the link came up (5 to 6 is normal).
-    @Published private(set) var sendQueuePeak = 0
-    @Published private(set) var receiverBufferFill = 0
-    @Published private(set) var receiverUnderruns = 0
-    @Published private(set) var receiverDropped = 0
+    var sendQueuePeak: Int { stats.sendQueuePeak }
+    var receiverBufferFill: Int { stats.receiverBufferFill }
+    var receiverUnderruns: Int { stats.receiverUnderruns }
+    var receiverDropped: Int { stats.receiverDropped }
 
     /// Extra delay the receiver adds before playing, to line the bass up with the picture.
     @Published var extraDelayMs: Int = 0 { didSet { pushConfig() } }
@@ -196,9 +224,7 @@ final class BassLink: NSObject, ObservableObject {
             self.flushScheduled = false
             let sent = self.sentCount, dropped = self.droppedCount, peak = self.outboxPeak
             DispatchQueue.main.async {
-                self.packetsSent = sent
-                self.packetsDropped = dropped
-                self.sendQueuePeak = peak
+                self.stats.setLink(sent: sent, dropped: dropped, queuePeak: peak)
             }
         }
     }
@@ -279,9 +305,7 @@ extension BassLink: CBPeripheralDelegate {
         let dropped = Int(UInt16(littleEndian: d.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 2, as: UInt16.self) }))
         let underruns = Int(UInt16(littleEndian: d.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt16.self) }))
         DispatchQueue.main.async {
-            self.receiverBufferFill = fill
-            self.receiverDropped = dropped
-            self.receiverUnderruns = underruns
+            self.stats.setReceiver(fill: fill, dropped: dropped, underruns: underruns)
         }
     }
 }
