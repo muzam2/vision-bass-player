@@ -11,16 +11,36 @@ Jellyfin server ──HTTP──▶ Vision Pro app ──BLE (1 kHz sub-bass)─
 ```
 
 Built without a Mac: GitHub Actions produces **unsigned IPAs** for both platforms. Sideload with a
-free Apple ID: SideStore / iloader for the Vision Pro (wireless pairing, no dev strap),
+free Apple ID: iloader / SideStore for the Vision Pro (wireless pairing, no dev strap),
 [atvloadly](https://github.com/bitxeno/atvloadly) for the Apple TV. Both talk to the same ESP32
 receiver, so one sub serves the headset and the TV.
+
+This is one person's home project, shared as it is. It is in use on the author's Vision Pro
+(visionOS 27) with the ESP32-A1S receiver. The Apple TV app is compiled by CI but has not been
+run on an Apple TV yet.
+
+## Get it
+
+| What | Where |
+|---|---|
+| App (`…-visionos-unsigned.ipa`, `…-tvos-unsigned.ipa`) and receiver firmware (`.bin` files) | [Latest release](https://github.com/muzam2/vision-bass-player/releases/latest) |
+| Bass sync calibration videos | Same release (`bass-sync-sweep.mp4`, `bass-sync-steady.mp4`) |
+| iloader with Vision Pro support (Linux build, or source) | [muzam2/iloader releases](https://github.com/muzam2/iloader/releases) |
+| SideStore for Vision Pro (optional, renews the app on the headset) | [muzam2/SideStore `visionos-0.7.3-autorenew`](https://github.com/muzam2/SideStore/releases/tag/visionos-0.7.3-autorenew) |
+
+You need: an Apple Vision Pro on visionOS 26 or later and/or an Apple TV on tvOS 18 or later, a
+free Apple ID, a powered subwoofer with a line input, and an ESP32-A1S Audio Kit (about £15).
+The player works without the receiver; you just get no sub. **docs/SETUP-GUIDE.md** walks
+through everything in order.
 
 ## Repo layout
 
 | Path | What |
 |---|---|
 | `project.yml` | XcodeGen spec with two targets, `BassPlayer` (visionOS) and `BassPlayerTV` (tvOS), sharing all sources |
-| `Vendor/KSPlayer` | KSPlayer GPLv3 source, vendored and patched (Dolby Vision P5, frame renderer). `UPSTREAM_COMMIT` records the base. |
+| `Vendor/KSPlayer` | KSPlayer GPLv3 source, vendored and patched (Dolby Vision P5, frame renderer, FFmpeg 9 API, seek and pacing fixes). `UPSTREAM_COMMIT` records the base. |
+| `Vendor/FFmpegKit` | FFmpeg 9.1 package: build recipe and patches; the binaries are release assets fetched by `tools/fetch_binaries.sh` |
+| `Vendor/AMSMB2`, `Vendor/edge264-mvc` | SMB client (libsmb2) and the MVC (3D Blu-ray) decoder |
 | `BassPlayer/App` | SwiftUI app entry, audio session |
 | `BassPlayer/Media` | `MediaItem` model shared by both servers, `LibraryStore` (source/backend settings) |
 | `BassPlayer/Jellyfin`, `BassPlayer/Plex`, `BassPlayer/YouTube`, `BassPlayer/NAS` | Sources: media servers, YouTube (InnerTube + SponsorBlock), NAS shares (SMB / WebDAV) |
@@ -33,15 +53,17 @@ receiver, so one sub serves the headset and the TV.
 | `BassPlayer/Views` | Library, settings, status ornament |
 | `firmware/esp32-bass-receiver` | PlatformIO project for the ESP32 receiver |
 | `tools/receiver_test.py` | Test the receiver from a computer: serial boot log, BLE scan, test tone / thumps through the sub |
+| `tools/make_bass_sync_videos.py` | Generates the bass sync calibration videos (click + 50 Hz thump) |
+| `tools/diag_receiver.py` | Small LAN server: receives the app's diagnostics log and serves IPAs to the headset |
 | `docs/RECEIVER-BRINGUP.md` | First power-on of the receiver: the boot-loop crash, its fix, and what was tested |
-| `.github/workflows/build.yml` | Builds the unsigned IPA on a macOS runner |
+| `.github/workflows/build.yml` | Builds the unsigned IPAs on a macOS runner |
+| `.github/workflows/firmware.yml` | Builds the receiver firmware for both boards |
 
 ## Status
 
-Everything is built; what remains is on-device testing and tuning. See **docs/SETUP-GUIDE.md**
-for the step-by-step setup.
+See **docs/SETUP-GUIDE.md** for the step-by-step setup.
 
-- **Playback:** [KSPlayer](https://github.com/kingslay/KSPlayer) (GPLv3 branch, FFmpeg 6.1) is
+- **Playback:** [KSPlayer](https://github.com/kingslay/KSPlayer) (GPLv3 branch, FFmpeg 9.1) is
   the default backend. Direct-plays MKV/MP4/MOV/TS/AVI with H.264, HEVC, AV1, VP9, ProRes and
   more; audio AAC, AC‑3, E‑AC‑3, DTS, DTS‑HD, TrueHD, FLAC, Opus; HDR10 and HLG passed to the
   display. Hardware decoding via VideoToolbox. AVPlayer remains as a fallback backend (MP4
@@ -58,23 +80,22 @@ for the step-by-step setup.
 - **Bass:** with the FFmpeg backend the tap sits on KSPlayer's `AVAudioEngine` mixer, picking
   the LFE channel for 5.1/7.1 tracks. A "Bass lead" setting inserts an `AVAudioUnitDelay`
   before the output and delays video by the same amount, so the sub's BLE latency is cancelled.
-- **Immersive screen (visionOS):** RealityKit cinema screen fed from the decoder's pixel
-  buffers via a `DrawableQueue` (CoreImage does YUV→RGB and HDR). Flat or curved mesh, drag /
-  pinch / rotate gestures plus sliders, 200 m black dome so there are no edge artifacts in
-  either lens, full immersion by default.
+- **Immersive screen (visionOS):** RealityKit cinema screen: decoded frames go to an
+  `AVSampleBufferVideoRenderer` and a `VideoMaterial` on a flat, curved or sphere mesh. Drag /
+  pinch / rotate gestures plus sliders, full immersion by default.
 - **3D:** side-by-side and top-and-bottom (half and full), detected from Jellyfin's
   `Video3DFormat`, file-name tokens (HSBS, SBS, HOU, 3D…) and frame shape, with a per-film
-  override in the player. On the Vision Pro cinema screen each eye gets its own texture via a
-  hand-written shader-graph material (`StereoScreen.usda`, Camera Index Switch). On the flat
-  window and on Apple TV one eye is shown, un-squeezed. MV-HEVC / Apple spatial video plays
-  through AVPlayer and RealityKit's `VideoPlayerComponent`, which renders stereo natively.
-  Blu-ray MVC (frame-packed) plays as 2D (FFmpeg decodes the base view only).
+  override in the player. On the Vision Pro cinema screen the frames are tagged with their
+  packing, so the system shows each eye its half. On the flat window and on Apple TV one eye is
+  shown, un-squeezed. MV-HEVC / Apple spatial video plays through AVPlayer and RealityKit's
+  `VideoPlayerComponent`, which renders stereo natively. Blu-ray MVC is decoded by the bundled
+  edge264 decoder into a side-by-side frame.
 - **YouTube:** search, trending and pasted links via YouTube's InnerTube player API (the
   NewPipe / yt-dlp approach), played through our own pipeline so the sub works and there are
   no ads. SponsorBlock segments are skipped (toggle in Settings). Client identities are tried
-  in order (iOS → Android VR → TV embedded → web); update them from yt-dlp when YouTube moves.
+  in order (visionOS, then iOS); update them from yt-dlp when YouTube moves.
 - **NAS:** browse and play straight off a share, no media server needed. SMB goes through
-  FFmpeg's libsmbclient (listing via `avio_open_dir`, playback via `smb://`), WebDAV through
+  AMSMB2 (libsmb2) and a loopback HTTP server inside the app, WebDAV through
   PROPFIND with a fallback to scraping plain HTTP directory indexes. Credentials live in the
   Keychain. NAS files always use the FFmpeg backend.
 - **VR video:** 180° and 360° equirectangular (mono, or stereo via SBS/TAB halves) wrapped on
@@ -100,25 +121,54 @@ for the step-by-step setup.
 2 kB/s. Config characteristic: `uint16 extraDelayMs, uint8 mute`. Status notify every 500 ms:
 `uint16 bufferFill, uint16 droppedPackets, uint16 underruns`.
 
-## Building the app (CI)
+## Building the app
 
-Every push to `main` runs `.github/workflows/build.yml` and uploads
-`BassPlayer-<version>-visionos-unsigned.ipa` and `BassPlayer-<version>-tvos-unsigned.ipa` as
-workflow artifacts. Tag `vX.Y.Z` to attach it to a
-GitHub release.
+**GitHub Actions (no Mac needed).** Every push to `main` runs `.github/workflows/build.yml` and
+uploads `BassPlayer-<version>-visionos-unsigned.ipa` and `BassPlayer-<version>-tvos-unsigned.ipa`
+as workflow artifacts; a `vX.Y.Z` tag attaches them, and the firmware, to a GitHub release.
+This works in a fork too: turn Actions on in the fork and run "Build unsigned IPAs". The FFmpeg
+libraries are downloaded from this repository's releases and checked against
+`Vendor/FFmpegKit/checksums.json`.
+
+**On a Mac.** These are the steps the workflow runs; the author has no Mac, so they have not
+been tried by hand. You need Xcode with the visionOS 26 (or later) SDK; CI uses Xcode 27.
+
+```
+brew install xcodegen
+git clone https://github.com/muzam2/vision-bass-player && cd vision-bass-player
+bash Vendor/FFmpegKit/tools/fetch_binaries.sh   # about 170 MB of FFmpeg xcframeworks
+xcodegen generate
+open BassPlayer.xcodeproj
+```
+
+The project is set up for unsigned builds. To run from Xcode on your own device, change
+`bundleIdPrefix` in `project.yml` to your own, remove the four `CODE_SIGN…` / `DEVELOPMENT_TEAM`
+lines under `settings`, run `xcodegen generate` again and pick your team under Signing &
+Capabilities. Schemes: `BassPlayer` (visionOS) and `BassPlayerTV` (tvOS). `BassPlayer.xcodeproj`
+is generated; `project.yml` is the source of truth.
 
 ## Installing on the Vision Pro
 
-1. Vision Pro: Settings → Privacy & Security → Developer Mode → On.
-2. Get SideStore onto the headset once (the Vision Pro build `visionos-0.7.2-signin` from
-   `muzam2/SideStore`, installed with an iloader build that has Vision Pro support — pair via
-   Settings → General → Remote Devices) and sign in with a free Apple ID.
-3. Put the IPA where the headset can download it, e.g. run `tools/diag_receiver.py` on a LAN
-   machine (`python3 tools/diag_receiver.py --bind <ip> --port 8799 --dir <folder with the ipa>`),
-   open `http://<ip>:8799/BassPlayer.ipa` in Safari on the headset, Download, then in SideStore
-   → My Apps → "+" pick the downloaded file. Updates install over the old app and keep its data.
-   Free-ID limits: 7-day signature (SideStore refreshes it), 3 apps max.
-4. The same helper receives the app's diagnostics log (Settings → Diagnostics → Send / Stream).
+The official iloader cannot see a Vision Pro (it has no USB port), so use the fork with
+wireless Vision Pro support: [muzam2/iloader](https://github.com/muzam2/iloader/releases)
+(Linux build; other systems build it from source).
+
+1. Vision Pro: Settings → Privacy & Security → Developer Mode → On. Then open Settings →
+   General → Remote Devices and leave it open; computer and headset on the same network.
+2. iloader: select the Vision Pro, type the six-digit code it shows, pair (once), and sign in
+   with a free Apple ID.
+3. **Import IPA** → `BassPlayer-<version>-visionos-unsigned.ipa` from the
+   [latest release](https://github.com/muzam2/vision-bass-player/releases/latest). It signs
+   and installs over Wi-Fi; keep the headset awake until it finishes.
+4. Vision Pro: Settings → General → VPN & Device Management → trust your Apple ID.
+
+Free Apple ID limits: the signature lasts 7 days and you can have 3 sideloaded apps. Renew by
+importing the IPA again (settings are kept), or install SideStore with iloader's SideStore
+button so the headset renews by itself.
+
+`tools/diag_receiver.py` on a LAN machine receives the app's diagnostics log (Settings →
+Diagnostics → Send / Stream; set the receiver address there to your own machine) and can serve
+an IPA to Safari on the headset for installing through SideStore.
 
 ## Installing on the Apple TV
 
@@ -136,8 +186,9 @@ Two supported boards, one firmware:
 | Generic ESP32 + PCM5102A board | `esp32dev` | Wiring and jumpers in `src/main.cpp`. |
 
 Flash: `cd firmware/esp32-bass-receiver && pio run -e esp32-a1s -t upload` (or `-e esp32dev`).
-CI also builds both and uploads `firmware-<env>` artifacts (`firmware.bin` + bootloader +
-partitions) you can flash with `esptool` or the web flasher. The board advertises as **BassSub**;
+The [latest release](https://github.com/muzam2/vision-bass-player/releases/latest) has prebuilt
+binaries for both (`bass-receiver-<env>.bin`, `bootloader-<env>.bin`, `partitions-<env>.bin`)
+to flash with `esptool`; the command is in docs/SETUP-GUIDE.md. The board advertises as **BassSub**;
 the app connects automatically when you open a film.
 
 **Two devices, one sub.** The receiver accepts the Vision Pro and the Apple TV at the same time
@@ -152,5 +203,20 @@ isolator on the RCA lead.
 
 ## Syncing bass with picture
 
-Settings → *Extra delay* adds 0–400 ms on the receiver. Start at 0; if the thump lands
-*before* the explosion, increase it. (Phase 2 measures round-trip and sets this automatically.)
+The sub's path (Bluetooth, receiver buffer) is slower than the headset's own sound, so the app
+holds its picture and sound back to match. Two settings under Settings → Subwoofer receiver:
+
+- **Bass lead** (0–300 ms): delays the headset's sound and picture so the sub catches up.
+- **Receiver delay** (0–400 ms): delays the sub, for when the thump comes early.
+
+To set them, play `bass-sync-sweep.mp4` (from the latest release, or made with
+`tools/make_bass_sync_videos.py`) with both at 0. It plays a click on the headset and a thump
+on the sub, with the thump a little earlier at each step; the step where they land together is
+your Bass lead. On the author's setup that was about 140 ms. `bass-sync-steady.mp4` checks the
+result.
+
+## Licence
+
+GPL-3.0 (see `LICENSE`), because the vendored KSPlayer is GPLv3. Other vendored code keeps its
+own licence: AMSMB2 / libsmb2 (LGPL-2.1), edge264 (BSD), FFmpeg and its dependencies (see
+`Vendor/FFmpegKit`).
