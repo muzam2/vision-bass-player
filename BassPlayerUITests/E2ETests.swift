@@ -103,26 +103,87 @@ final class E2ETests: XCTestCase {
     }
 
     func testNASBrowseAndPlay() throws {
+        try playNASSample(name: "nas", extra: [:], expectMode: "display-link", stalls: false)
+    }
+
+    /// The same file with timestamped frame pacing (Settings → Diagnostics on a device; the
+    /// launch environment here): the pump must start, keep handing frames to the renderer and
+    /// say so in its `render:` line.
+    func testNASPlayTimestamped() throws {
+        try playNASSample(name: "nas-timestamped", extra: ["BASSPLAYER_PACING": "timestamped"], expectMode: "timestamped", stalls: false)
+    }
+
+    /// Both modes with the stall test on (main thread blocked 200 ms every 2 s). The numbers
+    /// are printed for the record; a simulator says nothing about smoothness on the headset.
+    func testNASPlayDisplayLinkUnderStalls() throws {
+        try playNASSample(name: "nas-display-link-stalls", extra: ["BASSPLAYER_PACING": "display-link", "BASSPLAYER_STALL_TEST": "1"],
+                          expectMode: "display-link", stalls: true)
+    }
+
+    func testNASPlayTimestampedUnderStalls() throws {
+        try playNASSample(name: "nas-timestamped-stalls", extra: ["BASSPLAYER_PACING": "timestamped", "BASSPLAYER_STALL_TEST": "1"],
+                          expectMode: "timestamped", stalls: true)
+    }
+
+    /// What the player's pacing probe says: "mode=<mode> handed=<frames> render=<last render: line>".
+    private func pacingProbe(_ app: XCUIApplication) -> (mode: String, handed: Int, render: String, raw: String)? {
+        let probe = app.descendants(matching: .any).matching(identifier: "pacingProbe").firstMatch
+        guard probe.waitForExistence(timeout: 10) else { return nil }
+        let raw = probe.label
+        func field(_ key: String, upTo end: String?) -> String {
+            guard let start = raw.range(of: key + "=") else { return "" }
+            let rest = raw[start.upperBound...]
+            if let end, let stop = rest.range(of: " " + end + "=") { return String(rest[..<stop.lowerBound]) }
+            return String(rest)
+        }
+        return (field("mode", upTo: "handed"), Int(field("handed", upTo: "render")) ?? -1, field("render", upTo: nil), raw)
+    }
+
+    private func playNASSample(name: String, extra: [String: String], expectMode: String, stalls: Bool) throws {
         guard let host = env["E2E_SMB_HOST"], !host.isEmpty else {
             throw XCTSkip("E2E_SMB_HOST not set; the workflow starts a Samba share and sets it")
         }
         let share = env["E2E_SMB_SHARE"] ?? "video"
         let file = env["E2E_SMB_FILE"] ?? "sample.mp4"
 
-        let app = launch(screen: "nas", extra: ["BASSPLAYER_E2E_NAS_HOST": host])
+        var launchExtra = ["BASSPLAYER_E2E_NAS_HOST": host]
+        launchExtra.merge(extra) { $1 }
+        let app = launch(screen: "nas", extra: launchExtra)
         let row = app.staticTexts["CI"].firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 60), "pre-seeded share not listed")
-        attach(app, "nas-shares-list")
+        attach(app, "\(name)-shares-list")
         row.tap()
         let shareRow = app.staticTexts[share].firstMatch
         XCTAssertTrue(shareRow.waitForExistence(timeout: 30), "host-only address did not list the share '\(share)'")
-        attach(app, "nas-shares")
+        attach(app, "\(name)-shares")
         shareRow.tap()
         let fileRow = app.staticTexts[file].firstMatch
         XCTAssertTrue(fileRow.waitForExistence(timeout: 30), "file '\(file)' not listed in the share")
-        attach(app, "nas-files")
+        attach(app, "\(name)-files")
         fileRow.tap()
-        try expectPlayback(app, name: "nas")
+        try expectPlayback(app, name: name)
+
+        // Frame pacing: which mode ran, and that frames kept reaching the renderer.
+        guard let first = pacingProbe(app) else {
+            XCTFail("\(name): no pacing probe on the player")
+            return
+        }
+        // The player writes a `render:` line every 10 s while it is playing.
+        var second = first
+        for _ in 0 ..< 15 {
+            sleep(2)
+            second = pacingProbe(app) ?? second
+            if second.render.hasPrefix("render:") { break }
+        }
+        print("E2E \(name): pacing mode=\(second.mode) handed \(first.handed) → \(second.handed)")
+        print("E2E \(name): \(second.render)")
+        XCTAssertEqual(second.mode, expectMode, "\(name): wrong presentation mode: \(second.raw.prefix(200))")
+        XCTAssertGreaterThan(second.handed, first.handed, "\(name): no frames reached the renderer while waiting: \(second.raw.prefix(200))")
+        XCTAssertTrue(second.render.hasPrefix("render: mode \(expectMode)"), "\(name): no render: line for this mode yet: \(second.render.prefix(200))")
+        if stalls {
+            XCTAssertTrue(second.render.contains("stall test:"), "\(name): the stall test did not run: \(second.render.prefix(400))")
+        }
+        XCTAssertEqual(app.state, .runningForeground, "\(name): the app died")
     }
 
     func testPlexLibraryAndPlay() throws {

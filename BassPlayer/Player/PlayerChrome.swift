@@ -117,6 +117,7 @@ struct FFmpegPlayerChrome: View {
                     .padding(.horizontal, 16).padding(.vertical, 10)
                     .glassBackgroundEffect()
                 Spacer()
+                if PacingProbe.isEnabled { PacingProbe(session: session) }
                 BassStatusChip(session: session)     // fades with the controls
                 StopButton(action: stop)
             }
@@ -193,6 +194,24 @@ struct StopButton: View {
         .buttonStyle(.bordered)
         .padding(.horizontal, 6).padding(.vertical, 4)
         .glassBackgroundEffect()
+    }
+}
+
+/// Simulator tests only (`BASSPLAYER_UITEST=1`): the frame-pacing mode, the count of frames
+/// handed to the renderer and the last `render:` log line, as an accessibility label the test
+/// can read (`FFmpegSession.pacingProbe`).
+struct PacingProbe: View {
+    static let isEnabled = ProcessInfo.processInfo.environment["BASSPLAYER_UITEST"] == "1"
+    let session: FFmpegSession
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            Text(session.pacingProbe)
+                .font(.system(size: 6))
+                .lineLimit(1)
+                .frame(width: 40)
+                .accessibilityIdentifier("pacingProbe")
+        }
     }
 }
 
