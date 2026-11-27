@@ -77,6 +77,15 @@ struct BassPlayerApp: App {
         // reopen the same file and crash again before the user can do anything.
         .restorationBehavior(.disabled)
 
+        // PlayStation Remote Play stream (one at a time; the session lives in RemotePlayController).
+        WindowGroup(id: RemotePlayWindow.id) {
+            RemotePlayStreamView()
+                .modifier(AppEnvironment(library: library, jellyfin: jellyfin, plex: plex, youtube: youtube, nas: nas, bassLink: bassLink))
+                .environmentObject(immersive)
+        }
+        .defaultSize(width: 1600, height: 900)
+        .restorationBehavior(.disabled)
+
         ImmersiveSpace(id: ImmersiveScreenSpace.id) {
             ImmersiveScreenView()
                 .modifier(AppEnvironment(library: library, jellyfin: jellyfin, plex: plex, youtube: youtube, nas: nas, bassLink: bassLink))

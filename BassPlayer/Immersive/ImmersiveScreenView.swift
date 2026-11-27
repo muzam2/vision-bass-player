@@ -165,6 +165,9 @@ struct ImmersiveScreenView: View {
             model.noteClosed(playback: library.playback, openWindow: openWindow,
                              reason: "onDisappear; pushed \(state.feed?.pushed ?? 0), dropped \(state.feed?.dropped ?? 0)")
         }
+        // PlayStation Remote Play can show its stream here; the controller then belongs to the
+        // game, not to the system's UI navigation.
+        .handlesGameControllerEvents(matching: .gamepad)
     }
 
     /// Route the player's frames into the feed.
@@ -572,6 +575,7 @@ extension ImmersiveScreenModel {
             openWindow(id: PlayerWindow.id, value: item)
         }
         DiagLog.log("cinema closed (\(reason)); player window back: \(wasDetached && playback.item != nil)", "immersive")
+        RemotePlayController.shared.noteCinemaClosed(openWindow: openWindow)
     }
 
     /// Called when a window appears or becomes active: if the model still thinks the cinema is

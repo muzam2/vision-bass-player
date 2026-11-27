@@ -11,7 +11,7 @@ enum PlayerBackend: String, CaseIterable, Identifiable {
 
 /// Top-level destinations of the app (tab bar / sidebar).
 enum AppTab: String, CaseIterable, Identifiable {
-    case home, jellyfin, plex, youtube, nas, settings
+    case home, jellyfin, plex, youtube, nas, playstation, settings
     var id: String { rawValue }
 
     var title: String {
@@ -21,6 +21,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .plex: return "Plex"
         case .youtube: return "YouTube"
         case .nas: return "NAS"
+        case .playstation: return "PlayStation"
         case .settings: return "Settings"
         }
     }
@@ -32,6 +33,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .plex: return "play.rectangle.on.rectangle.fill"
         case .youtube: return "play.tv.fill"
         case .nas: return "externaldrive.connected.to.line.below.fill"
+        case .playstation: return "gamecontroller.fill"
         case .settings: return "gearshape.fill"
         }
     }

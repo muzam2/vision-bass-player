@@ -30,6 +30,10 @@ packages:
   # FFmpeg's libsmbclient, which FFmpegKit 9 no longer ships.
   AMSMB2:
     path: Vendor/AMSMB2   # 4.0.3, vendored to make the product static (see its Package.swift)
+  # PlayStation Remote Play: chiaki-ng's protocol core (AGPL-3.0), local network only. Links
+  # FFmpegKit's libcrypto and libopus. See Vendor/ChiakiCore/Package.swift and UPSTREAM.
+  ChiakiCore:
+    path: Vendor/ChiakiCore
 
 schemes:
   # Explicit scheme so `xcodebuild test -scheme BassPlayer` runs the UI tests in the simulator
@@ -83,6 +87,8 @@ targets:
         product: KSPlayer
       - package: AMSMB2
         product: AMSMB2
+      - package: ChiakiCore
+        product: ChiakiCore
     info:
       path: BassPlayer/Info.plist
       properties:
@@ -92,7 +98,10 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSBluetoothAlwaysUsageDescription: Bass Player streams the low-frequency channel of your film to a subwoofer receiver over Bluetooth.
-        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin or Plex server and your NAS on the local network.
+        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin or Plex server, your NAS and your PlayStation on the local network.
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
@@ -122,6 +131,8 @@ targets:
         product: KSPlayer
       - package: AMSMB2
         product: AMSMB2
+      - package: ChiakiCore
+        product: ChiakiCore
     info:
       path: BassPlayer/Info-tvOS.plist
       properties:
@@ -131,7 +142,10 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSBluetoothAlwaysUsageDescription: Bass Player streams the low-frequency channel of your film to a subwoofer receiver over Bluetooth.
-        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin or Plex server and your NAS on the local network.
+        NSLocalNetworkUsageDescription: Bass Player connects to your Jellyfin or Plex server, your NAS and your PlayStation on the local network.
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true

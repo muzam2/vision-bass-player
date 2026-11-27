@@ -114,7 +114,7 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" "$APP"
           mkdir -p shots
-          for screen in home jellyfin plex youtube nas settings settings-diagnostics; do
+          for screen in home jellyfin plex youtube nas playstation settings settings-diagnostics; do
             # "settings-<section>" opens Settings scrolled to that section.
             tab=${screen%%-*}; section=""
             if [ "$tab" != "$screen" ]; then section=${screen#*-}; fi

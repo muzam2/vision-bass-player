@@ -23,6 +23,7 @@ struct RootView: View {
             Tab(value: AppTab.plex) { LibraryGridView(source: .plex) } label: { tabLabel(.plex) }
             Tab(value: AppTab.youtube) { YouTubeView() } label: { tabLabel(.youtube) }
             Tab(value: AppTab.nas) { NASBrowserView() } label: { tabLabel(.nas) }
+            Tab(value: AppTab.playstation) { RemotePlayView() } label: { tabLabel(.playstation) }
             Tab(value: AppTab.settings) { SettingsView() } label: { tabLabel(.settings) }
         }
         .tabViewStyle(.sidebarAdaptable)
