@@ -47,6 +47,8 @@ through everything in order.
 | `BassPlayer/Player` | `FFmpegPlayerView` (KSPlayer) and the AVPlayer fallback |
 | `BassPlayer/Audio` | `BassExtractor` (LPF → 1 kHz Int16 packets), `BassEngineTap` (AVAudioEngine tap + lead delay), `BassTapProcessor` (MTAudioProcessingTap glue for AVPlayer) |
 | `BassPlayer/Immersive` | RealityKit cinema screen (visionOS only) |
+| `BassPlayer/RemotePlay` | PlayStation Remote Play: consoles and pairing (incl. the jailbroken-PS5 get-pin payload), VideoToolbox decode of the live stream, audio with the sub tap, DualSense input |
+| `Vendor/ChiakiCore` | chiaki-ng's Remote Play core (AGPL-3.0), PSN parts stubbed, plus a C bridge; `tools/vendor_chiaki.sh` refreshes it |
 | `docs/SETUP-GUIDE.md` | Step-by-step hardware, install and tuning guide |
 | `docs/HANDOFF.md`, `CLAUDE.md` | Handoff for the next Claude Code session: state, risks, next steps |
 | `BassPlayer/BLE` | `BassLink` CoreBluetooth central |

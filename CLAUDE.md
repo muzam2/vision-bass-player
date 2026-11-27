@@ -161,6 +161,12 @@ results"). Read the `render:` and `bass` lines in the live log before changing p
 - XcodeGen `project.yml` is the source of truth; `BassPlayer.xcodeproj` is generated in CI and
   git-ignored. `.usda` is excluded from the folder source and added as a resource for visionOS.
 
+- PlayStation Remote Play (`BassPlayer/RemotePlay`, `Vendor/ChiakiCore`): chiaki-ng core,
+  local network only, no PSN code at all (stubs). Consoles are added by IP (visionOS blocks
+  broadcast discovery without the multicast entitlement). Never hand-edit
+  `Vendor/ChiakiCore/vendor/`; re-run `tools/vendor_chiaki.sh`. OpenSSL/Opus headers come from
+  FFmpegKit's framework slices via `-I` in its Package.swift. HANDOFF §0 has the design.
+
 ## Conventions
 - Commit messages: imperative summary line; feature branches merged with `--no-ff`.
 - Keep the BLE wire protocol in `BassLink.swift`, `BassExtractor.swift` and

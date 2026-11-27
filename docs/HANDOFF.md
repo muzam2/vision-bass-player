@@ -156,7 +156,7 @@ mode next to the display-link loop, off by default.
   lip sync and Bass lead: they should be unchanged between the modes.
 - *What CI showed:* see §4 risk 14. Smoothness, audio sync and stall immunity are untested.
 
-**PlayStation Remote Play (branch `feature/remote-play`, 2026-11-27; built in CI, NOT yet run on
+**PlayStation Remote Play (branch `feature/remote-play`, 2026-11-27; visionOS + tvOS green in CI, simulator screenshots taken, NOT yet run on
 the headset).** New **PlayStation** tab. The owner's PS5 is jailbroken; he wants no PSN at all.
 - *Core:* `Vendor/ChiakiCore` = chiaki-ng's `lib/` (AGPL-3.0 + OpenSSL exception) vendored by
   `tools/vendor_chiaki.sh` (commits in `UPSTREAM`; never edit `vendor/` by hand, re-run the
