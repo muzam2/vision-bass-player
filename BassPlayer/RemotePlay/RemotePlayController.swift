@@ -180,6 +180,7 @@ final class RemotePlayController: ObservableObject {
         guard console.isPaired else { state = .failed("Pair this console first"); return }
         activeConsole = console
         stats.reset()
+        state = .waking   // shown at once by the stream window that opens next
         connectTask = Task { await self.run(console) }
     }
 
