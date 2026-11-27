@@ -298,6 +298,45 @@ available**.
 If YouTube suddenly stops playing ("no playable streams"), YouTube changed something on their
 side; the fix is updating the client identities in `InnerTubeClient.swift` from yt-dlp.
 
+## 10e. PlayStation (Remote Play)
+
+Play your PS5 (or PS4) on the headset, on your home network. No PlayStation Network sign-in
+in the app; game sound goes to the sub like a film's.
+
+**Before the first time**
+1. On the PS5: Settings → System → Remote Play → **Enable Remote Play** on. For waking it
+   from rest mode: Settings → System → Power Saving → Features Available in Rest Mode →
+   **Stay Connected to the Internet** and **Enable Turning On PS5 from Network** on.
+2. Plug the PS5 into the router with a cable if you can.
+3. Pair the DualSense with the headset: put it in pairing mode (hold **PS + Create** until
+   the light flashes), then headset Settings → Bluetooth.
+4. Find the PS5's address: Settings → Network → **View Connection Status** (IPv4 Address).
+
+**Add and pair (once)**
+1. **PlayStation** tab → type the address → **Add console**.
+2. *Jailbroken PS5:* have the ELF loader running (port 9021) and your account activated
+   with offact. Tap **Download payload and get PIN**. The app fetches idlesauce's
+   `rp-get-pin.elf` from GitHub, sends it to the PS5, reads the PIN and account ID back and
+   pairs. If the download fails, put `rp-get-pin.elf` in Files and use
+   **Use a payload file…**.
+3. *Otherwise:* on the PS5 open Settings → System → Remote Play → **Link Device**, type the
+   8-digit number and your account ID (base64, 16 hex digits or the number) and tap **Pair**.
+   The number expires after five minutes.
+
+**Play**
+- Open the console → **Play**. If it is in rest mode, the app wakes it first (up to ~40 s).
+- The stream opens in its own window. **Cinema** moves it to the big screen; leaving the
+  cinema brings the window back. **Rest mode** puts the PS5 to sleep. Closing the window
+  ends the session.
+- Stream settings are on the PlayStation tab: 1080p 60 fps H.265 is the default; drop to
+  720p or set a bitrate if Wi‑Fi stutters. **Stats** in the window shows fps, lost frames
+  and the audio buffer.
+- If the controller does nothing, look at the stream window (or open the cinema) so the
+  app has focus; the system uses the controller for its own menus otherwise.
+
+Game bass reaches the sub about 100 ms after the picture (games can't be delayed the way
+films are). Turn the sub down for fast games if that bothers you.
+
 ## 11. Troubleshooting
 
 | Problem | Check |
@@ -311,6 +350,9 @@ side; the fix is updating the client identities in `InnerTubeClient.swift` from 
 | NAS shows no files | Enter just the host (`192.168.1.20`): the shares appear as folders. If a share still looks empty, it needs a username/password. |
 | App won't open after a week | The free-ID signature expired. In iloader: Import IPA again (settings are kept). On Apple TV check atvloadly is still running. |
 | Bass stutters | Keep the A1S within ~5 m line-of-sight of the headset; move it away from the Wi‑Fi router; check "Packets dropped" in Diagnostics. |
+| PlayStation: "Not answering" | Same network as the headset? Remote Play enabled? Check the address again on the PS5 (Settings → Network → View Connection Status); it can change after a router restart. Guest Wi‑Fi and client isolation block it. |
+| PlayStation: pairing refused | The PIN expired (five minutes) or the account ID isn't the user signed in on the PS5. With the payload, send it again for a fresh PIN. |
+| PlayStation: picture freezes or blocks | Lower resolution or bitrate on the PlayStation tab; cable the PS5; keep the headset near the router. |
 | `ES8388 init FAILED` on serial | You have the AC101 variant of the A1S. Build the `esp32dev` firmware and use a £6 PCM5102A board instead (wiring in `src/main.cpp`). |
 
 ---

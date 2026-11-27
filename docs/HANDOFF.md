@@ -156,6 +156,50 @@ mode next to the display-link loop, off by default.
   lip sync and Bass lead: they should be unchanged between the modes.
 - *What CI showed:* see §4 risk 14. Smoothness, audio sync and stall immunity are untested.
 
+**PlayStation Remote Play (branch `feature/remote-play`, 2026-11-27; built in CI, NOT yet run on
+the headset).** New **PlayStation** tab. The owner's PS5 is jailbroken; he wants no PSN at all.
+- *Core:* `Vendor/ChiakiCore` = chiaki-ng's `lib/` (AGPL-3.0 + OpenSSL exception) vendored by
+  `tools/vendor_chiaki.sh` (commits in `UPSTREAM`; never edit `vendor/` by hand, re-run the
+  script). Left out: `remote/holepunch.c`, `aia*.c` (PSN, curl/json-c/miniupnpc/libevent) and the
+  FFmpeg/Pi decoders; `stubs/psn_stubs.c` provides the symbols `session.c` references (never
+  reached: `holepunch_session` is always NULL). `takion.pb.{c,h}` are pre-generated with nanopb.
+  OpenSSL 4.0.3 (`libcrypto`) and Opus come from FFmpegKit's xcframeworks; their headers sit
+  inside the framework slices, so `Package.swift` passes `-I` to the device slice (absolute path
+  from `#filePath`). Checked on Linux: all 41 OpenSSL/Opus symbols chiaki needs exist in
+  FFmpegKit's static libs; the core + bridge build and run under ASan (init, probe, regist
+  start/cancel, session start/stop against 127.0.0.1).
+- *Bridge:* `bridge/include/ChiakiBridge.h` is the only header Swift sees (`import ChiakiCore`):
+  `rp_regist_*` (PIN + 8-byte account ID → regist key + rp key), `rp_wakeup`, `rp_probe`
+  (unicast discovery on 9302 and 987: visionOS blocks broadcast without Apple's multicast
+  entitlement, which a free Apple ID can't get, so consoles are added by IP), `rp_session_*`.
+- *Swift (`BassPlayer/RemotePlay/`):* `RemotePlayController` (app-wide, like
+  `PlaybackController`) owns consoles (keychain, `RemotePlayVault`), pairing, wake-then-connect
+  and the session. `RemotePlayVideoDecoder`: Annex-B → AVCC, VideoToolbox synchronous decode on
+  chiaki's video thread (a failed frame returns false → chiaki asks for a keyframe), frames to
+  `RemotePlayFrameSink` → the window's `AVSampleBufferDisplayLayer` (display immediately) or,
+  while `cinemaShowing`, newest-frame-only to `ImmersiveScreenBridge.pushFrame` on main.
+  `RemotePlayAudio`: Opus PCM → jitter ring (start 40 ms, trim above 160 ms) →
+  `AVAudioSourceNode`; mixer tap → `BassExtractor` → `BassLink` (no lead: game bass is ~100 ms
+  late). `RemotePlayInput`: GameController → `rp_controller_state` from the value-changed
+  handler on its own queue; PS/Create/Options have `preferredSystemGestureState = .disabled`;
+  rumble via two CHHaptic continuous players; DualSense trigger effects 0x21/0x25/0x26 mapped to
+  `GCDualSenseAdaptiveTrigger` modes (approximate). Motion is off by default (axes unverified).
+- *Payload pairing:* `PayloadPairing` downloads `rp-get-pin.elf` from idlesauce's latest
+  GitHub release (the repo has no licence, so it is not bundled), sends it over TCP to 9021 and
+  parses `Pin code: 1234 5678` / `Account ID: <base64>` from the loader's stdout on the same
+  socket; the socket stays open until pairing finishes (the payload keeps the PIN valid).
+- *Windows:* stream window `RemotePlayWindow.id`; closing it (scene disconnect) ends the
+  session unless `cinemaShowing`. Cinema: the window's Cinema button opens the space and
+  dismisses the window; `ImmersiveScreenModel.noteClosed` calls
+  `RemotePlayController.noteCinemaClosed`, which reopens it. The cinema's own control panel still
+  shows film controls (inert during Remote Play). `.handlesGameControllerEvents(matching:
+  .gamepad)` on the stream window and the cinema space (visionOS 2+ otherwise routes the
+  controller to system UI); Info.plist has `GCSupportsControllerUserInteraction` + ExtendedGamepad.
+- *Log:* category `rp` (app) and `chiaki` (core). A `stream:` line every 10 s: size, codec, fps,
+  decoded/failed/lost, audio buffer, underruns, trims, frames sent to the cinema.
+- *First headset test:* add the PS5 by IP → payload pairing → Play. Check the `chiaki` lines for
+  the handshake, then `decoder ready`, then `stream:` fps near 60 and `failed` flat.
+
 ## 1. The owner and their constraints
 
 - Physician, hobbyist developer, comfortable with Linux, Docker, PlatformIO, OpenWrt.

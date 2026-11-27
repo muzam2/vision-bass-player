@@ -3,6 +3,7 @@ import SwiftUI
 import RealityKit
 import AVFoundation
 import ARKit
+import GameController
 
 /// The cinema: a black void with a very large screen and nothing else. While it is open the
 /// player window is dismissed (playback lives in `LibraryStore.playback`, not in the window);
