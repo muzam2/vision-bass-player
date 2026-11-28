@@ -320,7 +320,7 @@ in the app; game sound goes to the sub like a film's.
    pairs. If the download fails, put `rp-get-pin.elf` in Files and use
    **Use a payload file…**.
 3. *Otherwise:* on the PS5 open Settings → System → Remote Play → **Link Device**, type the
-   8-digit number and your account ID (base64, 16 hex digits or the number) and tap **Pair**.
+   8-digit number and your account ID (base64, 0x… hex as OffAct shows it, or the number) and tap **Pair**.
    The number expires after five minutes.
 
 **Play**

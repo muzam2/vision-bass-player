@@ -301,7 +301,7 @@ struct RemotePlayConsoleView: View {
                 #if !os(tvOS)
                 .keyboardType(.numberPad)
                 #endif
-            TextField("Account ID (base64, hex or number)", text: $accountText)
+            TextField("Account ID (base64 or 0x… hex)", text: $accountText)
                 #if !os(tvOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 #endif

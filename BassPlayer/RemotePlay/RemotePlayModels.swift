@@ -52,12 +52,18 @@ struct RemotePlaySettings: Codable, Equatable {
 }
 
 /// The 8-byte account ID in the forms people have it: base64 (what the get-pin payload and
-/// chiaki print, e.g. "AbCdEfGhIjA="), 16 hex digits (offact, chiaki's helper scripts) or the
+/// chiaki print, e.g. "AbCdEfGhIjA="), 0x-prefixed hex (OffAct), 16 hex digits (chiaki's helper scripts) or the
 /// decimal number. Hex and decimal are the number; the console wants it little-endian.
 enum PSNAccountID {
     static func parse(_ text: String) -> Data? {
         let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return nil }
+        // OffAct shows and takes the ID as 0x… hex (leading zeros dropped).
+        if s.lowercased().hasPrefix("0x") {
+            let hex = s.dropFirst(2)
+            guard !hex.isEmpty, hex.count <= 16, let v = UInt64(hex, radix: 16) else { return nil }
+            return littleEndian(v)
+        }
         if s.count == 16, s.allSatisfy(\.isHexDigit), let v = UInt64(s, radix: 16) {
             return littleEndian(v)
         }
